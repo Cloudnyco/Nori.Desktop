@@ -20,7 +20,7 @@ public sealed class ExpressionSettingsPage : SettingsPageBase
 		: base(
 			service,
 			"expression",
-			"core",
+			"self",
 			new("情绪表达", "Expression"),
 			new(
 				"她的情绪通过哪些方式表现出来。每一项可以单独开关。",
