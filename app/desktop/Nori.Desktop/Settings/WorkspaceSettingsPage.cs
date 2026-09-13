@@ -9,6 +9,20 @@ namespace Nori.Desktop.Settings;
 /// </summary>
 public sealed class WorkspaceSettingsPage : SettingsPageBase
 {
+	private const string GearOptionAsk = "ask";
+
+	/// <summary>
+	/// 四个档位。措辞按**她会怎么做**写，不按内部名字写 —— 用户要判断的是
+	/// 「我会不会被打扰」和「我放掉了多少」，不是 trusted 和 bypass 的区别。
+	/// </summary>
+	private static readonly IReadOnlyList<SettingsOption> GearOptions =
+	[
+		new(GearOptionAsk, new("逐次确认（默认）", "Ask every time (default)")),
+		new("session", new("本轮记住：同一个工具这轮只问一次", "Remember for this reply: ask once per tool")),
+		new("trusted", new("完全授权：日常操作不再问（接管鼠标键盘仍然会问）", "Full: everyday actions run silently; taking over mouse and keyboard still asks")),
+		new("bypass", new("完全放行：什么都不问，含接管鼠标键盘（4 小时后降回完全授权）", "Bypass: never ask, mouse and keyboard takeover included (falls back to Full after 4 hours)")),
+	];
+
 	/// <summary>创建文件访问设置页。</summary>
 	public WorkspaceSettingsPage(SettingsService service, CancellationToken lifetimeToken = default)
 		: base(
@@ -107,6 +121,37 @@ public sealed class WorkspaceSettingsPage : SettingsPageBase
 			(_, _) => Task.FromResult(default(JsonElement)),
 			readOnly: true);
 
+		/* ── 授权档位 ────────────────────────────────────────────────────────
+		 * 排在工作文件夹与任务之后：那两节决定「她能碰到什么」，这一节只决定
+		 * 「碰之前问不问你」。顺序反过来会让人以为调档位能扩大她的活动范围。 */
+		SettingsSectionViewModel permission = AddSection(new("确认方式", "Confirmations"));
+		AddField(
+			permission,
+			"permissionGear",
+			new("动手之前问不问", "Ask before acting"),
+			new(
+				"只影响问不问，不影响她能碰到什么 —— 工作文件夹之外的文件、没配过的命令，哪一档都碰不到。",
+				"Only changes whether she asks. It never widens what she can reach: files outside the working folder and unconfigured commands stay off limits at every setting."),
+			SettingsEditorKind.Choice,
+			snapshot => SettingsSnapshotReader.String(snapshot, GearOptionAsk, "workspace", "permissions", "gear"),
+			GearOptionAsk,
+			(value, token) => ExecuteAsync(
+				"settings_update_permission",
+				new {gear = Convert.ToString(value) ?? GearOptionAsk},
+				token),
+			options: GearOptions);
+
+		AddField(
+			permission,
+			"permissionState",
+			new("　当前生效", "　In effect"),
+			new("", ""),
+			SettingsEditorKind.Text,
+			GearStateText,
+			"",
+			(_, _) => Task.FromResult(default(JsonElement)),
+			readOnly: true);
+
 		SettingsSectionViewModel limits = AddSection(new("工具次数", "Tool calls"));
 		AddField(
 			limits,
@@ -130,6 +175,53 @@ public sealed class WorkspaceSettingsPage : SettingsPageBase
 			minimum: Core.Agent.AgentEngine.MinToolIterations,
 			maximum: Core.Agent.AgentEngine.MaxToolIterationsLimit,
 			increment: 1);
+	}
+
+	/// <summary>
+	/// 当前真正生效的那一档。
+	///
+	/// 与上面的下拉分开显示，理由和读屏那两行一样：下拉是「你选的」，这一行是
+	/// 「现在按什么走」。完全放行到期之后两者会不一样，只显示一个的话，用户看到
+	/// 还写着完全放行却仍然被弹框，只能怀疑是坏了。
+	/// </summary>
+	private string GearStateText(JsonElement snapshot)
+	{
+		if (SettingsSnapshotReader.Boolean(snapshot, false, "workspace", "permissions", "safeMode"))
+		{
+			return IsEnglish
+				? "Safe mode: every action that needs confirmation is refused, whatever this is set to."
+				: "安全模式：需要确认的操作一律拒绝，这里选什么都不算数。";
+		}
+
+		string stored = SettingsSnapshotReader.String(snapshot, GearOptionAsk, "workspace", "permissions", "gear");
+		string effective = SettingsSnapshotReader.String(snapshot, GearOptionAsk, "workspace", "permissions", "effective");
+		if (stored != effective)
+		{
+			return IsEnglish
+				? "Bypass has expired; running as Full. Pick it again for another 4 hours."
+				: "完全放行已到期，现在按完全授权走。要继续就再选一次。";
+		}
+
+		if (stored == "bypass")
+		{
+			int seconds = (int)SettingsSnapshotReader.Number(
+				snapshot, 0, "workspace", "permissions", "bypassRemainingSeconds");
+			int minutes = Math.Max(1, seconds / 60);
+			return IsEnglish
+				? $"Nothing will be asked for the next {minutes} min, mouse and keyboard takeover included."
+				: $"接下来 {minutes} 分钟内她做什么都不问你，包括接管鼠标键盘。";
+		}
+
+		return stored switch
+		{
+			"trusted" => IsEnglish
+				? "Everyday actions run without asking; taking over your mouse or keyboard still asks."
+				: "日常操作直接做，接管鼠标键盘仍然会问你。",
+			"session" => IsEnglish
+				? "Each tool asks once per reply, then stays allowed until that reply ends."
+				: "每个工具在一轮回复里只问一次，这轮结束后重新开始问。",
+			_ => IsEnglish ? "Every action that needs confirmation asks first." : "每一次需要确认的操作都会先问你。",
+		};
 	}
 
 	/// <summary>
