@@ -305,6 +305,32 @@ public sealed class DesktopExpressionTests : IDisposable
 		Assert.Null(OpenRgbClient.TryParseDevice(payload, 0));
 	}
 
+	/// <summary>
+	/// IsAvailable 不得阻塞。
+	///
+	/// 这个属性会被 BuildSnapshot 调到，而快照在应用里到处都在建。第一版在这里同步连 TCP
+	/// （超时 2 秒），结果 CI 上两个时序敏感的界面用例稳定失败 —— 而单元测试一条都没抓到，
+	/// 因为它们不建快照。用一个「连接要花很久」的假实现把这条判据钉住。
+	/// </summary>
+	[Fact]
+	public void 可用性查询不被慢连接阻塞()
+	{
+		using RgbLightingChannel channel = new(() =>
+		{
+			Thread.Sleep(TimeSpan.FromSeconds(3));
+			return null;
+		});
+
+		System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+		for (int round = 0; round < 5; round++)
+		{
+			_ = channel.IsAvailable;
+			_ = channel.Devices;
+		}
+
+		Assert.True(clock.ElapsedMilliseconds < 500, $"读可用性花了 {clock.ElapsedMilliseconds} ms，说明它在等 I/O");
+	}
+
 	[Fact]
 	public void 连不上时通道不可用()
 	{
