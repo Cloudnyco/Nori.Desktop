@@ -28,7 +28,7 @@ public sealed class WorkspaceSettingsPage : SettingsPageBase
 		: base(
 			service,
 			"workspace",
-			"core",
+			"reach",
 			new("访问权限", "Access"),
 			new("她能碰到你哪些东西：文件夹、可运行的命令、屏幕。", "What she can reach: folders, runnable commands, and your screen."),
 			lifetimeToken)
