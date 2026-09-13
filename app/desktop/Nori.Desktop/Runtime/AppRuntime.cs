@@ -47,7 +47,7 @@ namespace Nori.Desktop.Runtime;
 ///
 /// 秘密纪律: 快照只返回 hasApiKey 等脱敏标记, 明文绝不回传事件/日志/错误。
 /// </summary>
-public sealed class AppRuntime : IAsyncDisposable
+public sealed partial class AppRuntime : IAsyncDisposable
 {
 	/// <summary>工具授权等待超时 (秒); 超时一律 fail-closed 拒绝</summary>
 	public const int ApprovalTimeoutSeconds = 60;
@@ -61,6 +61,9 @@ public sealed class AppRuntime : IAsyncDisposable
 	private readonly ConcurrentDictionary<string, AgentSessionState> _sessions = new();
 	private readonly ConcurrentDictionary<string, PendingApproval> _approvals = new();
 	private readonly Lock _approvalGate = new();
+	private readonly Lock _notifierGate = new();
+	private Nori.Core.Notifications.INativeNotifier _notifier = Nori.Core.Notifications.NullNativeNotifier.Instance;
+	private bool _notifierTried;
 	private readonly ConcurrentDictionary<string, PendingDesktopApproval> _desktopApprovals = new();
 	private readonly ConcurrentDictionary<Task, byte> _backgroundTasks = new();
 	private readonly CancellationTokenSource _lifetimeCts = new();
@@ -1256,6 +1259,8 @@ public sealed class AppRuntime : IAsyncDisposable
 				category = request.Category, deadlineUtc = approval.DeadlineUtc,
 			});
 		}
+		// 通知在锁外发：它要起 COM、要建快捷方式，不该把授权锁按住那么久。
+		ShowApprovalNotice(request);
 		// 工具轮次自身先超时或退出时，立即撤销授权卡，而不是留下一张已失效的可批准卡片。
 		using CancellationTokenRegistration cancelled = linked.Token.Register(() =>
 		{
@@ -1279,6 +1284,8 @@ public sealed class AppRuntime : IAsyncDisposable
 	{
 		if (!_approvals.TryRemove(new KeyValuePair<string, PendingApproval>(approval.RequestId, approval))) return false;
 		approval.Dispose();
+		// 无论从哪条路结束的，屏幕上那条都要收掉 —— 留一张点了没反应的卡片比不弹更糟。
+		_notifier.Hide(approval.RequestId);
 		// 只有用户**真的按了允许**才记。超时、取消、拒绝都不是同意 —— 把它们也记进来，
 		// 等于一次没人看见的超时换来后面整轮的静默放行。
 		if (approved) Permissions.Remember(approval.SessionId, approval.ToolName);
@@ -1587,6 +1594,9 @@ public sealed class AppRuntime : IAsyncDisposable
 				// 目录被删除或移动后配置仍在，但工具已不再注册，界面需要区分这两种状态。
 				available = new WorkspaceAccess(config.GetStringOr(ConfigStore.KeyWorkspaceRoot, "")).IsConfigured,
 				maxToolIterations = Engine.ConfiguredToolIterations,
+				// 待决授权是否也发成系统通知。非 Windows 上界面据此显示「本平台不支持」。
+				toastApprovals = config.GetBoolOr(ConfigStore.KeyToastApprovals, true),
+				toastSupported = OperatingSystem.IsWindows(),
 				tasks = WorkspaceTaskList.Read(config.Get(ConfigStore.KeyWorkspaceTasks))
 					.Select(task => new { name = task.Name, command = task.Command }),
 				// 界面要能说清「命令跑在什么边界里」：无隔离与 AppContainer 的安全含义完全不同。
@@ -1991,7 +2001,9 @@ public sealed class AppRuntime : IAsyncDisposable
 		{
 			approval.Tcs.TrySetResult(false);
 			approval.Dispose();
+			_notifier.Hide(approval.RequestId);
 		}
+		DisposeNotifier();
 		foreach ((string _, PendingDesktopApproval approval) in _desktopApprovals)
 		{
 			approval.Tcs.TrySetResult(false);
