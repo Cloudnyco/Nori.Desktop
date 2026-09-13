@@ -282,6 +282,19 @@ public sealed class BridgeCommands
 		/// </summary>
 		"settings_update_permission" => RequireMain(source, () => Run(() => UpdatePermissionGear(args))),
 
+		/// <summary>
+		/// 开关「待决授权也发系统通知」。
+		/// 前端调用：invoke("settings_update_notifications", {enabled: boolean})
+		/// </summary>
+		"settings_update_notifications" => RequireMain(source, () => Run(() =>
+		{
+			UpdateBoolConfig(args, "enabled", ConfigStore.KeyToastApprovals);
+			// 关掉时要把开始菜单快捷方式和注册表项清掉 —— 用户关的是「别在我机器上留东西」，
+			// 只停止发送等于留了一半。
+			Runtime.SyncNotificationRegistration();
+			Runtime.InvalidateSnapshot("workspace");
+		})),
+
 		"settings_update_screen" => RequireMain(source, () => Run(() =>
 		{
 			UpdateBoolConfig(args, "enabled", ConfigStore.KeyScreenReadingEnabled);

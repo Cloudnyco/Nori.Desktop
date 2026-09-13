@@ -64,6 +64,9 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 	/// </summary>
 	public const string KeyScreenReadingEnabled = "screen_reading_enabled";
 
+	/// <summary>把待决授权也发成系统通知。默认开；关掉会清掉开始菜单快捷方式和注册表项。</summary>
+	public const string KeyToastApprovals = "toast_approvals";
+
 	/// <summary>
 	/// 情绪表达通道的开关前缀，完整键名即通道自己的 Key。
 	///
