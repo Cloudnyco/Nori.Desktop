@@ -933,7 +933,7 @@ public sealed class AppRuntime : IAsyncDisposable
 	/// <summary>
 	/// 某条表达通道开没开。
 	///
-	/// 缺省值按侵入等级取：Global 档（系统强调色、壁纸）默认关，其余默认开 —— 用户没表过态时
+	/// 缺省值按侵入等级取：Global 档（系统强调色）默认关，其余默认开 —— 用户没表过态时
 	/// 不该被改掉整个桌面的颜色。
 	/// </summary>
 	private bool IsExpressionChannelEnabled(string key) =>

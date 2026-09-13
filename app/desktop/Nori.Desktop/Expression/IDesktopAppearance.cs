@@ -8,7 +8,7 @@ namespace Nori.Desktop.Expression;
 /// 桌面外观的读写。
 ///
 /// 抽成接口不是为了跨平台 —— 目前只有 Windows 实现 —— 而是为了**测试不碰真实桌面**。
-/// 这一族改的是持久的系统设置，用例跑一遍把开发机的壁纸换掉是不可接受的。
+/// 这一族改的是持久的系统设置，用例跑一遍把开发机的强调色换掉是不可接受的。
 /// </summary>
 public interface IDesktopAppearance
 {
