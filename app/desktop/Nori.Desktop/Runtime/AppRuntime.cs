@@ -1617,6 +1617,20 @@ public sealed class AppRuntime : IAsyncDisposable
 				visible = Services.Windows.IsWindowVisible(WindowLabels.Pet),
 				renderMetrics = Services.PetRuntime?.RenderMetrics,
 			},
+			/* ── 各个窗口开着没有 ──────────────────────────────────────────────
+			 * 侧边栏那四项点下去是**另开一个窗口**, 不是切页。此前界面拿不到这四个
+			 * 状态, 只好统一画成"未选中", 于是点了「对话」之后窗口开在旁边, 侧边栏
+			 * 却还是一副什么都没发生的样子。
+			 *
+			 * 注意 VisibilityChanged 里本来就在调 InvalidateSnapshot("windows") ——
+			 * 也就是说刷新这条路早就接好了, 缺的一直是这一段本身, 而缺了也不报错。 */
+			windows = new
+			{
+				chat = Services.Windows.IsWindowVisible(WindowLabels.Chat),
+				models = Services.Windows.IsWindowVisible(WindowLabels.Models),
+				memory = Services.Windows.IsWindowVisible(WindowLabels.Memory),
+				settings = Services.Windows.IsWindowVisible(WindowLabels.Settings),
+			},
 			platform = new
 			{
 				os = PlatformOsName(),

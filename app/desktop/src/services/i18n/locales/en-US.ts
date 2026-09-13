@@ -163,6 +163,8 @@ export default {
 				settings: "Settings",
 				about: "About",
 				back: "Back",
+				openGroup: "Open",
+				opensWindow: " (opens a window)",
 			},
 			home: {
 				modelMissingTitle: "Local Live2D model unavailable",

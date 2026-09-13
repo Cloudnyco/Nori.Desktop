@@ -163,6 +163,8 @@ export default {
 				settings: "设置",
 				about: "声明",
 				back: "返回",
+				openGroup: "打开",
+				opensWindow: "（另开窗口）",
 			},
 			home: {
 				modelMissingTitle: "本地 Live2D 模型不可用",

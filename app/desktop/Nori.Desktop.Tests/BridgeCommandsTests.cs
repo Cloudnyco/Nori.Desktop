@@ -285,7 +285,8 @@ public partial class BridgeCommandsTests : IDisposable
 
 		public bool IsWindowVisible(string label) => _visible.TryGetValue(label, out bool visible) && visible;
 
-		private void SetVisible(string label, bool visible)
+		/// <summary>测试替身, 直接拨可见性。用例要造「某个窗口开着」这种局面。</summary>
+		public void SetVisible(string label, bool visible)
 		{
 			if (IsWindowVisible(label) == visible) return;
 			_visible[label] = visible;
