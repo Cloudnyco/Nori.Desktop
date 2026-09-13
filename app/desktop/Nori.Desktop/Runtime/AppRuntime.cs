@@ -876,7 +876,6 @@ public sealed class AppRuntime : IAsyncDisposable
 		RgbChannel,
 		AmbientChannel,
 		AccentChannel,
-		WallpaperChannel,
 	];
 
 	/// <summary>灯效通道。设备探测与重连由它自己管。</summary>
@@ -894,11 +893,6 @@ public sealed class AppRuntime : IAsyncDisposable
 
 	private AccentColorChannel AccentChannel => _accentChannel ??= new AccentColorChannel(Appearance, DesktopBackup);
 
-	private WallpaperChannel WallpaperChannel => _wallpaperChannel ??= new WallpaperChannel(
-		Appearance,
-		DesktopBackup,
-		Path.Combine(Services.Paths.DataRoot, "expression", "wallpaper.jpg"));
-
 	/// <summary>
 	/// 把改过的桌面设置还回去。
 	///
@@ -914,7 +908,7 @@ public sealed class AppRuntime : IAsyncDisposable
 
 	public void RestoreDesktopState()
 	{
-		foreach (Action restore in new Action[] {AccentChannel.Restore, WallpaperChannel.Restore})
+		foreach (Action restore in new Action[] {AccentChannel.Restore})
 		{
 			try
 			{
@@ -1018,7 +1012,6 @@ public sealed class AppRuntime : IAsyncDisposable
 	private RgbLightingChannel? _rgbChannel;
 	private AmbientSoundChannel? _ambientChannel;
 	private AccentColorChannel? _accentChannel;
-	private WallpaperChannel? _wallpaperChannel;
 	private ISandboxLauncher? _sandbox;
 	private IScreenCapture? _screenCapture;
 	private IVisionAnalyzer? _visionAnalyzer;

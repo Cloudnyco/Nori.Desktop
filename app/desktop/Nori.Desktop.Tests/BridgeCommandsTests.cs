@@ -937,9 +937,8 @@ public partial class BridgeCommandsTests : IDisposable
 		Assert.True(tray.TryGetProperty("enabled", out _));
 		Assert.True(tray.TryGetProperty("available", out _));
 
-		// 改整个桌面的两条默认关。
+		// 改整个系统那一条默认关。
 		Assert.False(expression.GetProperty("expression_accent_color").GetProperty("enabled").GetBoolean());
-		Assert.False(expression.GetProperty("expression_wallpaper").GetProperty("enabled").GetBoolean());
 
 		// 她自己身上那两条默认开。
 		Assert.True(expression.GetProperty("expression_tray_icon").GetProperty("enabled").GetBoolean());

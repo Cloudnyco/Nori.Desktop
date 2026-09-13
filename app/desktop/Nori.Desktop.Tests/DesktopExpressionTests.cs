@@ -15,7 +15,7 @@ namespace Nori.Desktop.Tests;
 /// 重点全在**还原**上。改了用户机器上的持久状态就必须有还原路径 —— 这和 AppContainer 的
 /// ACL 授权是同一类，那次是写了文档没接调用点，这次从一开始就把它做进来并测到。
 ///
-/// 用假的桌面外观实现，用例不碰真实注册表与壁纸。
+/// 用假的桌面外观实现，用例不碰真实注册表。
 /// </summary>
 public sealed class DesktopExpressionTests : IDisposable
 {
@@ -23,21 +23,9 @@ public sealed class DesktopExpressionTests : IDisposable
 	{
 		public bool IsAvailable { get; init; } = true;
 
-		public string? Wallpaper { get; set; } = @"D:\wallpaper\original.jpg";
-
 		public uint? Accent { get; set; } = 0xFFD4C677;   // 实测值：AABBGGRR
 
 		public List<Color> AccentWrites { get; } = [];
-
-		public List<string> WallpaperWrites { get; } = [];
-
-		public string? GetWallpaper() => Wallpaper;
-
-		public void SetWallpaper(string path)
-		{
-			WallpaperWrites.Add(path);
-			Wallpaper = path;
-		}
 
 		public uint? GetAccentColor() => Accent;
 
@@ -245,47 +233,6 @@ public sealed class DesktopExpressionTests : IDisposable
 
 		Assert.False(channel.IsAvailable);
 		Assert.Empty(appearance.AccentWrites);
-	}
-
-	// ---- 壁纸 ----
-
-	[Fact]
-	public void 壁纸是全局档()
-	{
-		Assert.Equal(
-			Intrusiveness.Global,
-			new WallpaperChannel(new FakeAppearance(), _backup, Path.Combine(Path.GetTempPath(), "x.jpg")).Level);
-	}
-
-	[Fact]
-	public void 还原把壁纸改回原来那张()
-	{
-		FakeAppearance appearance = new() {Wallpaper = @"D:\wallpaper\original.jpg"};
-		string original = Path.Combine(Path.GetTempPath(), $"nori-wp-{Guid.NewGuid():N}.jpg");
-		File.WriteAllBytes(original, [1, 2, 3]);
-		appearance.Wallpaper = original;
-
-		WallpaperChannel channel = new(appearance, _backup, Path.Combine(Path.GetTempPath(), "generated.jpg"));
-		_backup.Remember(WallpaperChannel.ChannelKey, appearance.GetWallpaper());
-		appearance.Wallpaper = "generated.jpg";
-
-		channel.Restore();
-
-		Assert.Equal(original, appearance.WallpaperWrites[^1]);
-		Assert.False(_backup.HasBackup(WallpaperChannel.ChannelKey));
-		File.Delete(original);
-	}
-
-	/// <summary>原图已经被用户删掉时不要去设一个不存在的路径 —— 那会让桌面变成纯黑。</summary>
-	[Fact]
-	public void 原壁纸文件已不存在时不设置()
-	{
-		FakeAppearance appearance = new();
-		_backup.Remember(WallpaperChannel.ChannelKey, @"D:\wallpaper\已经删掉了.jpg");
-
-		new WallpaperChannel(appearance, _backup, Path.Combine(Path.GetTempPath(), "g.jpg")).Restore();
-
-		Assert.Empty(appearance.WallpaperWrites);
 	}
 
 	// ---- 灯效（A6）----
