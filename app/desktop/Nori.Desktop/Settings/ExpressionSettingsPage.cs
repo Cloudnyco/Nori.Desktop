@@ -56,7 +56,7 @@ public sealed class ExpressionSettingsPage : SettingsPageBase
 				"随情绪切换背景音景。需要你自己把音频文件放进数据目录的 soundscapes 文件夹。",
 				"Switches the background soundscape. Put your own audio files in the soundscapes folder first."));
 
-		SettingsSectionViewModel desktop = AddSection(new("整个桌面", "Your whole desktop"));
+		SettingsSectionViewModel desktop = AddSection(new("整个系统", "System-wide"));
 		AddChannel(
 			desktop,
 			AccentColorChannel.ChannelKey,
@@ -64,20 +64,12 @@ public sealed class ExpressionSettingsPage : SettingsPageBase
 			new(
 				"Windows 的强调色随情绪变化，你看到的每个窗口都会受影响。关掉时会还原成你原来的颜色。",
 				"Windows accent colour follows her mood, affecting every window. Restores your original on switch-off."));
-
-		AddChannel(
-			desktop,
-			WallpaperChannel.ChannelKey,
-			new("桌面壁纸", "Desktop wallpaper"),
-			new(
-				"壁纸换成随情绪变化的渐变图。关掉时会还原成你原来那张。",
-				"Replaces the wallpaper with a mood gradient. Restores your original on switch-off."));
 	}
 
 	/// <summary>
 	/// 加一条通道：一个开关加一行可用性。
 	///
-	/// 默认值按侵入等级取 —— 整个桌面那两条默认关。用户没表过态时不该被改掉桌面的颜色。
+	/// 默认值按侵入等级取 —— 整个系统那一档默认关。用户没表过态时不该被改掉桌面的颜色。
 	/// </summary>
 	private void AddChannel(
 		SettingsSectionViewModel section, string key, SettingsText label, SettingsText description)
@@ -107,9 +99,9 @@ public sealed class ExpressionSettingsPage : SettingsPageBase
 			readOnly: true);
 	}
 
-	/// <summary>整个桌面那一档默认关，其余默认开。与 <c>AppRuntime</c> 的判据一致。</summary>
+	/// <summary>整个系统那一档默认关，其余默认开。与 <c>AppRuntime</c> 的判据一致。</summary>
 	private static bool DefaultOf(string key) =>
-		key is not (AccentColorChannel.ChannelKey or WallpaperChannel.ChannelKey);
+		key != AccentColorChannel.ChannelKey;
 
 	private string AvailabilityText(JsonElement snapshot, string key)
 	{
