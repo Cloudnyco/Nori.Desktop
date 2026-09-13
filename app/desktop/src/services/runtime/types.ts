@@ -156,7 +156,7 @@ export interface AiChatState {
 	hasApiKey: boolean
 }
 
-/** AI 大脑状态 (包含扁平兼容字段与统一 chat/embedding 嵌套结构) */
+/** 模型服务状态 (包含扁平兼容字段与统一 chat/embedding 嵌套结构) */
 export interface AiState extends AiChatState {
 	chat?: AiChatState
 	embedding?: EmbeddingState
@@ -987,7 +987,7 @@ export interface McpToolResultDto {
 	isError: boolean
 }
 
-/** 交互反应模式: 本地动作 / AI 大脑响应 */
+/** 交互反应模式: 本地动作 / 模型响应 */
 export type InteractionReactionMode = "local" | "ai"
 
 /** 交互动作触发模式: 无 / 随机 / 指定 */

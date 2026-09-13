@@ -28,18 +28,18 @@ public sealed class ExpressionSettingsPage : SettingsPageBase
 			lifetimeToken)
 	{
 		AddChannel(
-			AddSection(new("她自己", "On her")),
+			AddSection(new("应用界面", "In the app")),
 			TrayIconChannel.ChannelKey,
 			new("托盘图标", "Tray icon"),
-			new("托盘上的小圆点随情绪变色。", "The tray dot takes on her mood colour."));
+			new("托盘图标随当前情绪变色。", "The tray icon changes colour with her current emotion."));
 
 		AddChannel(
-			AddSection(new("她自己", "On her")),
+			AddSection(new("应用界面", "In the app")),
 			SpeechBorderChannel.ChannelKey,
 			new("对话气泡描边", "Speech bubble border"),
-			new("她说话时气泡的描边随情绪变色。", "Her speech bubble border takes on her mood colour."));
+			new("对话气泡的描边随当前情绪变色。", "The speech bubble border changes colour with her current emotion."));
 
-		SettingsSectionViewModel around = AddSection(new("你周围", "Around you"));
+		SettingsSectionViewModel around = AddSection(new("外设与音频", "Peripherals and audio"));
 		AddChannel(
 			around,
 			RgbLightingChannel.ChannelKey,

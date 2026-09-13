@@ -24,9 +24,9 @@ public sealed class SettingsViewModel : SettingsObservableObject, IDisposable
 	/// </summary>
 	private static readonly (string Key, SettingsText Title)[] GroupOrder =
 	[
-		("self", new("她本人", "Nori herself")),
-		("reach", new("她能做什么", "What she can do")),
-		("app", new("这个应用", "This app")),
+		("self", new("对话与表现", "Conversation & expression")),
+		("reach", new("权限与能力", "Permissions & capabilities")),
+		("app", new("应用", "Application")),
 	];
 
 	private readonly SettingsService _service;

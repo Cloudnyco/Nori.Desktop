@@ -5,7 +5,7 @@ namespace Nori.Desktop.Settings;
 /// <summary>
 /// 文件访问设置页：她能看哪个文件夹，以及一轮里最多连续用多少次工具。
 ///
-/// 归入 `core` 组，与「AI 大脑」相邻：前者决定模型与推理配置，本页决定可访问的资源范围。
+/// 归入 `core` 组，与「模型服务」相邻：前者决定模型与推理配置，本页决定可访问的资源范围。
 /// </summary>
 public sealed class WorkspaceSettingsPage : SettingsPageBase
 {
@@ -17,10 +17,10 @@ public sealed class WorkspaceSettingsPage : SettingsPageBase
 	/// </summary>
 	private static readonly IReadOnlyList<SettingsOption> GearOptions =
 	[
-		new(GearOptionAsk, new("逐次确认（默认）", "Ask every time (default)")),
-		new("session", new("本轮记住：同一个工具这轮只问一次", "Remember for this reply: ask once per tool")),
-		new("trusted", new("完全授权：日常操作不再问（接管鼠标键盘仍然会问）", "Full: everyday actions run silently; taking over mouse and keyboard still asks")),
-		new("bypass", new("完全放行：什么都不问，含接管鼠标键盘（4 小时后降回完全授权）", "Bypass: never ask, mouse and keyboard takeover included (falls back to Full after 4 hours)")),
+		new(GearOptionAsk, new("逐次确认（默认）", "Confirm every time (default)")),
+		new("session", new("本轮记住：同一工具每轮只确认一次", "Remember for this reply: confirm once per tool")),
+		new("trusted", new("完全授权：常规操作不再确认（接管鼠标键盘仍需确认）", "Full: routine actions skip confirmation; mouse and keyboard control still requires it")),
+		new("bypass", new("完全放行：一律不确认，含接管鼠标键盘（4 小时后降回完全授权）", "Bypass: no confirmation at all, mouse and keyboard control included (falls back to Full after 4 hours)")),
 	];
 
 	/// <summary>创建文件访问设置页。</summary>
@@ -30,7 +30,7 @@ public sealed class WorkspaceSettingsPage : SettingsPageBase
 			"workspace",
 			"reach",
 			new("访问权限", "Access"),
-			new("她能碰到你哪些东西：文件夹、可运行的命令、屏幕。", "What she can reach: folders, runnable commands, and your screen."),
+			new("她可访问的范围：工作文件夹、具名任务、屏幕内容。", "Scope she can access: the working folder, named tasks, and screen contents."),
 			lifetimeToken)
 	{
 		SettingsSectionViewModel folder = AddSection(new("工作文件夹", "Working folder"));
@@ -128,10 +128,10 @@ public sealed class WorkspaceSettingsPage : SettingsPageBase
 		AddField(
 			permission,
 			"permissionGear",
-			new("动手之前问不问", "Ask before acting"),
+			new("何时请求确认", "When to ask for confirmation"),
 			new(
-				"只影响问不问，不影响她能碰到什么 —— 工作文件夹之外的文件、没配过的命令，哪一档都碰不到。",
-				"Only changes whether she asks. It never widens what she can reach: files outside the working folder and unconfigured commands stay off limits at every setting."),
+				"只改变确认时机，不扩大可访问范围。工作文件夹之外的文件与未配置的任务，任何档位都不可执行。",
+				"Only changes when confirmation is requested; it never widens the accessible scope. Files outside the working folder and unconfigured tasks remain unavailable at every setting."),
 			SettingsEditorKind.Choice,
 			snapshot => SettingsSnapshotReader.String(snapshot, GearOptionAsk, "workspace", "permissions", "gear"),
 			GearOptionAsk,
@@ -189,8 +189,8 @@ public sealed class WorkspaceSettingsPage : SettingsPageBase
 		if (SettingsSnapshotReader.Boolean(snapshot, false, "workspace", "permissions", "safeMode"))
 		{
 			return IsEnglish
-				? "Safe mode: every action that needs confirmation is refused, whatever this is set to."
-				: "安全模式：需要确认的操作一律拒绝，这里选什么都不算数。";
+				? "Safe mode: all actions requiring confirmation are refused; this setting has no effect."
+				: "安全模式：需要确认的操作一律拒绝，此设置不生效。";
 		}
 
 		string stored = SettingsSnapshotReader.String(snapshot, GearOptionAsk, "workspace", "permissions", "gear");
@@ -198,8 +198,8 @@ public sealed class WorkspaceSettingsPage : SettingsPageBase
 		if (stored != effective)
 		{
 			return IsEnglish
-				? "Bypass has expired; running as Full. Pick it again for another 4 hours."
-				: "完全放行已到期，现在按完全授权走。要继续就再选一次。";
+				? "Bypass has expired; now running as Full. Select it again to renew for 4 hours."
+				: "完全放行已到期，当前按完全授权执行。需要继续请重新选择。";
 		}
 
 		if (stored == "bypass")
@@ -208,19 +208,19 @@ public sealed class WorkspaceSettingsPage : SettingsPageBase
 				snapshot, 0, "workspace", "permissions", "bypassRemainingSeconds");
 			int minutes = Math.Max(1, seconds / 60);
 			return IsEnglish
-				? $"Nothing will be asked for the next {minutes} min, mouse and keyboard takeover included."
-				: $"接下来 {minutes} 分钟内她做什么都不问你，包括接管鼠标键盘。";
+				? $"No confirmation will be requested for the next {minutes} min, mouse and keyboard control included."
+				: $"接下来 {minutes} 分钟内不再请求确认，包括接管鼠标键盘。";
 		}
 
 		return stored switch
 		{
 			"trusted" => IsEnglish
-				? "Everyday actions run without asking; taking over your mouse or keyboard still asks."
-				: "日常操作直接做，接管鼠标键盘仍然会问你。",
+				? "Routine actions execute without confirmation; mouse and keyboard control still requires it."
+				: "常规操作直接执行，接管鼠标键盘仍需确认。",
 			"session" => IsEnglish
-				? "Each tool asks once per reply, then stays allowed until that reply ends."
-				: "每个工具在一轮回复里只问一次，这轮结束后重新开始问。",
-			_ => IsEnglish ? "Every action that needs confirmation asks first." : "每一次需要确认的操作都会先问你。",
+				? "Each tool requires confirmation once per reply, then stays approved until that reply ends."
+				: "每个工具在一轮回复内只需确认一次，该轮结束后重新计算。",
+			_ => IsEnglish ? "Every action requiring confirmation is asked first." : "每一次需要确认的操作都会先请求确认。",
 		};
 	}
 
