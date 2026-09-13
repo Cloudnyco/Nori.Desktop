@@ -53,9 +53,9 @@ const aiConfigured = computed(() => RUNTIME.snapshot.value?.ai.configured ?? fal
 
 const NAV_ITEMS = computed<{key: NavKey; label: string; icon: IconName; badge?: boolean}[]>(() => [
 	{key: "home", label: I18N.value.nav.home, icon: "noriOS"},
-	{key: "talk", label: I18N.value.nav.talk, icon: "send"},
+	{key: "talk", label: I18N.value.nav.talk, icon: "bot"},
 	{key: "model", label: I18N.value.nav.model, icon: "package"},
-	{key: "memory", label: I18N.value.nav.memory, icon: "server"},
+	{key: "memory", label: I18N.value.nav.memory, icon: "memory"},
 	{key: "settings", label: I18N.value.nav.settings, icon: "settings", badge: !aiConfigured.value},
 ])
 
