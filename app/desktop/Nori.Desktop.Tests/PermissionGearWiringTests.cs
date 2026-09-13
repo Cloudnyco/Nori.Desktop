@@ -248,4 +248,44 @@ public partial class BridgeCommandsTests
 			.WaitAsync(TimeSpan.FromSeconds(2)));
 		Assert.False(SawApprovalCard(source));
 	}
+
+	/* ── 自动化：接管鼠标键盘 ──────────────────────────────────────────────
+	 * 这条路有自己的一套审批，不走工具那条。它是「写了档位但漏接一处」最可能
+	 * 发生的地方，所以两档都从真实入口验。 */
+
+	private static Nori.Core.Automation.AutomationApprovalRequest AutomationRequest() => new(
+		Guid.NewGuid(),
+		Guid.NewGuid(),
+		[Nori.Core.Automation.AutomationActionKind.Click],
+		DateTimeOffset.UtcNow);
+
+	/// <summary>接管鼠标键盘按 dangerous 算：「完全授权」这一档仍然要问。</summary>
+	[Fact]
+	public async Task 完全授权下自动化仍然要问()
+	{
+		await SetGearAsync("trusted");
+		using CancellationTokenSource cts = new();
+
+		Task<Nori.Core.Automation.AutomationApprovalDecision> decision =
+			_runtime.RequestAutomationApprovalAsync(AutomationRequest(), cts.Token);
+
+		// 没有立刻拿到结论 —— 说明它在等人，而不是自己放行了。
+		Assert.False(decision.IsCompleted);
+		await cts.CancelAsync();
+		try { await decision.WaitAsync(TimeSpan.FromSeconds(2)); }
+		catch (OperationCanceledException) { /* 取消即未放行，正是要的 */ }
+	}
+
+	/// <summary>「完全放行」才免掉。这也是它和完全授权在今天唯一真实的差别。</summary>
+	[Fact]
+	public async Task 完全放行下自动化不再问()
+	{
+		await SetGearAsync("bypass");
+
+		Nori.Core.Automation.AutomationApprovalDecision decision = await _runtime
+			.RequestAutomationApprovalAsync(AutomationRequest(), CancellationToken.None)
+			.WaitAsync(TimeSpan.FromSeconds(2));
+
+		Assert.Equal(Nori.Core.Automation.AutomationApprovalOutcome.Approved, decision.Outcome);
+	}
 }

@@ -1325,7 +1325,7 @@ public sealed class AppRuntime : IAsyncDisposable
 	}
 
 	/// <summary>等待桌面或浏览器高风险动作的用户决定；未装配或取消时一律不自动放行。</summary>
-	private async Task<AutomationApprovalDecision> RequestAutomationApprovalAsync(
+	internal async Task<AutomationApprovalDecision> RequestAutomationApprovalAsync(
 		AutomationApprovalRequest request,
 		CancellationToken cancellationToken)
 	{
@@ -1334,6 +1334,26 @@ public sealed class AppRuntime : IAsyncDisposable
 			Services.Automation?.RecordApprovalOutcome(request, AutomationApprovalOutcome.Denied);
 			return AutomationApprovalDecision.Create(request, AutomationApprovalOutcome.Denied, DateTimeOffset.UtcNow);
 		}
+
+		/* ── 档位 ──────────────────────────────────────────────────────────
+		 * 接管鼠标键盘按 **dangerous** 算，不按 confirm：
+		 *
+		 * 它和「改一个文件」不是一个量级 —— 动的是你正在用的那套输入设备，出错时
+		 * 你连夺回控制的动作都要和她抢。所以「完全授权」这一档仍然逐次问，只有
+		 * 「完全放行」才免掉。这也正是那两档在今天唯一真实的差别：内置工具目前
+		 * 没有一个注册成 dangerous。
+		 *
+		 * 自动化自己的那几个开关（allowPointer / allowKeyboard / allowScroll）在这
+		 * 之外，档位放宽不了它们 —— 没打开的东西，哪一档都动不了。 */
+		if (Permissions.Decide(EffectiveGear, request.RequestId.ToString("D"), "automation", "dangerous")
+			== PermissionDecision.Allow)
+		{
+			Services.Logger.Write(LogSource.Backend, "info",
+				$"按档位自动放行自动化：{string.Join('/', request.ActionKinds)}（{ToolPermissionPolicy.Format(EffectiveGear)}）");
+			Services.Automation?.RecordApprovalOutcome(request, AutomationApprovalOutcome.Approved);
+			return AutomationApprovalDecision.Create(request, AutomationApprovalOutcome.Approved, DateTimeOffset.UtcNow);
+		}
+
 		TaskCompletionSource<bool> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		PendingDesktopApproval approval = new(request, tcs);
 		if (!_desktopApprovals.TryAdd(request.RequestId.ToString("D"), approval))

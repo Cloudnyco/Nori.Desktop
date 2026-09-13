@@ -19,8 +19,8 @@ public sealed class WorkspaceSettingsPage : SettingsPageBase
 	[
 		new(GearOptionAsk, new("逐次确认（默认）", "Ask every time (default)")),
 		new("session", new("本轮记住：同一个工具这轮只问一次", "Remember for this reply: ask once per tool")),
-		new("trusted", new("完全授权：日常操作不再问", "Full: stop asking for everyday actions")),
-		new("bypass", new("完全放行：什么都不问（4 小时后自动降回完全授权）", "Bypass: never ask (falls back to Full after 4 hours)")),
+		new("trusted", new("完全授权：日常操作不再问（接管鼠标键盘仍然会问）", "Full: everyday actions run silently; taking over mouse and keyboard still asks")),
+		new("bypass", new("完全放行：什么都不问，含接管鼠标键盘（4 小时后降回完全授权）", "Bypass: never ask, mouse and keyboard takeover included (falls back to Full after 4 hours)")),
 	];
 
 	/// <summary>创建文件访问设置页。</summary>
@@ -208,15 +208,15 @@ public sealed class WorkspaceSettingsPage : SettingsPageBase
 				snapshot, 0, "workspace", "permissions", "bypassRemainingSeconds");
 			int minutes = Math.Max(1, seconds / 60);
 			return IsEnglish
-				? $"Nothing will be asked for the next {minutes} min."
-				: $"接下来 {minutes} 分钟内她做什么都不会问你。";
+				? $"Nothing will be asked for the next {minutes} min, mouse and keyboard takeover included."
+				: $"接下来 {minutes} 分钟内她做什么都不问你，包括接管鼠标键盘。";
 		}
 
 		return stored switch
 		{
 			"trusted" => IsEnglish
-				? "Everyday actions run without asking; high-risk ones still ask."
-				: "日常操作直接做，高风险的仍然会问。",
+				? "Everyday actions run without asking; taking over your mouse or keyboard still asks."
+				: "日常操作直接做，接管鼠标键盘仍然会问你。",
 			"session" => IsEnglish
 				? "Each tool asks once per reply, then stays allowed until that reply ends."
 				: "每个工具在一轮回复里只问一次，这轮结束后重新开始问。",
