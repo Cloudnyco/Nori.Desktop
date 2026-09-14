@@ -41,6 +41,7 @@ public static class WaveDecoder
 		ushort bitsPerSample = 0;
 		ReadOnlySpan<byte> data = default;
 		bool sawFormat = false;
+		bool sawData = false;
 
 		int offset = 12;
 		while (offset + 8 <= bytes.Length)
@@ -66,6 +67,7 @@ public static class WaveDecoder
 			else if (Matches(id, "data"))
 			{
 				data = bytes.Slice(body, size);
+				sawData = true;
 			}
 
 			// 块长为奇数时后面跟一个填充字节。少算它，后面所有块的位置都会错。
@@ -73,7 +75,9 @@ public static class WaveDecoder
 		}
 
 		if (!sawFormat) throw new AudioDecodeException("WAV 里没有 fmt 块");
-		if (data.IsEmpty) throw new AudioDecodeException("WAV 里没有 data 块");
+		// 「没有 data 块」和「data 块是空的」是两回事：零长度录音（按下就松开）
+		// 产出的就是后者，它是合法 WAV，不该被当成坏文件。
+		if (!sawData) throw new AudioDecodeException("WAV 里没有 data 块");
 		if (channels is 0 or > 32) throw new AudioDecodeException($"WAV 声道数不合理: {channels}");
 		if (sampleRate is <= 0 or > 768_000) throw new AudioDecodeException($"WAV 采样率不合理: {sampleRate}");
 

@@ -21,6 +21,7 @@ internal static class WasapiNativeApi
 	internal static readonly Guid ClsidMmDeviceEnumerator = new("BCDE0395-E52F-467C-8E3D-C4579291692E");
 	internal static readonly Guid IidAudioClient = new("1CB9AD4C-DBFA-4C32-B178-C2F568A703B2");
 	internal static readonly Guid IidAudioRenderClient = new("F294ACFC-3146-4483-A7BF-ADDCA7C260E2");
+	internal static readonly Guid IidAudioCaptureClient = new("C8ADBD64-E71E-48A0-A4DE-185C395CD317");
 
 	/// <summary>WAVE_FORMAT_IEEE_FLOAT。共享模式的混音格式几乎总是它。</summary>
 	internal const ushort FormatFloat = 3;
@@ -69,9 +70,72 @@ internal static class WasapiNativeApi
 		void Activate([In] ref Guid iid, uint classContext, IntPtr activationParams,
 			[MarshalAs(UnmanagedType.IUnknown)] out object instance);
 
-		void OpenPropertyStore(uint access, out IntPtr properties);
+		void OpenPropertyStore(uint access, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore properties);
 		void GetId(out IntPtr id);
 		void GetState(out uint state);
+	}
+
+	/// <summary>读设备属性。这里只用来取一个可读的设备名。</summary>
+	[ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+	[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+	internal interface IPropertyStore
+	{
+		void GetCount(out uint count);
+		void GetAt(uint index, out PropertyKey key);
+		void GetValue([In] ref PropertyKey key, out PropVariant value);
+		void SetValue([In] ref PropertyKey key, [In] ref PropVariant value);
+		void Commit();
+	}
+
+	[StructLayout(LayoutKind.Sequential, Pack = 4)]
+	internal struct PropertyKey(Guid formatId, uint propertyId)
+	{
+		internal Guid FormatId = formatId;
+		internal uint PropertyId = propertyId;
+	}
+
+	/// <summary>只取字符串那一种，所以按 VT_LPWSTR 的布局手写。</summary>
+	[StructLayout(LayoutKind.Sequential)]
+	internal struct PropVariant
+	{
+		internal ushort VarType;
+		private readonly ushort _reserved1;
+		private readonly ushort _reserved2;
+		private readonly ushort _reserved3;
+		internal IntPtr Value;
+		private readonly IntPtr _padding;
+	}
+
+	/// <summary>PKEY_Device_FriendlyName。</summary>
+	internal static PropertyKey FriendlyNameKey =>
+		new(new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"), 14);
+
+	internal const uint StorageRead = 0;
+
+	[DllImport("ole32.dll", PreserveSig = false)]
+	internal static extern void PropVariantClear(ref PropVariant value);
+
+	/// <summary>取设备的可读名字。取不到就返回空 —— 名字只是给日志和界面看的。</summary>
+	internal static string FriendlyName(IMmDevice device)
+	{
+		try
+		{
+			device.OpenPropertyStore(StorageRead, out IPropertyStore store);
+			PropertyKey key = FriendlyNameKey;
+			store.GetValue(ref key, out PropVariant value);
+			try
+			{
+				return value.Value == IntPtr.Zero ? "" : Marshal.PtrToStringUni(value.Value) ?? "";
+			}
+			finally
+			{
+				PropVariantClear(ref value);
+			}
+		}
+		catch
+		{
+			return "";
+		}
 	}
 
 	[ComImport, Guid("1CB9AD4C-DBFA-4C32-B178-C2F568A703B2")]
@@ -104,6 +168,22 @@ internal static class WasapiNativeApi
 	{
 		void GetBuffer(uint requestedFrames, out IntPtr buffer);
 		void ReleaseBuffer(uint writtenFrames, uint flags);
+	}
+
+	[ComImport, Guid("C8ADBD64-E71E-48A0-A4DE-185C395CD317")]
+	[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+	internal interface IAudioCaptureClient
+	{
+		/// <summary>
+		/// 取一整包。<paramref name="flags"/> 带 SILENT 时缓冲内容没有意义。
+		/// 取了就必须整包 ReleaseBuffer —— 剩下的不会留到下次。
+		/// </summary>
+		void GetBuffer(out IntPtr buffer, out uint frames, out uint flags,
+			out ulong devicePosition, out ulong counterPosition);
+
+		void ReleaseBuffer(uint frames);
+
+		void GetNextPacketSize(out uint frames);
 	}
 
 	/// <summary>

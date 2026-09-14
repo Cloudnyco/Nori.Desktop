@@ -187,6 +187,30 @@ public sealed class WaveDecoderTests
 		Assert.NotEmpty(failure.Message);
 	}
 
+	/// <summary>
+	/// 零长度的 data 块是**合法**的：按下录音键立刻松开就会产出这种文件。
+	/// 把它和「压根没有 data 块」当成一回事，会让一次空录音变成一个错误。
+	/// </summary>
+	[Fact]
+	public void 空的data块是合法的()
+	{
+		PcmAudio decoded = WaveDecoder.Decode(Wave([]));
+
+		Assert.Empty(decoded.Samples);
+		Assert.Equal(0, decoded.FrameCount);
+		Assert.Equal(TimeSpan.Zero, decoded.Duration);
+	}
+
+	[Fact]
+	public void 真的没有data块才报错()
+	{
+		byte[] bytes = Wave([1, 2]);
+		// 把 data 的块名改掉，等于这份文件里没有 data。
+		bytes[bytes.Length - 4 - 4 - 4] = (byte) 'X';
+
+		Assert.Throws<AudioDecodeException>(() => WaveDecoder.Decode(bytes));
+	}
+
 	[Fact]
 	public void 不支持的位宽抛错而不是出噪声()
 	{
