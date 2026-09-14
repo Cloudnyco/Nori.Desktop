@@ -40,7 +40,12 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 		_services = services;
 		foreach (WindowDefinition definition in WindowDefinition.All)
 		{
-			if (definition.Label == WindowLabels.Init)
+			if (definition.Label == WindowLabels.FirstRun)
+			{
+				// 首次运行向导也已经是原生的：和初始化窗口一样不碰音频。
+				_windows[definition.Label] = new FirstRunWindow(definition, services);
+			}
+			else if (definition.Label == WindowLabels.Init)
 			{
 				// 初始化窗口已经是原生的：它自足，不碰音频也不碰插件，迁过来之后
 				// 启动路径上少一次 WebView 冷启动。
