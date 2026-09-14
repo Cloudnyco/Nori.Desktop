@@ -142,7 +142,7 @@ public sealed class NativeAudioPlaybackTests
 		await playback.PlayAsync(Bytes(), CancellationToken.None);
 
 		Assert.Equal(0, levels[^1]);
-		Assert.True(levels.Take(levels.Count - 1).Any(level => level > 0.1));
+		Assert.Contains(levels.Take(levels.Count - 1), level => level > 0.1);
 	}
 
 	/// <summary>静音不该让嘴动。</summary>

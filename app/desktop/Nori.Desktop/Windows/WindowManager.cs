@@ -40,7 +40,13 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 		_services = services;
 		foreach (WindowDefinition definition in WindowDefinition.All)
 		{
-			if (definition.Label == WindowLabels.FirstRun)
+			if (definition.Label == WindowLabels.Main)
+			{
+				// 主界面也原生了：迁移的最后一块，WebView 在主路径上就此退出。
+				MainWindow mainWindow = new(definition, services);
+				_windows[definition.Label] = mainWindow;
+			}
+			else if (definition.Label == WindowLabels.FirstRun)
 			{
 				// 首次运行向导也已经是原生的：和初始化窗口一样不碰音频。
 				_windows[definition.Label] = new FirstRunWindow(definition, services);
