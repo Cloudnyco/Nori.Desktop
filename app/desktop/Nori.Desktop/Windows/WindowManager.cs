@@ -40,7 +40,14 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 		_services = services;
 		foreach (WindowDefinition definition in WindowDefinition.All)
 		{
-			if (definition.Label == WindowLabels.Pet)
+			if (definition.Label == WindowLabels.Init)
+			{
+				// 初始化窗口已经是原生的：它自足，不碰音频也不碰插件，迁过来之后
+				// 启动路径上少一次 WebView 冷启动。
+				InitWindow initWindow = new(definition, services);
+				_windows[definition.Label] = initWindow;
+			}
+			else if (definition.Label == WindowLabels.Pet)
 			{
 				PetWindow petWindow = new(definition, services);
 				petWindow.Closing += (_, args) =>
