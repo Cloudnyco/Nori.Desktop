@@ -245,6 +245,62 @@ public sealed class NativeAudioPlaybackTests
 			Assert.Equal(device.Written[frame * 2], device.Written[frame * 2 + 1]);
 	}
 
+	/// <summary>
+	/// 环绕设备上只占前置左右，其余留空。
+	///
+	/// 实测这台机器的默认输出就是 48000 Hz / 8 声道。早先那版「源声道不够就重复
+	/// 最后一个」会把语音同时送进重低音和环绕音箱 —— 低频被 LFE 轰一遍，
+	/// 后方也在说话。这条守着它。
+	/// </summary>
+	[Fact]
+	public async Task 环绕设备上只占前置左右()
+	{
+		FakeDevice device = new() {Force = new AudioFormat(44100, 8)};
+		PcmAudio mono = Tone(frames: 50, channels: 1, amplitude: 0.8f);
+		using NativeAudioPlayback playback = Playback(device, mono);
+
+		await playback.PlayAsync(Bytes(), CancellationToken.None);
+
+		Assert.Equal(400, device.Written.Count);
+		for (int frame = 0; frame < 50; frame++)
+		{
+			// 前置左右拿到同一份信号。
+			Assert.Equal(device.Written[frame * 8], device.Written[frame * 8 + 1]);
+			// 中置、重低音、四个环绕一律静音。
+			for (int channel = 2; channel < 8; channel++)
+				Assert.Equal(0f, device.Written[frame * 8 + channel]);
+		}
+		// 而且确实有信号，不是整段静音。
+		Assert.Contains(device.Written, sample => Math.Abs(sample) > 0.1f);
+	}
+
+	/// <summary>
+	/// **同一段音频，在立体声设备和 7.1 设备上给出的电平必须一样。**
+	///
+	/// 实机撞出来的：只铺前置两个声道之后，8 声道设备上的 RMS 正好是立体声设备的
+	/// 一半（sqrt(2/8)），也就是嘴张多大取决于用户的音响是几声道。电平因此改成
+	/// 取自一条与设备格式无关的单声道轨。
+	/// </summary>
+	[Fact]
+	public async Task 电平不随设备声道数变()
+	{
+		async Task<double> PeakOn(int channels)
+		{
+			FakeDevice device = new() {Force = new AudioFormat(44100, channels)};
+			using NativeAudioPlayback playback = Playback(device, Tone(frames: 4410, amplitude: 0.5f));
+			double peak = 0;
+			playback.VolumeSampled += level => peak = Math.Max(peak, level);
+			await playback.PlayAsync(Bytes(), CancellationToken.None);
+			return peak;
+		}
+
+		double stereo = await PeakOn(2);
+		double surround = await PeakOn(8);
+
+		Assert.True(stereo > 0.1, $"立体声下应当有可观的电平，实际 {stereo}");
+		Assert.Equal(stereo, surround, 3);
+	}
+
 	[Fact]
 	public async Task 格式一致时不动样本()
 	{
