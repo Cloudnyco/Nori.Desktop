@@ -1858,16 +1858,11 @@ public sealed class BridgeCommands
 		bool visible = await OnUi(() => (object?)source.IsVisible) is true;
 		if (!visible) throw new InvalidOperationException("初始化窗口不可见");
 
-		string? modelId = SupportedModelIds.Normalize(_services.Config.GetStringOr(ConfigStore.KeySelectedModel, ""));
-		bool modelValid = modelId is not null && IsKnownInstalledModel(modelId);
-		bool autoSummon = _services.Config.GetBoolOr("pet_auto_summon", true);
 		cancellationToken.ThrowIfCancellationRequested();
+		// 判定与切换都在 Runtime 上：原生初始化窗口走同一条路，两处各写一份会漂。
 		await OnUi(() =>
 		{
-			_services.Windows.Show(WindowLabels.Main);
-			if (modelValid && autoSummon && !_services.SafeMode) _services.Windows.Show(WindowLabels.Pet);
-			else _services.Windows.Hide(WindowLabels.Pet);
-			_services.Windows.Hide(WindowLabels.Init);
+			Runtime.EnterMainFromInit();
 			return (object?)null;
 		});
 		return null;
