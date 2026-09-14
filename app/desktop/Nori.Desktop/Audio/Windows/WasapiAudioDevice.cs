@@ -28,6 +28,9 @@ internal sealed class WasapiAudioDevice : IAudioDevice
 	/// <summary>缓冲满时睡多久再看。取设备周期的量级即可。</summary>
 	private const int PollMilliseconds = 10;
 
+	/// <summary>当前用的是哪个输出设备。查「没声音」时第一条要看的。</summary>
+	internal string DeviceName { get; private set; } = "";
+
 	private readonly Lock _gate = new();
 	private readonly ManualResetEventSlim _wake = new(false);
 
@@ -53,6 +56,7 @@ internal sealed class WasapiAudioDevice : IAudioDevice
 			enumerator.GetDefaultAudioEndpoint(
 				WasapiNativeApi.DataFlowRender, WasapiNativeApi.RoleConsole,
 				out WasapiNativeApi.IMmDevice device);
+			DeviceName = WasapiNativeApi.FriendlyName(device);
 
 			Guid clientId = WasapiNativeApi.IidAudioClient;
 			device.Activate(ref clientId, 1 /* CLSCTX_INPROC_SERVER */, IntPtr.Zero, out object clientObject);
