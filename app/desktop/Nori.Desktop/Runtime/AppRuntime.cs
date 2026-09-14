@@ -67,8 +67,27 @@ public sealed partial class AppRuntime : IAsyncDisposable
 	private readonly ConcurrentDictionary<string, PendingDesktopApproval> _desktopApprovals = new();
 	private readonly ConcurrentDictionary<Task, byte> _backgroundTasks = new();
 	private readonly CancellationTokenSource _lifetimeCts = new();
-	private readonly WebViewAudioPlayback _playback;
-	private readonly WebViewMicrophoneRecorder _recorder;
+	/// <summary>
+	/// 这一轮装配的是哪一套音频后端：native 或 webview。
+	///
+	/// 日志里也写了一行，但那条只能事后翻。这个属性让「装配到了哪一份」可断言 ——
+	/// 换后端这种改动一旦悄悄回退到旧路径，现象只是「声音还是老样子」，很难发现。
+	/// </summary>
+	public string AudioBackendName { get; }
+
+	/// <summary>实际在用的播放后端。可能是原生设备，也可能是 WebView 那份。</summary>
+	private readonly IAudioPlayback _playback;
+	private readonly IMicrophoneRecorder _recorder;
+
+	/// <summary>
+	/// WebView 那两份，**只为桥回调保留**。
+	///
+	/// ReportPlaybackFinished / ReportRecordingReady 这些是 WebView 专有的入口：
+	/// 页面播完或录完之后经桥回报。走原生后端时没有页面，这两个字段为 null，
+	/// 对应的桥命令变成空操作。
+	/// </summary>
+	private readonly WebViewAudioPlayback? _webViewPlayback;
+	private readonly WebViewMicrophoneRecorder? _webViewRecorder;
 	private readonly AudioHostChannel _audioChannel;
 	private readonly ReflectionWorker _reflectionWorker;
 	private readonly PetInteractionReactionService _petInteractionService;
@@ -195,18 +214,41 @@ public sealed partial class AppRuntime : IAsyncDisposable
 			reminderStore, config, services.Logger,
 			GetIdleSecondsSafe);
 
-		// 音频与录音下沉到 main 窗口的 WebAudio / MediaRecorder: 三平台一套代码, 不再依赖 NAudio
+		/* ── 音频后端 ──────────────────────────────────────────────────────
+		 * Windows 直接推声卡（WASAPI）；其余平台仍下沉到 main 窗口的
+		 * WebAudio / MediaRecorder，直到 CoreAudio 与 ALSA 补上。
+		 *
+		 * WebView 那条一直建着而不是按需建：桥回调（页面播完/录完的回报）挂在它
+		 * 身上，而那几条桥命令的存在与否不该随后端变化。真正的分流在下面那两行。 */
 		MediaExchange media = services.Assets?.Media ?? new MediaExchange();
 		Func<string, string> mediaUrl = services.Assets is {} assets
 			? assets.MediaUrl
 			: _ => throw new InvalidOperationException("资源服务未启动, 音频端点不可用");
 		AudioHostChannel channel = new(() => services.Windows?.GetNoriWindow(WindowLabels.Main));
-		WebViewAudioPlayback playback = new(media, mediaUrl, channel);
-		WebViewMicrophoneRecorder recorder = new(media, mediaUrl, channel);
-		_playback = playback;
-		_recorder = recorder;
 		_audioChannel = channel;
-		Voice = new VoiceService(services.Http, config, playback, () => VoiceRetired() ? null : recorder, services.Paths);
+
+		bool useNativeAudio = Nori.Core.Voice.Audio.AudioBackend.PrefersNative(
+			config.GetStringOr(ConfigStore.KeyAudioBackend, Nori.Core.Voice.Audio.AudioBackend.Auto), OperatingSystem.IsWindows());
+		if (useNativeAudio)
+		{
+			_playback = Audio.NativeAudioFactory.CreatePlayback();
+			_recorder = Audio.NativeAudioFactory.CreateRecorder();
+			_webViewPlayback = null;
+			_webViewRecorder = null;
+		}
+		else
+		{
+			WebViewAudioPlayback webPlayback = new(media, mediaUrl, channel);
+			WebViewMicrophoneRecorder webRecorder = new(media, mediaUrl, channel);
+			_playback = _webViewPlayback = webPlayback;
+			_recorder = _webViewRecorder = webRecorder;
+		}
+		AudioBackendName = useNativeAudio ? "native" : "webview";
+		services.Logger.Write(LogSource.Backend, "info",
+			$"音频后端：{(useNativeAudio ? "原生设备" : "WebView")}");
+
+		Voice = new VoiceService(services.Http, config, _playback,
+			() => VoiceRetired() ? null : _recorder, services.Paths);
 		_petInteractionService = new PetInteractionReactionService(services.Http, config);
 
 		Tools = BuildToolRegistry(true);
@@ -1469,19 +1511,19 @@ public sealed partial class AppRuntime : IAsyncDisposable
 
 	/// <summary>前端回报一段音频播放结束 (或失败)</summary>
 	public void ReportPlaybackFinished(string token, string? error) =>
-		_playback.ReportPlaybackFinished(token, error);
+		_webViewPlayback?.ReportPlaybackFinished(token, error);
 
 	/// <summary>前端回报实时播放音量 (0~1), 驱动伴侣口型</summary>
-	public void ReportAudioLevel(double level) => _playback.ReportLevel(level);
+	public void ReportAudioLevel(double level) => _webViewPlayback?.ReportLevel(level);
 
 	/// <summary>前端 main WebView 完成监听器安装后的就绪握手。</summary>
 	public void MarkAudioHostReady() => _audioChannel.MarkReady();
 
 	/// <summary>前端回报 MediaRecorder 已获权并开始。</summary>
-	public void ReportRecordingReady(string token) => _recorder.ReportRecordingReady(token);
+	public void ReportRecordingReady(string token) => _webViewRecorder?.ReportRecordingReady(token);
 
 	/// <summary>前端回报麦克风权限、录音或上传失败。</summary>
-	public void ReportRecordingFailed(string token, string? error) => _recorder.ReportRecordingFailed(token, error);
+	public void ReportRecordingFailed(string token, string? error) => _webViewRecorder?.ReportRecordingFailed(token, error);
 
 	// ===================================================================
 	// UI 状态快照
