@@ -1,13 +1,16 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Controls.Shapes;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Media;
 using Avalonia.Styling;
+using Avalonia.Threading;
 using Nori.Core.Configuration;
 using Nori.Core.FirstRun;
 using Nori.Core.Logging;
+using Nori.Core.Platform;
 using Nori.Desktop.Bridge;
 using Nori.Desktop.Chat;
 using Nori.Desktop.FirstRun;
@@ -70,6 +73,12 @@ public sealed class FirstRunWindow : Window
 		Width = definition.Width; Height = definition.Height;
 		MinWidth = definition.MinWidth ?? definition.Width;
 		MinHeight = definition.MinHeight ?? definition.Height;
+		// 与 NoriWindow 同一套判断：能原生拖动就去掉系统边框（整个应用都是自绘 chrome，
+		// 少设这一行就会在一堆无边框窗口里冒出一个系统标题栏）；不能拖的平台退回
+		// 系统边框，不留一个既拖不动也没有提示的窗口。
+		WindowDecorations = PlatformServices.Current.Capabilities.SupportsWindowDrag
+			? WindowDecorations.None
+			: WindowDecorations.Full;
 		WindowStartupLocation = WindowStartupLocation.CenterScreen;
 		RequestedThemeVariant = ThemeVariant.Dark;
 		Styles.Add(new StyleInclude(new Uri("avares://Nori.Desktop/"))
@@ -147,6 +156,13 @@ public sealed class FirstRunWindow : Window
 				ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
 				Children = {Place(_back, 0), Place(_error, 1), Place(_forward, 2)},
 			},
+		};
+
+		// 去掉系统边框之后，顶部这条就是拖动区 —— 向导有自己的头部，
+		// 不像启动画面那样整面可拖。
+		header.PointerPressed += (_, args) =>
+		{
+			if (args.GetCurrentPoint(header).Properties.IsLeftButtonPressed) BeginMoveDrag(args);
 		};
 
 		return new DockPanel
