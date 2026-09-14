@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Controls.Shapes;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml.Styling;
@@ -10,6 +11,7 @@ using Avalonia.Styling;
 using Avalonia.Threading;
 using Nori.Core.Configuration;
 using Nori.Core.Logging;
+using Nori.Core.Platform;
 using Nori.Desktop.Bridge;
 using Nori.Desktop.Chat;
 
@@ -44,6 +46,12 @@ public sealed class InitWindow : Window
 		Title = definition.Title;
 		Width = definition.Width; Height = definition.Height;
 		CanResize = definition.CanResize;
+		// 与 NoriWindow 同一套判断：能原生拖动就去掉系统边框（整个应用都是自绘 chrome，
+		// 少设这一行就会在一堆无边框窗口里冒出一个系统标题栏）；不能拖的平台退回
+		// 系统边框，不留一个既拖不动也没有提示的窗口。
+		WindowDecorations = PlatformServices.Current.Capabilities.SupportsWindowDrag
+			? WindowDecorations.None
+			: WindowDecorations.Full;
 		WindowStartupLocation = WindowStartupLocation.CenterScreen;
 		RequestedThemeVariant = ThemeVariant.Dark;
 		Styles.Add(new StyleInclude(new Uri("avares://Nori.Desktop/"))
@@ -55,13 +63,22 @@ public sealed class InitWindow : Window
 		_view = new InitView(IsEnglish(), () => _ = RetryAsync(), () => _services.Windows.Shutdown());
 		Content = _view;
 
-		Opened += (_, _) => _ = BeginAsync();
+		// 去掉系统边框之后要自己接拖动。启动画面整面都可拖 —— 它没有标题栏，
+		// 用户会下意识按住任意位置挪。
+		PointerPressed += (_, args) =>
+		{
+			if (args.GetCurrentPoint(this).Properties.IsLeftButtonPressed) BeginMoveDrag(args);
+		};
+
+		// **推到下一帧再起跑。** 在 Opened 处理器里同步走完「进主界面」会连带
+		// Hide 掉自己，而那时窗口还在完成显示流程，屏幕上会留下一个不重绘的空壳。
+		Opened += (_, _) => Dispatcher.UIThread.Post(() => _ = BeginAsync());
 		PropertyChanged += (_, args) =>
 		{
 			if (args.Property != IsVisibleProperty) return;
 			// 首次运行路径下这个窗口是隐藏启动的，向导完成后宿主 Show 它 —— 变可见
 			// 就是原来那条 nori:init-start 广播的等价信号，不必再走一次事件总线。
-			if (IsVisible) _ = BeginAsync();
+			if (IsVisible) Dispatcher.UIThread.Post(() => _ = BeginAsync());
 			else _view.StopAnimation();
 		};
 		Closing += (_, args) =>
