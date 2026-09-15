@@ -79,6 +79,9 @@ public sealed class CloudSyncService(
 		CloudSaveSnapshot snapshot = await cloud.FetchSaveAsync(account.Token, metaOnly: true, cancel);
 		if (!snapshot.Ok)
 		{
+			// 令牌作废之后本机那份登录记录就是错的，先清掉再答 —— 这一轮的答案里
+			// SignedIn 也要跟着变成 false，否则界面刷完还是「已登录」。
+			if (snapshot.Expired) return new CloudSyncStatus {SignedIn = !DropExpiredSession(), Error = snapshot.Error};
 			return new CloudSyncStatus {SignedIn = true, Error = snapshot.Error};
 		}
 		return new CloudSyncStatus
@@ -134,6 +137,7 @@ public sealed class CloudSyncService(
 		}
 		if (!uploaded.Ok)
 		{
+			if (uploaded.Expired) DropExpiredSession();
 			return new CloudSyncResult {Message = uploaded.Error, Skipped = build.Skipped};
 		}
 
@@ -160,7 +164,11 @@ public sealed class CloudSyncService(
 		}
 
 		CloudSaveSnapshot snapshot = await cloud.FetchSaveAsync(account.Token, metaOnly: false, cancel);
-		if (!snapshot.Ok) return new CloudSyncResult {Message = snapshot.Error};
+		if (!snapshot.Ok)
+		{
+			if (snapshot.Expired) DropExpiredSession();
+			return new CloudSyncResult {Message = snapshot.Error};
+		}
 		if (!snapshot.Present) return new CloudSyncResult {Message = "云端还没有存档"};
 		if (snapshot.Document is null)
 		{
@@ -197,10 +205,30 @@ public sealed class CloudSyncService(
 		}
 
 		CloudSaveUploadResult removed = await cloud.DeleteSaveAsync(account.Token, cancel);
-		if (!removed.Ok) return new CloudSyncResult {Message = removed.Error};
+		if (!removed.Ok)
+		{
+			if (removed.Expired) DropExpiredSession();
+			return new CloudSyncResult {Message = removed.Error};
+		}
 
 		KnownRevision = 0;
 		return new CloudSyncResult {Ok = true, Message = "云端存档已删除。本机数据未改动。"};
+	}
+
+	/// <summary>
+	/// 服务端说令牌不作数了，清掉本机这份登录记录。
+	///
+	/// 只清会话，**不清版本号**：那个号记的是「本机与云端存档比对到哪一版」，与是谁登录
+	/// 无关；同一个账户重新登录之后它仍然成立（换账户登录时由 <see cref="AccountSession.Save"/>
+	/// 清零）。
+	///
+	/// 清完之后调用方要发一次快照失效，界面才会跟着变。桌面端这条路径上的调用方是
+	/// BridgeCommands 的云同步命令，它本来就会发。
+	/// </summary>
+	private bool DropExpiredSession()
+	{
+		session.Clear();
+		return true;
 	}
 
 	/// <summary>

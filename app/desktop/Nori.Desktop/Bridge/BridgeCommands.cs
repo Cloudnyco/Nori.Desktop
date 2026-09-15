@@ -2988,6 +2988,9 @@ public sealed class BridgeCommands
 			// 恢复会改配置与记忆，快照必须重建；备份不改本机，但版本号变了，那一行也要刷。
 			runtime.InvalidateSnapshot("account");
 		}
+		// 令牌失效时 CloudSyncService 会就地清掉本机登录态。托盘那一条不读快照，
+		// 只能单独喊一次 —— 不喊的话它会一直停在「退出登录」。
+		await OnUi(() => Run(Tray.TrayMenu.Refresh));
 		return new
 		{
 			ok = result.Ok,

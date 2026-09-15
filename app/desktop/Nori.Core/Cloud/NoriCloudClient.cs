@@ -56,6 +56,14 @@ public sealed record CloudSaveSnapshot
 	/// <summary>可直接展示的失败说明；成功时为空串。</summary>
 	public string Error { get; init; } = "";
 
+	/// <summary>
+	/// 服务端判定这个令牌不再作数（会话过期，或已在别处注销）。
+	///
+	/// 单独给出来而不是只留一句错误说明：调用方要据此清掉本机登录态。缺这一条的症状是
+	/// 界面一直显示已登录，同步按钮一直可点，而每一次都失败在同一句话上。
+	/// </summary>
+	public bool Expired { get; init; }
+
 	/// <summary>请求本身成不成。与「云端有没有存档」是两件事。</summary>
 	public bool Ok => Error.Length == 0;
 }
@@ -64,6 +72,9 @@ public sealed record CloudSaveSnapshot
 public sealed record CloudSaveUploadResult
 {
 	public bool Ok { get; init; }
+
+	/// <summary>同 <see cref="CloudSaveSnapshot.Expired"/>。</summary>
+	public bool Expired { get; init; }
 
 	/// <summary>成功时是新版本号；冲突时是**云端当前的**版本号。</summary>
 	public int Revision { get; init; }
@@ -271,7 +282,12 @@ public sealed class NoriCloudClient
 			JsonElement body = await ReadAsync(response, cancel);
 			if (!response.IsSuccessStatusCode)
 			{
-				return new CloudSaveSnapshot {Error = Describe(response.StatusCode, ErrorCode(body), body)};
+				string code = ErrorCode(body);
+				return new CloudSaveSnapshot
+				{
+					Error = Describe(response.StatusCode, code, body),
+					Expired = IsExpired(code),
+				};
 			}
 			if (!body.TryGetProperty("present", out JsonElement present)
 				|| present.ValueKind != JsonValueKind.True)
@@ -339,7 +355,12 @@ public sealed class NoriCloudClient
 			}
 			if (!response.IsSuccessStatusCode)
 			{
-				return new CloudSaveUploadResult {Error = Describe(response.StatusCode, ErrorCode(body), body)};
+				string code = ErrorCode(body);
+				return new CloudSaveUploadResult
+				{
+					Error = Describe(response.StatusCode, code, body),
+					Expired = IsExpired(code),
+				};
 			}
 			return new CloudSaveUploadResult
 			{
@@ -379,7 +400,7 @@ public sealed class NoriCloudClient
 			JsonElement body = await ReadAsync(response, cancel);
 			return response.IsSuccessStatusCode
 				? new CloudSaveUploadResult {Ok = true}
-				: new CloudSaveUploadResult {Error = Describe(response.StatusCode, ErrorCode(body), body)};
+				: Failed(response.StatusCode, ErrorCode(body), body);
 		}
 	}
 
@@ -483,6 +504,17 @@ public sealed class NoriCloudClient
 	///
 	/// 每一条都要指出**该改哪一项**。「验证失败」这种说法会让人重复提交同样的输入。
 	/// </summary>
+	/// <summary>
+	/// 这个码是不是「令牌不作数了」。
+	///
+	/// 只认 <c>not_signed_in</c> 这一个：它是服务端对无效或过期令牌的固定回应。网络不通、
+	/// 维护中、写入失败都不算 —— 把那些也当成过期的话，服务端抖一下就会把人登出。
+	/// </summary>
+	private static bool IsExpired(string code) => code == "not_signed_in";
+
+	private static CloudSaveUploadResult Failed(HttpStatusCode status, string code, JsonElement body) =>
+		new() {Error = Describe(status, code, body), Expired = IsExpired(code)};
+
 	internal static string Describe(HttpStatusCode status, string code, JsonElement body) => code switch
 	{
 		"bad_email" => "邮箱地址格式不正确",

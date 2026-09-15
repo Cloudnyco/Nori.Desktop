@@ -351,6 +351,69 @@ public sealed class CloudSyncServiceTests : IDisposable
 		Assert.Contains("4096 KB", result.Message, StringComparison.Ordinal);
 	}
 
+	// ── 会话过期 ────────────────────────────────────────────────────────────
+
+	/// <summary>
+	/// 服务端说令牌不作数了，本机那份登录记录要跟着清掉。
+	///
+	/// 守的是一处实际存在过的缺陷：错误码在 <c>Describe()</c> 那一层就被翻成人话，调用方
+	/// 只拿到一句「登录已过期，请重新登录」，本机会话原样留着。症状是托盘与设置页一直
+	/// 显示已登录、同步按钮一直可点，而每一次都失败在同一句话上。
+	/// </summary>
+	[Theory]
+	[InlineData("status")]
+	[InlineData("backup")]
+	[InlineData("restore")]
+	[InlineData("forget")]
+	public async Task 令牌失效时清掉本机登录态(string action)
+	{
+		SignIn();
+		CloudSyncService sync = Build(new FakeHandler((HttpStatusCode.Unauthorized, """{"error":"not_signed_in"}""")));
+
+		string message = action switch
+		{
+			"status" => (await sync.StatusAsync()).Error,
+			"backup" => (await sync.BackupAsync()).Message,
+			"restore" => (await sync.RestoreAsync()).Message,
+			_ => (await sync.ForgetAsync()).Message,
+		};
+
+		Assert.Contains("登录已过期", message, StringComparison.Ordinal);
+		Assert.False(_session.IsSignedIn);
+	}
+
+	/// <summary>
+	/// 别的失败不能把人登出。
+	///
+	/// 维护中、写入失败都是暂时的。把它们也当成过期的话，服务端抖一下用户就得重新登录，
+	/// 而他的令牌其实一直有效。
+	/// </summary>
+	[Theory]
+	[InlineData(HttpStatusCode.ServiceUnavailable, """{"error":"maintenance"}""")]
+	[InlineData(HttpStatusCode.InternalServerError, """{"error":"write_failed"}""")]
+	public async Task 其它失败不清登录态(HttpStatusCode status, string body)
+	{
+		SignIn();
+		CloudSyncService sync = Build(new FakeHandler((status, body)));
+
+		await sync.BackupAsync();
+
+		Assert.True(_session.IsSignedIn);
+	}
+
+	/// <summary>过期清掉会话之后，这一轮返回的状态里也要说未登录 —— 否则界面刷完还是已登录。</summary>
+	[Fact]
+	public async Task 过期时返回的状态也是未登录()
+	{
+		SignIn();
+		CloudSyncService sync = Build(new FakeHandler((HttpStatusCode.Unauthorized, """{"error":"not_signed_in"}""")));
+
+		CloudSyncStatus status = await sync.StatusAsync();
+
+		Assert.False(status.SignedIn);
+		Assert.False(_session.IsSignedIn);
+	}
+
 	// ── 与服务端的约定 ──────────────────────────────────────────────────────
 
 	/// <summary>
