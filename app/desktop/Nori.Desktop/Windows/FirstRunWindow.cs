@@ -47,11 +47,6 @@ public sealed class FirstRunWindow : Window
 		Foreground = ChatPalette.Accent, FontSize = 12, FontWeight = FontWeight.SemiBold,
 		VerticalAlignment = VerticalAlignment.Center,
 	};
-	private readonly TextBlock _counter = new()
-	{
-		Foreground = ChatPalette.Faint, FontSize = 11,
-		VerticalAlignment = VerticalAlignment.Center,
-	};
 	private readonly ContentControl _stage = new() {Margin = new Thickness(28, 18)};
 	private readonly Button _back = new();
 	private readonly Button _forward = new();
@@ -88,7 +83,8 @@ public sealed class FirstRunWindow : Window
 		Background = ChatPalette.Background;
 
 		_wizard = new FirstRunWizard(CompleteAsync);
-		_steps = new FirstRunSteps(services, OnGate, Render);
+		// 把窗口交给步骤层：选形象那一步要弹文件选择框，而它必须挂在一个窗口上。
+		_steps = new FirstRunSteps(services, OnGate, Render, this);
 
 		Content = BuildChrome();
 		Render();
@@ -134,7 +130,8 @@ public sealed class FirstRunWindow : Window
 						VerticalAlignment = VerticalAlignment.Center,
 						Children = {_pips, _stepLabel},
 					}, 0),
-					Place(_counter, 1, HorizontalAlignment.Right),
+					// 「3 / 5」那一条去掉了：左边已经有圆点（看得出位置）和步骤名
+					// （看得出是哪一步），再写一遍数字是同一件事的第三种说法。
 					Place(close, 2),
 				},
 			},
@@ -259,8 +256,8 @@ public sealed class FirstRunWindow : Window
 		// 内部说法。正常路径上选形象那一步就挡住了，这里是兜底。
 		if (_steps.SelectedModel.Length == 0)
 			throw new InvalidOperationException(IsEnglish()
-				? "Choose an appearance before starting"
-				: "开始之前要先选一个形象");
+				? "No appearance selected"
+				: "未选择形象，无法完成初始化");
 
 		_services.Config.CompleteFirstRun(_steps.SelectedModel, _steps.TelemetryEnabled);
 		_services.Telemetry.Configure(_steps.TelemetryEnabled);
@@ -309,7 +306,6 @@ public sealed class FirstRunWindow : Window
 			});
 		}
 		_stepLabel.Text = FirstRunSteps.Title(state.Step, english);
-		_counter.Text = $"{state.Index + 1} / {FirstRunWizard.Order.Count}";
 
 		RenderFooter();
 	}
@@ -327,7 +323,7 @@ public sealed class FirstRunWindow : Window
 		bool submitting = state.FinishState == WizardFinishState.Submitting;
 		_forward.Content = state.IsLast
 			? submitting
-				? english ? "Starting..." : "正在启动..."
+				? english ? "Starting…" : "正在启动…"
 				: state.FinishError.Length > 0
 					? english ? "Retry" : "重试"
 					: english ? "Start" : "开始使用"

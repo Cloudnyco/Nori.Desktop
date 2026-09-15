@@ -5,6 +5,7 @@ using Avalonia.Media;
 using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using Avalonia.Platform.Storage;
 using Nori.Core.Configuration;
 using Nori.Core.FirstRun;
 using Nori.Core.Live2D;
@@ -24,9 +25,19 @@ namespace Nori.Desktop.FirstRun;
 /// 每一步通过 <c>onStepChanged</c> 把「我这一步现在能不能过」抬给壳：给一句话就是
 /// 挡住并显示它，给空串就是解除。选形象那一步靠它挡住「一个形象都没有就往下走」。
 /// </summary>
-public sealed class FirstRunSteps(AppServices services, Action<string> onGate, Action onRebuild)
+public sealed class FirstRunSteps(AppServices services, Action<string> onGate, Action onRebuild, Window? owner = null)
 {
 	private readonly AppServices _services = services;
+
+	/// <summary>文件选择框要挂的窗口。为 null 时导入不可用（测试装配走这一条）。</summary>
+	private readonly Window? _owner = owner;
+
+	/// <summary>正在导入哪一种（"zip" / "folder"）；空串表示没在导。</summary>
+	private string _importing = "";
+
+	/// <summary>导入那一行提示，以及它是不是一条失败。</summary>
+	private string _importNote = "";
+	private bool _importFailed;
 
 	/// <summary>报一句阻断原因（空串=解除）。**只刷底部**，不重建舞台。</summary>
 	private readonly Action<string> _onGate = onGate;
@@ -94,11 +105,18 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 			VerticalAlignment = VerticalAlignment.Center,
 			Children =
 			{
-				Logo(84),
-				Heading(english ? "Nori is here" : "Nori 来了", 22),
+				/*
+				 * 使用 NoriHalo 而非静态标志位图。
+				 *
+				 * 本页紧接初始化窗口，后者刚完成 Dormant → Connected 的档位序列；
+				 * 此处换成静态图会中断视觉连续性。取 Waking 档：已就绪但无进行中的任务，
+				 * 与本步骤的语义一致。
+				 */
+				new Ui.NoriHalo(104) {Mood = Ui.HaloMood.Waking, HorizontalAlignment = HorizontalAlignment.Center},
+				Heading(english ? "Nori Desktop Companion" : "Nori 桌面伴侣", 22),
 				Muted(english
-					? "A desktop companion that talks, remembers, and can use your tools."
-					: "一个会说话、会记事、也能动手用工具的桌面伴侣。", 340),
+					? "A desktop companion with conversation, long-term memory and tool use."
+					: "支持对话、长期记忆与工具调用的桌面伴侣。", 340),
 				new TextBlock
 				{
 					Text = version, Foreground = ChatPalette.Faint, FontSize = 11,
@@ -133,7 +151,7 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 
 		return Stage(
 			Heading(english ? "Choose a language" : "选择语言", 19),
-			Muted(english ? "You can change this later in Settings." : "之后可以在设置里改。", 320),
+			Muted(english ? "Can be changed in Settings." : "可在设置中修改。", 320),
 			list);
 	}
 
@@ -170,14 +188,151 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 		// 写 Gate 而不是回调 —— 构建过程中回调会递归。
 		Gate = SelectedModel.Length > 0
 			? ""
-			: english ? "Import an appearance to continue" : "先导入一个形象才能继续";
+			: english ? "No appearance installed" : "未安装形象，无法继续";
+
+		/*
+		 * ── 导入入口 ──────────────────────────────────────────────────────
+		 *
+		 * 形象资源**不随安装包发行**（README：仅支持本地 ZIP/目录导入，不提供远程
+		 * 下载），全新安装时已安装列表为空。而本步骤在 SelectedModel 为空时阻断
+		 * CanNext，末步 CompleteFirstRun 又要求非空 modelId —— 三者叠加导致初始化
+		 * 流程无法完成。
+		 *
+		 * 原因是迁移遗漏：Vue 版 ModelSelect 提供 importModel("zip"|"folder")，
+		 * 原生版只迁移了选择，未迁移导入，阻断条件保留。此处补回导入入口。
+		 *
+		 * 正文原为「之后可以在模型窗口里添加」，与本步骤的阻断条件矛盾，一并修正。
+		 */
+		StackPanel importRow = new()
+		{
+			Orientation = Orientation.Horizontal, Spacing = 8,
+			HorizontalAlignment = HorizontalAlignment.Center,
+		};
+		importRow.Children.Add(ImportButton(english ? "Import .zip" : "导入 ZIP", "zip", english));
+		importRow.Children.Add(ImportButton(english ? "Import folder" : "导入文件夹", "folder", english));
+
+		TextBlock note = new()
+		{
+			Text = _importNote,
+			FontSize = 11,
+			Foreground = _importFailed ? ChatPalette.Danger : ChatPalette.Faint,
+			TextWrapping = TextWrapping.Wrap, MaxWidth = 340,
+			TextAlignment = TextAlignment.Center,
+			HorizontalAlignment = HorizontalAlignment.Center,
+			IsVisible = _importNote.Length > 0,
+		};
 
 		return Stage(
 			Heading(english ? "Choose an appearance" : "选择形象", 19),
 			Muted(english
-				? "Only installed appearances can be selected. More can be added later in Models."
-				: "只有已安装的形象可以选。之后可以在模型窗口里添加。", 340),
-			list);
+				? "The companion window requires a Live2D appearance. Import a ZIP archive or a model directory."
+				: "伴侣窗口需要一个 Live2D 形象。支持导入 ZIP 压缩包或模型目录。", 340),
+			list,
+			importRow,
+			note);
+	}
+
+	/// <summary>导入按钮。导入期间两个都禁用 —— 同时点会并发写同一个资源目录。</summary>
+	private Control ImportButton(string label, string kind, bool english)
+	{
+		Button button = new()
+		{
+			Content = _importing == kind ? english ? "Importing…" : "正在导入…" : label,
+			Padding = new Thickness(14, 7),
+			Background = Brushes.Transparent,
+			Foreground = ChatPalette.Accent,
+			BorderBrush = ChatPalette.Panel,
+			BorderThickness = new Thickness(1),
+			CornerRadius = new CornerRadius(6),
+			FontSize = 12,
+			IsEnabled = _importing.Length == 0,
+			Cursor = new Cursor(StandardCursorType.Hand),
+		};
+		// 显式压暗：这些按钮设了自己的 Background/Foreground，主题给禁用态准备的画刷
+		// 被盖掉了，只设 IsEnabled 的话看起来还是能点的。
+		button.Opacity = button.IsEnabled ? 1 : 0.45;
+		button.Click += (_, _) => _ = ImportAsync(kind, english);
+		return button;
+	}
+
+	/// <summary>
+	/// 选一份本地资源导入。
+	///
+	/// 复用 <c>ResourceManager.Import</c>（沙盒解压 + 模型 id 校验），不另写一套 ——
+	/// 那里面的校验正是「别把任意 zip 解进数据目录」的防线。
+	/// </summary>
+	private async Task ImportAsync(string kind, bool english)
+	{
+		if (_importing.Length > 0) return;
+		_importing = kind;
+		_importFailed = false;
+		_importNote = english ? "Selecting…" : "正在选择文件…";
+		_onRebuild();
+
+		try
+		{
+			string? path = await PickAsync(kind);
+			if (string.IsNullOrWhiteSpace(path))
+			{
+				// 在文件框里按了取消。这不是错误，不留话。
+				_importNote = "";
+				return;
+			}
+
+			_importNote = english ? "Importing…" : "正在导入…";
+			_onRebuild();
+
+			IReadOnlyList<string> imported = await Task.Run(
+				() => _services.Resources.Import(ResourceType.Live2D, path, CancellationToken.None));
+
+			if (imported.Count == 0)
+			{
+				_importFailed = true;
+				_importNote = english
+					? "No importable appearance found. Select a Live2D model directory or ZIP archive containing model3.json."
+					: "未识别到可导入的形象。请选择包含 model3.json 的 Live2D 模型目录或 ZIP 压缩包。";
+				return;
+			}
+
+			// 导进来的直接选上：用户刚做的动作就是「我要这个」，再让他点一次是多余的。
+			SelectedModel = imported.FirstOrDefault(SupportedModelIds.IsSupported) ?? SelectedModel;
+			_services.Logger.Write(LogSource.Backend, "info",
+				$"首次运行导入形象: {string.Join(", ", imported)}");
+			_importNote = (english ? "Imported: " : "已导入：") + string.Join("、", imported);
+		}
+		catch (Exception failure) when (failure is ResourceException or IOException
+			or UnauthorizedAccessException or InvalidOperationException)
+		{
+			_importFailed = true;
+			// 原样给出原因：ResourceManager 的消息是写给人看的（不支持的模型 id、
+			// 解压越界等），统一换成「导入失败」反而让人无从下手。
+			_importNote = (english ? "Import failed: " : "导入失败：") + failure.Message;
+			_services.Logger.Write(LogSource.Backend, "warn", $"首次运行导入形象失败: {failure.Message}");
+		}
+		finally
+		{
+			_importing = "";
+			_onRebuild();
+		}
+	}
+
+	private async Task<string?> PickAsync(string kind)
+	{
+		if (_owner is null) return null;
+		if (kind == "folder")
+		{
+			IReadOnlyList<IStorageFolder> folders = await _owner.StorageProvider.OpenFolderPickerAsync(
+				new FolderPickerOpenOptions {Title = "选择 Live2D 模型文件夹", AllowMultiple = false});
+			return folders.Count > 0 ? folders[0].Path.LocalPath : null;
+		}
+		IReadOnlyList<IStorageFile> files = await _owner.StorageProvider.OpenFilePickerAsync(
+			new FilePickerOpenOptions
+			{
+				Title = "选择 Live2D 资源文件 (.zip)",
+				AllowMultiple = false,
+				FileTypeFilter = [new FilePickerFileType("Live2D 压缩包 (*.zip)") {Patterns = ["*.zip"]}],
+			});
+		return files.Count > 0 ? files[0].Path.LocalPath : null;
 	}
 
 	private bool IsInstalled(string modelId)
@@ -265,7 +420,7 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 			fetch.IsEnabled = false;
 			result.IsVisible = true;
 			result.Foreground = ChatPalette.Muted;
-			result.Text = english ? "Fetching..." : "正在获取...";
+			result.Text = english ? "Fetching…" : "正在获取…";
 			try
 			{
 				IReadOnlyList<string> names = await _services.Llm.FetchModelsAsync(
@@ -273,7 +428,7 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 				result.Foreground = ChatPalette.Teal;
 				result.Text = english
 					? $"{names.Count} models available"
-					: $"拉到 {names.Count} 个模型";
+					: $"已获取 {names.Count} 个模型";
 				if (model.Text is null or "" && names.Count > 0) model.Text = names[0];
 			}
 			catch (Exception failure)
@@ -289,7 +444,7 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 
 		Button skip = new()
 		{
-			Content = english ? "Skip for now" : "暂时跳过",
+			Content = english ? "Skip" : "跳过",
 			Background = Brushes.Transparent, Foreground = ChatPalette.Faint,
 			BorderThickness = default, FontSize = 11,
 			HorizontalAlignment = HorizontalAlignment.Center,
@@ -304,10 +459,10 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 		};
 
 		return Stage(
-			Heading(english ? "Connect a model provider" : "接入模型服务", 19),
+			Heading(english ? "Configure a model provider" : "配置模型服务", 19),
 			Muted(english
-				? "This step is optional — you can fill it in later in Settings."
-				: "这一步可以跳过，之后在设置里补也行。", 340),
+				? "Optional. Can be configured in Settings."
+				: "此步骤可跳过，可在设置中配置。", 340),
 			Field(english ? "Protocol" : "协议", provider),
 			Field(english ? "API base URL" : "接口地址", baseUrl),
 			Field(english ? "API key" : "密钥", apiKey),
@@ -368,22 +523,22 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 		telemetry.IsCheckedChanged += (_, _) => TelemetryEnabled = telemetry.IsChecked == true;
 
 		string aiLine = AiSaved
-			? english ? "Model provider: configured" : "模型服务：已接入"
-			: english ? "Model provider: can be added later in Settings" : "模型服务：之后可在设置里补";
+			? english ? "Model provider: configured" : "模型服务：已配置"
+			: english ? "Model provider: not configured" : "模型服务：未配置";
 		string modelLine = SelectedModel.Length > 0
 			? (english ? "Appearance: " : "形象：") + SelectedModel
-			: english ? "Appearance: none" : "形象：未选";
+			: english ? "Appearance: not selected" : "形象：未选择";
 
 		return Stage(
 			Logo(64),
-			Heading(english ? "All set" : "准备好了", 20),
+			Heading(english ? "Configuration summary" : "配置摘要", 20),
 			Muted(modelLine, 340),
 			Muted(aiLine, 340),
 			telemetry,
 			new TextBlock
 			{
 				Text = available
-					? english ? "You can change this any time in Settings." : "随时可以在设置里改。"
+					? english ? "Can be changed in Settings." : "可在设置中修改。"
 					: english ? "Diagnostics are unavailable in this build." : "此版本不提供诊断上报。",
 				Foreground = ChatPalette.Faint, FontSize = 11,
 				HorizontalAlignment = HorizontalAlignment.Center,

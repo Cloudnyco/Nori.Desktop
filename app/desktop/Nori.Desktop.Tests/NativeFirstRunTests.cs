@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Nori.Core.Configuration;
 using Nori.Core.FirstRun;
 using Nori.Desktop.Windows;
@@ -12,8 +13,8 @@ namespace Nori.Desktop.Tests;
 /// 原生首次运行向导。
 ///
 /// 步进规则本身在 <c>Nori.Core.Tests.FirstRunWizardTests</c> 里测（那层不碰 UI）。
-/// 这一族测的是**接线**：窗口有没有把状态机画对、每一步的阻断有没有落到底部那条
-/// 错误行上、完成之后有没有真的写进配置。
+/// 这一族测的是**接线**：窗口是否正确呈现状态机、各步的阻断是否落到底部错误行、
+/// 完成后是否写入配置。
 /// </summary>
 public partial class BridgeCommandsTests
 {
@@ -59,8 +60,8 @@ public partial class BridgeCommandsTests
 							PngBitmapEncoderOptions.Default);
 
 						if (step == WizardStep.Ready) break;
-						// 选形象那一步在测试环境里没有已安装的模型，会被自己挡住；
-						// 截图流程只要走完五页，这里放开阻断继续。
+						// 测试环境无已安装模型，选形象步骤会触发阻断；截图需要遍历全部
+						// 五个步骤，此处跳过阻断继续。
 						await window.AdvanceForTests();
 						if (window.CurrentStepForTests == step) window.ForceStepForTests();
 					}
@@ -100,9 +101,9 @@ public partial class BridgeCommandsTests
 	}
 
 	/// <summary>
-	/// 选形象那一步：测试环境里一个模型都没装，必须挡住并把原因写到底部。
+	/// 选形象步骤：测试环境无已安装模型，须阻断并将原因写入底部错误行。
 	///
-	/// 这条守的是最初那个问题 —— 失败只往控制台打一行时，用户看到的就是「卡住了」。
+	/// 守的是原有缺陷：失败仅输出到控制台时，界面无任何变化。
 	/// </summary>
 	[Fact]
 	public async Task 没有已安装的形象时挡住并给出原因()
@@ -120,7 +121,7 @@ public partial class BridgeCommandsTests
 				Assert.Contains("形象", window.ErrorTextForTests);
 				Assert.False(window.ForwardForTests.Enabled);
 
-				// 挡住就是真的过不去。
+				// 阻断须实际阻止步进。
 				await window.AdvanceForTests();
 				Assert.Equal(WizardStep.Model, window.CurrentStepForTests);
 			}
@@ -132,7 +133,52 @@ public partial class BridgeCommandsTests
 		});
 	}
 
-	/// <summary>后退要把错误行清掉 —— 回去改东西时不该还挂着上一步的红字。</summary>
+	/// <summary>
+	/// 触发阻断的步骤必须同时提供解除阻断的操作。
+	///
+	/// 守的是一处实际存在过的缺陷：形象资源**不随安装包发行**（仅支持本地 ZIP/目录
+	/// 导入），全新安装时已安装列表为空；本步骤阻断 CanNext，末步 CompleteFirstRun
+	/// 又要求非空 modelId。Vue 版 ModelSelect 提供导入入口，原生版只迁移了选择，
+	/// 未迁移导入，阻断条件保留 —— 初始化流程因此无法完成，且无任何错误输出。
+	///
+	/// 断言的不是「存在两个按钮」，而是**该步骤在触发自身阻断时仍可操作**。
+	/// </summary>
+	[Fact]
+	public async Task 选形象那一步挡住时仍给得出导入的路()
+	{
+		await WithSettingsUiAsync(async () =>
+		{
+			using BridgeCommandsTests fixture = new(safeMode: false);
+			FirstRunWindow window = new(FirstRunDefinition(), fixture._services);
+			try
+			{
+				window.Show();
+				await window.AdvanceForTests();          // → language
+				await window.AdvanceForTests();          // → model
+				Assert.Equal(WizardStep.Model, window.CurrentStepForTests);
+				// 前置条件：该步骤确实触发了阻断，否则本测试不成立。
+				Assert.False(window.ForwardForTests.Enabled);
+
+				// 执行一次布局，否则内容区控件尚未进入可视树，无法枚举到按钮。
+				await Dispatcher.UIThread.InvokeAsync(window.UpdateLayout, DispatcherPriority.Background);
+
+				string[] actions = [.. window.GetVisualDescendants().OfType<Button>()
+					.Select(button => new {button.IsEnabled, Label = button.Content as string ?? ""})
+					.Where(entry => entry.IsEnabled && entry.Label.Contains("导入"))
+					.Select(entry => entry.Label)];
+
+				Assert.True(actions.Length > 0,
+					"选形象步骤阻断了「下一步」，但无可用的导入入口 —— 全新安装时初始化流程无法完成。");
+			}
+			finally
+			{
+				window.AllowClose = true;
+				window.Close();
+			}
+		});
+	}
+
+	/// <summary>后退须清除错误行：返回修改时不应保留上一步的错误提示。</summary>
 	[Fact]
 	public async Task 后退清掉底部的错误行()
 	{
@@ -182,7 +228,7 @@ public partial class BridgeCommandsTests
 		});
 	}
 
-	/// <summary>末步的按钮要换成「开始使用」，否则用户不知道这是最后一下。</summary>
+	/// <summary>末步按钮须切换为「开始使用」，以区别于中间步骤的「下一步」。</summary>
 	[Fact]
 	public async Task 末步的按钮换成开始使用()
 	{
@@ -205,13 +251,13 @@ public partial class BridgeCommandsTests
 	}
 
 	/// <summary>
-	/// 没选形象就按「开始使用」：要给一句**人话**，并且首次运行标记不能被写掉。
+	/// 未选形象时点击「开始使用」：须给出面向用户的错误说明，且不得写入首次运行标记。
 	///
-	/// 正常路径上选形象那一步就挡住了，这条守的是兜底那一层 —— 少了它，用户会看到
-	/// 配置层抛出来的「模型 ID 不能为空」。
+	/// 正常路径由选形象步骤阻断，本条守的是兜底校验 —— 缺少它时界面会显示配置层
+	/// 抛出的「模型 ID 不能为空」。
 	/// </summary>
 	[Fact]
-	public async Task 没选形象时完成给的是人话且不写标记()
+	public async Task 未选形象时完成失败且不写入首次运行标记()
 	{
 		await WithSettingsUiAsync(async () =>
 		{
@@ -223,8 +269,8 @@ public partial class BridgeCommandsTests
 				await window.AdvanceForTests();
 
 				Assert.True(fixture._config.IsFirstRun());
-				Assert.Equal("开始之前要先选一个形象", window.ErrorTextForTests);
-				// 失败要能原地重试。
+				Assert.Equal("未选择形象，无法完成初始化", window.ErrorTextForTests);
+				// 失败后须可在当前步骤重试。
 				Assert.Equal("重试", window.ForwardForTests.Text);
 				Assert.True(window.ForwardForTests.Enabled);
 			}
