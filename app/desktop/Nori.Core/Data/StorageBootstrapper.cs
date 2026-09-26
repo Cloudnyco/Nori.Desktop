@@ -53,8 +53,8 @@ public static class StorageBootstrapper
 	{
 		string[] directories = [
 			"core/database", "core/security", "knowledge/documents", "resources/installed/live2d", "resources/cache", "resources/temp/import",
-			"plugins/installed", "plugins/data", "plugins/cache/webview", "plugins/cache/packages/inbox", "plugins/temp/staging",
-			"webview/cache/host", "automation/temp/browser", "diagnostics/logs",
+			"plugins/installed", "plugins/data", "plugins/cache/packages/inbox", "plugins/temp/staging",
+			"automation/temp/browser", "diagnostics/logs",
 		];
 		foreach (string relative in directories) Directory.CreateDirectory(Path.Combine(root, relative));
 	}

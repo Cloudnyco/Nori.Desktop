@@ -16,7 +16,7 @@ public sealed class ChatWindow : Window
 	private bool _closing;
 	private bool _prepared;
 
-	/// <summary>建立原生对话宿主和可复用正文，不创建 WebView。</summary>
+	/// <summary>建立原生对话宿主和可复用正文。</summary>
 	public ChatWindow(AppServices services)
 	{
 		NativeWindowSizing.Apply(this, NativeWindowSizing.ChatSize);

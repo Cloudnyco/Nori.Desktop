@@ -23,7 +23,7 @@ public partial class BridgeCommandsTests
 		}
 	}
 
-	/// <summary>仅装配被测原生窗口，避免生命周期回归加载 WebView 或音频宿主。</summary>
+	/// <summary>仅装配被测原生窗口，避免生命周期回归加载音频设备。</summary>
 	private static void RegisterNativeTestWindow(WindowManager manager, string label, Window window)
 	{
 		const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
@@ -41,7 +41,7 @@ public partial class BridgeCommandsTests
 	{
 		using BridgeCommandsTests fixture = new(safeMode: true);
 		NativeWindowLifetime lifetime = new();
-		WindowManager manager = new(null!, lifetime.Shutdown, fixture._services.Paths);
+		WindowManager manager = new(lifetime.Shutdown);
 		fixture._services.Windows = manager;
 		WindowDefinition definition = WindowDefinition.All.Single(item => item.Label == label);
 		Window window = label switch
@@ -80,7 +80,7 @@ public partial class BridgeCommandsTests
 	{
 		using BridgeCommandsTests fixture = new(safeMode: true);
 		NativeWindowLifetime lifetime = new();
-		WindowManager manager = new(null!, lifetime.Shutdown, fixture._services.Paths);
+		WindowManager manager = new(lifetime.Shutdown);
 		fixture._services.Windows = manager;
 		FirstRunWindow firstRun = new(FirstRunDefinition(), fixture._services);
 		InitWindow init = new(InitDefinition(), fixture._services);

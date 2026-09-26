@@ -3,16 +3,14 @@ namespace Nori.Core.Voice.Audio;
 /// <summary>
 /// 从 PCM 取电平，用来驱动口型。
 ///
-/// 这是原生播放相对 WebView 唯一一处**用户看得见**的改善：现在电平在前端算完、
-/// 每约 60ms 经桥回传一次，跨进程有抖动；原生可以直接在送进设备的那个缓冲上算，
-/// 和听到的声音严格对齐。
+/// 电平在送进设备的那个缓冲上计算，和听到的声音对齐。
 ///
 /// 取 RMS 不取峰值：峰值对单个爆音样本过敏，嘴会一抽一抽；RMS 是这一窗的能量，
 /// 和人听到的响度接近。
 /// </summary>
 public static class PcmLevel
 {
-    /// <summary>口型更新的目标间隔。比 WebView 那条的 60ms 密一档，仍远低于渲染帧率。</summary>
+    /// <summary>口型更新的目标间隔，远低于渲染帧率。</summary>
     public const int WindowMilliseconds = 25;
 
     /// <summary>

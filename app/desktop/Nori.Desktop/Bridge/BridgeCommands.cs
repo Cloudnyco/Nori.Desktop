@@ -581,30 +581,6 @@ public sealed partial class BridgeCommands
 		// invoke("stt_stop") → {text}
 		"stt_stop" => await SttStopAsync(source, cancellationToken),
 
-		// ---- 前端音频宿主回报 (WebAudio / MediaRecorder 下沉后的反向通道) ----
-		// invoke("audio_host_ready")
-		"audio_host_ready" => RequireLabel(source, WindowLabels.AudioHost, () => Run(Runtime.MarkAudioHostReady)),
-
-		// invoke("audio_playback_finished", {token, error?})
-		"audio_playback_finished" => RequireLabel(source, WindowLabels.AudioHost, () =>
-			Run(() => Runtime.ReportPlaybackFinished(Str(args, "token"), OptionalStr(args, "error")))),
-
-		// invoke("audio_level", {level: 0.42})
-		"audio_level" => RequireLabel(source, WindowLabels.AudioHost, () =>
-			Run(() => Runtime.ReportAudioLevel(Num(args, "level")))),
-
-		// invoke("audio_record_ready", {token})
-		"audio_record_ready" => RequireLabel(source, WindowLabels.AudioHost, () =>
-			Run(() => Runtime.ReportRecordingReady(Str(args, "token")))),
-
-		// invoke("audio_record_failed", {token, error?})
-		"audio_record_failed" => RequireLabel(source, WindowLabels.AudioHost, () =>
-			Run(() => Runtime.ReportRecordingFailed(Str(args, "token"), OptionalStr(args, "error")))),
-
-		// invoke("audio_upload_failed", {token, error?})
-		"audio_upload_failed" => RequireLabel(source, WindowLabels.AudioHost, () =>
-			Run(() => Runtime.ReportRecordingFailed(Str(args, "token"), OptionalStr(args, "error")))),
-
 		// ---- 插件替代 ----
 		// invoke("open_url", {url: "https://..."})
 		"open_url" => Run(() => ShellOpen.OpenUrl(Str(args, "url"))),

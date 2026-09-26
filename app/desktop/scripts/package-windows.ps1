@@ -26,8 +26,7 @@ $requiredFiles = @(
 	"$currentSlot\Nori.Desktop.dll",
 	"$currentSlot\Nori.Desktop.deps.json",
 	"$currentSlot\Nori.Desktop.runtimeconfig.json",
-	"$currentSlot\Live2DCubismCore.dll",
-	"$currentSlot\wwwroot\index.html"
+	"$currentSlot\Live2DCubismCore.dll"
 )
 foreach ($relativePath in $requiredFiles) {
 	$requiredPath = Join-Path $publish $relativePath
@@ -43,7 +42,7 @@ if (Get-ChildItem -LiteralPath $publish -Recurse -File -Filter "*.map" -ErrorAct
 	throw "发布目录仍含 source map, 不能打包"
 }
 
-# Windows FDD 的未压缩 publish 基线约 159 MiB（WebView/Avalonia/原生依赖占比较高）。
+# Windows FDD 的未压缩 publish 基线由 Avalonia 与原生依赖决定。
 # 预算留约 13% 余量，仍可拦截再次引入几十 MiB 级运行时（如 Playwright driver）。
 node (Join-Path $PSScriptRoot "check-package-size.mjs") `
 	--path $publish --label "windows publish" --max-mib 180

@@ -97,7 +97,7 @@ public sealed class NativeChatService : IDisposable
 		catch (Exception exception) { throw new InvalidOperationException(SensitiveDataRedactor.Redact(exception.Message)); }
 	}
 
-	/// <summary>后台读取与 WebView 同源的脱敏快照，chat 字段反映实际启用的对话后端。</summary>
+	/// <summary>后台读取脱敏快照，chat 字段反映实际启用的对话后端。</summary>
 	public async Task<JsonElement> GetSnapshotAsync(CancellationToken cancellationToken = default)
 	{
 		ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -114,7 +114,7 @@ public sealed class NativeChatService : IDisposable
 	/// <summary>仅打开 AI 设置，不给对话 UI 通用窗口命令权限。</summary>
 	public void OpenSettings() => OpenWindow(() => _services.Windows.ShowSettings("ai"));
 
-	/// <summary>返回已有主窗口，音频宿主继续保留在该 WebView。</summary>
+	/// <summary>显示已有主窗口。</summary>
 	public void OpenMain() => OpenWindow(() => _services.Windows.Show(WindowLabels.Main));
 
 	/// <summary>打开完整对话查看历史，审批仍归原始来源所有。</summary>

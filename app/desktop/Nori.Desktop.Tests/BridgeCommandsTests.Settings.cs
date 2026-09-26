@@ -136,7 +136,7 @@ public partial class BridgeCommandsTests
 	[Fact]
 	public async Task 设置窗口可以执行这两条命令()
 	{
-		// 原生设置页不走 WebView invoke，命令必须在 SettingsService 的白名单里，否则界面上
+		// 原生设置页经 SettingsService 白名单调用，命令必须在白名单里，否则界面上
 		// 的按钮点了会报「不允许执行」。
 		Assert.Contains("settings_update_workspace", SettingsService.Commands);
 		Assert.Contains("settings_pick_workspace", SettingsService.Commands);

@@ -12,13 +12,10 @@ namespace Nori.Desktop.Windows;
 public interface IWindowManager
 {
 	/// <summary>建好全部窗口 (不显示)</summary>
-	void CreateAll(NoriBridge bridge, AppServices services);
+	void CreateAll(AppServices services);
 
 	/// <summary>按标签取窗口, 不存在返回 null</summary>
 	Window? Get(string? label);
-
-	/// <summary>取隐藏音频宿主窗口。</summary>
-	NoriWindow? GetNoriWindow(string? label);
 
 	/// <summary>原生伴侣视窗引用</summary>
 	PetWindow? Pet { get; }

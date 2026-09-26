@@ -32,7 +32,7 @@ public sealed partial class AppRuntime
 		return BuildSnapshot();
 	}
 
-	/// <summary>构建不依赖 WebView 来源的脱敏 UI 状态快照。</summary>
+	/// <summary>构建脱敏 UI 状态快照。</summary>
 	public object BuildSnapshot()
 	{
 		while (true)
@@ -358,7 +358,7 @@ public sealed partial class AppRuntime
 		};
 	}
 
-	/// <summary>当前操作系统名 (前端按它决定平台相关文案)</summary>
+	/// <summary>当前操作系统名，界面按它决定平台相关文案。</summary>
 	private static string PlatformOsName()
 	{
 		if (OperatingSystem.IsWindows()) return "windows";
@@ -367,7 +367,7 @@ public sealed partial class AppRuntime
 		return "unknown";
 	}
 
-	/// <summary>已知模型目录 (展示名由前端静态目录映射)</summary>
+	/// <summary>已知模型目录，展示名由界面静态目录映射。</summary>
 	private static IReadOnlyList<string> ModelCatalogIds() => SupportedModelIds.All;
 
 	private IReadOnlyList<string> ModelExpressions(string modelId)

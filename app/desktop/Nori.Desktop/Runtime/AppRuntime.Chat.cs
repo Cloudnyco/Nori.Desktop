@@ -145,24 +145,4 @@ public sealed partial class AppRuntime
 
 	/// <summary>会话是否仍在运行</summary>
 	public bool IsSessionActive(string sessionId) => _sessions.ContainsKey(sessionId);
-
-	// ===================================================================
-	// 前端音频宿主回报
-	// ===================================================================
-
-	/// <summary>前端回报一段音频播放结束 (或失败)</summary>
-	public void ReportPlaybackFinished(string token, string? error) =>
-		_webViewPlayback?.ReportPlaybackFinished(token, error);
-
-	/// <summary>前端回报实时播放音量 (0~1), 驱动伴侣口型</summary>
-	public void ReportAudioLevel(double level) => _webViewPlayback?.ReportLevel(level);
-
-	/// <summary>音频宿主完成监听器安装后的就绪握手。</summary>
-	public void MarkAudioHostReady() => _audioChannel.MarkReady();
-
-	/// <summary>前端回报 MediaRecorder 已获权并开始。</summary>
-	public void ReportRecordingReady(string token) => _webViewRecorder?.ReportRecordingReady(token);
-
-	/// <summary>前端回报麦克风权限、录音或上传失败。</summary>
-	public void ReportRecordingFailed(string token, string? error) => _webViewRecorder?.ReportRecordingFailed(token, error);
 }

@@ -9,9 +9,8 @@ namespace Nori.Desktop.Settings;
 /// <summary>
 /// 原生设置窗口共享服务。
 ///
-/// 设置窗口与既有 WebView 共用 BridgeCommands 的业务实现，但通过明确的 native
-/// settings 上下文和命令白名单隔离来源权限。所有桥接调用放到后台执行，UI 文件选择
-/// 等操作仍由既有命令回切 Avalonia UI 线程。
+/// 设置窗口通过明确的 native settings 上下文和命令白名单调用 BridgeCommands。
+/// 所有桥接调用放到后台执行，UI 文件选择等操作仍由既有命令回切 Avalonia UI 线程。
 /// </summary>
 public sealed class SettingsService : IDisposable
 {
@@ -123,7 +122,7 @@ public sealed class SettingsService : IDisposable
 
 	/// <summary>
 	/// 执行一个设置领域命令并返回桥接层同形 JSON。
-	/// 前端原生 UI 不应通过 WebView invoke 执行设置操作。
+	/// 原生设置页通过本服务执行，不接受任意来源直接调用。
 	/// </summary>
 	public async Task<JsonElement> ExecuteAsync(
 		string command,
@@ -156,7 +155,7 @@ public sealed class SettingsService : IDisposable
 		return ToJsonElement(result);
 	}
 
-	/// <summary>读取与 WebView 相同的脱敏运行时快照。</summary>
+	/// <summary>读取脱敏运行时快照。</summary>
 	public async Task<JsonElement> GetSnapshotAsync(CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();

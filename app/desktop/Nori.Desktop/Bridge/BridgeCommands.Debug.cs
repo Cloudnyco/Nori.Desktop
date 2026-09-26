@@ -94,23 +94,20 @@ public sealed partial class BridgeCommands
 		return null;
 	}
 
-	/// <summary>记录白名单事件，窗口身份由宿主赋值。前端调用：invoke("write_log", {level: "error", eventId: "audio.error", message: ""})</summary>
+	/// <summary>记录白名单事件，窗口身份由宿主赋值。调用：invoke("write_log", {level: "error", eventId: "audio.error", message: ""})</summary>
 	private object? WriteFrontendLog(IBridgeSource source, JsonElement args)
 	{
 		string level = Str(args, "level").Trim().ToLowerInvariant();
 		if (!FileLogger.IsLevel(level))
 			throw new InvalidOperationException("日志级别无效");
 		string eventId = OptionalStr(args, "eventId") ?? "";
-		bool audioHost = source.Label == WindowLabels.AudioHost;
-		if (audioHost
-			? eventId is not ("audio.error" or "logging.suppressed")
-			: eventId is not ("audio.error" or "logging.suppressed" or "diagnostics.test"))
+		if (eventId is not ("audio.error" or "logging.suppressed" or "diagnostics.test"))
 			throw new InvalidOperationException("日志事件无效");
 		string message = eventId switch
 		{
-			"logging.suppressed" => $"重复前端事件已被限流：{Math.Clamp(OptionalInt(args, "suppressedCount") ?? 1, 1, 1_000_000)}",
+			"logging.suppressed" => $"重复日志事件已被限流：{Math.Clamp(OptionalInt(args, "suppressedCount") ?? 1, 1, 1_000_000)}",
 			"diagnostics.test" => "调试日志链路正常",
-			_ => "前端音频操作失败",
+			_ => "音频操作失败",
 		};
 		string errorType = OptionalStr(args, "errorType") ?? "";
 		if (errorType is "Error" or "TypeError" or "RangeError" or "ReferenceError" or "SyntaxError" or "URIError" or "EvalError" or "AggregateError")

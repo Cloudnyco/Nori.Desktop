@@ -110,10 +110,12 @@ public sealed class PluginRuntimeTests
 			Directory.CreateDirectory(Path.Combine(root, "web"));
 			File.WriteAllText(Path.Combine(root, "web", "index.html"), "ok");
 			File.WriteAllText(Path.Combine(root, "manifest.json"), "private");
-			IPluginAssets assets = new PluginAssetProvider(root, _ => new Uri("https://example.test/plugin"));
+			IPluginAssets assets = new PluginAssetProvider(root);
 
 			Assert.Equal("ok", new StreamReader(assets.OpenRead("web/index.html")).ReadToEnd());
-			Assert.Equal("https://example.test/plugin", assets.GetUri("web/index.html").ToString());
+			Uri uri = assets.GetUri("web/index.html");
+			Assert.True(uri.IsFile);
+			Assert.EndsWith("index.html", uri.LocalPath.Replace('\\', '/'), StringComparison.Ordinal);
 			Assert.Throws<PluginException>(() => assets.OpenRead("../manifest.json"));
 			Assert.Throws<PluginException>(() => assets.OpenRead("manifest.json"));
 			Assert.Throws<PluginException>(() => assets.OpenRead("web/../manifest.json"));
@@ -135,21 +137,22 @@ public sealed class PluginRuntimeTests
 	public void PluginCapabilities区分缺失和不可用()
 	{
 		PluginCapabilityRegistry registry = new(
-			[PluginCapabilityIds.WebView],
-			[PluginCapabilityIds.WebView],
+			["test.available"],
+			["test.available"],
 			[]);
 
-		PluginCapabilityStatus web = Assert.Single(registry.Statuses, status => status.Id == PluginCapabilityIds.WebView);
-		Assert.True(web.Declared);
-		Assert.True(web.Granted);
-		Assert.False(web.Available);
-		Assert.False(registry.TryGet<IWebViewCapability>(out _));
-		PluginException unavailable = Assert.Throws<PluginException>(() => registry.GetRequired<IWebViewCapability>());
+		PluginCapabilityStatus status = Assert.Single(registry.Statuses);
+		Assert.Equal("test.available", status.Id);
+		Assert.True(status.Declared);
+		Assert.True(status.Granted);
+		Assert.False(status.Available);
+		Assert.False(registry.TryGet<TestCapability>(out _));
+		PluginException unavailable = Assert.Throws<PluginException>(() => registry.GetRequired<TestCapability>());
 		Assert.Equal(PluginErrorCodes.CapabilityUnavailable, unavailable.Code);
-		PluginException missing = Assert.Throws<PluginException>(() => registry.GetRequired<TestCapability>());
+		PluginException missing = Assert.Throws<PluginException>(() => registry.GetRequired<MissingCapability>());
 		Assert.Equal(PluginErrorCodes.CapabilityMissing, missing.Code);
-		PluginCapabilityRegistry notGranted = new([PluginCapabilityIds.WebView], [], []);
-		PluginException denied = Assert.Throws<PluginException>(() => notGranted.GetRequired<IWebViewCapability>());
+		PluginCapabilityRegistry notGranted = new(["test.available"], [], []);
+		PluginException denied = Assert.Throws<PluginException>(() => notGranted.GetRequired<TestCapability>());
 		Assert.Equal(PluginErrorCodes.CapabilityNotGranted, denied.Code);
 	}
 
@@ -417,7 +420,9 @@ public sealed class PluginRuntimeTests
 			{
 				PluginManager unavailable = CreateManager(secondRoot, CreateTestPackage(secondRoot, "webview.plugin", "1.0.0", "[\"ui.webview\"]"));
 				await unavailable.StartAllAsync();
-				Assert.Equal(PluginErrorCodes.CapabilityUnavailable, Assert.Single(unavailable.Plugins).ErrorCode);
+				PluginInfo plugin = Assert.Single(unavailable.Plugins);
+				Assert.Equal(PluginLifecycleState.Incompatible, plugin.State);
+				Assert.Equal(PluginErrorCodes.UnknownCapability, plugin.ErrorCode);
 				await unavailable.DisposeAsync();
 			}
 			finally { DeleteDirectory(secondRoot); }
@@ -455,6 +460,11 @@ public sealed class PluginRuntimeTests
 
 	[PluginCapability("test.available")]
 	private sealed class TestCapability : IPluginCapability
+	{
+	}
+
+	[PluginCapability("test.missing")]
+	private sealed class MissingCapability : IPluginCapability
 	{
 	}
 

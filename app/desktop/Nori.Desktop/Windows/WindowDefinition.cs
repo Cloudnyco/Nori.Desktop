@@ -11,7 +11,7 @@ namespace Nori.Desktop.Windows;
 /// </summary>
 public sealed record WindowDefinition
 {
-	/// <summary>窗口标签, 与前端 WindowLabel 联合类型一致</summary>
+	/// <summary>窗口标签</summary>
 	public required string Label { get; init; }
 
 	/// <summary>窗口标题</summary>
@@ -91,9 +91,6 @@ public sealed record WindowDefinition
 /// </summary>
 public static class WindowLabels
 {
-	/// <summary>专用音频兼容宿主，不属于用户窗口。</summary>
-	public const string AudioHost = "audio-host";
-
 	/// <summary>按需创建的原生设置窗口。</summary>
 	public const string Settings = "settings";
 

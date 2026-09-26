@@ -557,7 +557,7 @@ public sealed class PetWindow : Window
 			if (!IsModelHit(pos)) return;
 
 			// 伴侣视窗是原生 Avalonia 窗口, 在 Linux/macOS 上优先让窗口管理器接管移动。
-			// 这条路径也覆盖 Wayland: WebView 的标题栏拖动能力不可用时, 原生窗口仍可拖动。
+			// 这条路径也覆盖 Wayland：原生窗口仍可拖动。
 			if (!OperatingSystem.IsWindows())
 			{
 				_isNativeDragPending = true;

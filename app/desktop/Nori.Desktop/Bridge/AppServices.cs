@@ -1,4 +1,3 @@
-using Nori.Core.Assets;
 using Nori.Core.Agent;
 using Nori.Core.Automation;
 using Nori.Core.Chat;
@@ -61,9 +60,6 @@ public sealed class AppServices : IAsyncDisposable
 	/// <summary>MCP (Model Context Protocol) 管理器</summary>
 	public required Nori.Core.Mcp.McpManager Mcp { get; init; }
 
-	/// <summary>回环资源服务</summary>
-	public AssetServer? Assets { get; init; }
-
 	/// <summary>统一插件运行时；安全模式下仅发现并标记禁用插件。</summary>
 	internal PluginRuntimeHost? PluginRuntime { get; set; }
 
@@ -123,9 +119,6 @@ public sealed class AppServices : IAsyncDisposable
 	/// <summary>桥接命令, 服务装配完成后回填</summary>
 	public BridgeCommands Commands { get; set; } = null!;
 
-	/// <summary>桥接内核, 服务装配完成后回填</summary>
-	public NoriBridge? Bridge { get; set; }
-
 	/// <summary>原生 Live2D 伴侣运行时</summary>
 	public PetRuntime PetRuntime { get; set; } = null!;
 
@@ -152,8 +145,7 @@ public sealed class AppServices : IAsyncDisposable
 	{
 		if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
-		// 先停止桥接，再并行取消彼此独立的后台子系统；单个挂起项不能挡住数据库与遥测释放。
-		await DisposeStep(() => Bridge?.DisposeAsync() ?? ValueTask.CompletedTask, TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+		// 并行取消彼此独立的后台子系统；单个挂起项不能挡住数据库与遥测释放。
 		await Task.WhenAll(
 			DisposeStep(() => Runtime?.DisposeAsync() ?? ValueTask.CompletedTask, TimeSpan.FromSeconds(4)),
 			DisposeStep(() => Automation?.DisposeAsync() ?? ValueTask.CompletedTask, TimeSpan.FromSeconds(4)),
@@ -163,8 +155,7 @@ public sealed class AppServices : IAsyncDisposable
 				Update?.Dispose();
 				return ValueTask.CompletedTask;
 			}, TimeSpan.FromSeconds(1)),
-			DisposeStep(() => Mcp.DisposeAsync(), TimeSpan.FromSeconds(4)),
-			DisposeStep(() => Assets?.DisposeAsync() ?? ValueTask.CompletedTask, TimeSpan.FromSeconds(4))).ConfigureAwait(false);
+			DisposeStep(() => Mcp.DisposeAsync(), TimeSpan.FromSeconds(4))).ConfigureAwait(false);
 		await DisposeStep(() =>
 		{
 			if (_publicHttp is not null && !ReferenceEquals(_publicHttp, Http)) _publicHttp.Dispose();

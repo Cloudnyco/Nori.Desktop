@@ -83,7 +83,7 @@ public partial class BridgeCommandsTests
 		Assert.Equal("first-run", entry.WindowLabel);
 		Assert.Equal("Frontend", entry.Category);
 		Assert.Equal("audio.error", entry.EventId);
-		Assert.Equal("前端音频操作失败：TypeError", entry.Message);
+		Assert.Equal("音频操作失败：TypeError", entry.Message);
 		string json = JsonSerializer.Serialize(entry);
 		Assert.DoesNotContain("正文", json);
 		Assert.DoesNotContain("私人", json);
@@ -91,13 +91,9 @@ public partial class BridgeCommandsTests
 	}
 
 	[Fact]
-	public async Task 调试日志事件拒绝音频宿主并允许原生设置()
+	public async Task 调试日志事件允许原生设置()
 	{
 		BridgeCommands commands = CreateCommands();
-		int before = _services.Logger.RecentLogs().Count;
-		await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(
-			new FakeBridgeSource(WindowLabels.AudioHost), "write_log", Args(new {level = "warn", eventId = "diagnostics.test", message = "伪造正文"})));
-		Assert.Equal(before, _services.Logger.RecentLogs().Count);
 
 		await commands.InvokeAsync(new FakeBridgeSource(WindowLabels.Settings), "write_log", Args(new {level = "warn", eventId = "diagnostics.test", message = "不应写入的正文"}));
 		LogEntry entry = _services.Logger.RecentLogs().Last();

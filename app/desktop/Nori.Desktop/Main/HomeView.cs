@@ -27,7 +27,6 @@ public sealed class HomeView : Panel
 {
 	private readonly AppServices _services;
 	private readonly Action _onChanged;
-	private readonly PluginWidgetHost _widgets;
 	private readonly TextBlock _communityTitle = Text(12, ChatPalette.Muted, true);
 	private readonly TextBlock _communityError = Text(12, ChatPalette.Danger);
 	private readonly TextBlock _overviewTitle = Text(12, ChatPalette.Muted, true);
@@ -66,7 +65,6 @@ public sealed class HomeView : Panel
 	{
 		_services = services;
 		_onChanged = onChanged;
-		_widgets = new PluginWidgetHost(services);
 		_communityError.IsVisible = false;
 		_togglePet = ActionButton("", TogglePet, true);
 		_wave = ActionButton("", Wave);
@@ -97,7 +95,6 @@ public sealed class HomeView : Panel
 				new StackPanel {Spacing = 10, Children = {_missingBanner, _safeBanner, BuildHero()}},
 				new StackPanel {Spacing = 8, Children = {_overviewTitle, stats}},
 				new StackPanel {Spacing = 8, Children = {_shortcutsTitle, shortcuts}},
-				_widgets,
 				new Border
 				{
 					BorderBrush = ChatPalette.Line, BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(0, 18, 0, 0),
@@ -136,7 +133,6 @@ public sealed class HomeView : Panel
 		_heroEyebrow.Text = english ? "YOUR DESKTOP COMPANION" : "你的桌面伙伴";
 		_qq.Content = DateTimeOffset.UtcNow < _qqCopiedUntil ? english ? "Copied" : "已复制" : english ? "QQ group" : "QQ 交流群";
 		_bilibili.Content = english ? "Bilibili" : "哔哩哔哩";
-		_widgets.Refresh(english);
 		if (!_readingMcp) _ = RefreshMcpCountAsync();
 		string modelId = data.ModelId;
 		_modelReady = data.ModelReady;

@@ -5,7 +5,7 @@ using Nori.Desktop.Audio;
 
 namespace Nori.Desktop.Tests;
 
-/// <summary>原生音频工厂的 WAV 解码与按段格式限制，不依赖真实声卡或 WebView。</summary>
+/// <summary>原生音频工厂的 WAV 解码与按段格式限制，不依赖真实声卡。</summary>
 public sealed class NativeAudioFactoryTests
 {
 	[Theory]
@@ -36,8 +36,7 @@ public sealed class NativeAudioFactoryTests
 		Assert.Contains(mime, error.Message, StringComparison.Ordinal);
 		Assert.Contains("PCM WAV", error.Message, StringComparison.Ordinal);
 		Assert.Contains("自定义 HTTP 在服务端", error.Message, StringComparison.Ordinal);
-		Assert.Contains("audio_backend=webview", error.Message, StringComparison.Ordinal);
-		Assert.Contains("重启", error.Message, StringComparison.Ordinal);
+		Assert.DoesNotContain("webview", error.Message, StringComparison.OrdinalIgnoreCase);
 		Assert.False(playback.IsPlaying);
 	}
 

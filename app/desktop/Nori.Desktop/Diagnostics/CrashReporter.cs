@@ -26,7 +26,7 @@ namespace Nori.Desktop.Diagnostics;
 /// - <c>TaskScheduler.UnobservedTaskException</c>: SetObserved + 记日志, 不弹窗 ——
 ///   这类异常在 GC 时才浮出, 多为过期的后台任务失败, 弹致命窗过于惊吓 (与 ClassIsland 的有意偏离).
 ///
-/// 崩溃窗用原生 Avalonia 构建: WebView2 可能正是故障源, 不能依赖它来显示错误.
+/// 崩溃窗用原生 Avalonia 构建, 不依赖浏览器组件来显示错误.
 /// </summary>
 public static class CrashReporter
 {
@@ -260,12 +260,6 @@ public static class CrashReporter
 	{
 		try
 		{
-			if (IsTransientWebViewFocusException(e.Exception))
-			{
-				WriteLogSafe($"忽略 WebView2 聚焦竞态: {SensitiveDataRedactor.ExceptionSummary(e.Exception)}");
-				e.Handled = true;
-				return;
-			}
 			Report(e.Exception, critical: false);
 			e.Handled = true; // 兜底成功, 进程继续运行
 		}
@@ -597,15 +591,6 @@ public static class CrashReporter
 	{
 		try { _lifetime?.Shutdown(code); }
 		catch (InvalidOperationException) { }
-	}
-
-	private static bool IsTransientWebViewFocusException(Exception exception)
-	{
-		for (Exception? current = exception; current is not null; current = current.InnerException)
-		{
-			if (current is COMException && current.HResult == unchecked((int)0x80070718)) return true;
-		}
-		return false;
 	}
 
 	private static void WriteLogSafe(string message)

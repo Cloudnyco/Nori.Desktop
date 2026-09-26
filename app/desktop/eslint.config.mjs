@@ -31,7 +31,7 @@ export default tseslint.config(
 	{
 		files: SOURCE_FILES,
 		languageOptions: {
-			globals: globals.browser,
+			globals: globals.node,
 			parserOptions: {
 				projectService: true,
 				tsconfigRootDir: import.meta.dirname,

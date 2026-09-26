@@ -36,13 +36,11 @@ public sealed class AppStoragePaths
 		PluginsDirectory = Path.Combine(DataRoot, "plugins");
 		PluginsInstalledDirectory = Path.Combine(PluginsDirectory, "installed");
 		PluginsDataDirectory = Path.Combine(PluginsDirectory, "data");
-		PluginsWebViewCacheDirectory = Path.Combine(PluginsDirectory, "cache", "webview");
 		PluginsPackageInboxDirectory = Path.Combine(PluginsDirectory, "cache", "packages", "inbox");
 		PluginsStagingDirectory = Path.Combine(PluginsDirectory, "temp", "staging");
 		UpdatesDirectory = Path.Combine(DataRoot, "updates");
 		UpdatesDownloadDirectory = Path.Combine(UpdatesDirectory, "download");
 		UpdatesStagingDirectory = Path.Combine(UpdatesDirectory, "staging");
-		WebViewHostCacheDirectory = Path.Combine(DataRoot, "webview", "cache", "host");
 		AutomationBrowserTempDirectory = Path.Combine(DataRoot, "automation", "temp", "browser");
 		LogsDirectory = Path.Combine(DataRoot, "diagnostics", "logs");
 		DiagnosticsDirectory = Path.Combine(DataRoot, "diagnostics");
@@ -70,13 +68,11 @@ public sealed class AppStoragePaths
 	public string PluginsDirectory { get; }
 	public string PluginsInstalledDirectory { get; }
 	public string PluginsDataDirectory { get; }
-	public string PluginsWebViewCacheDirectory { get; }
 	public string PluginsPackageInboxDirectory { get; }
 	public string PluginsStagingDirectory { get; }
 	public string UpdatesDirectory { get; }
 	public string UpdatesDownloadDirectory { get; }
 	public string UpdatesStagingDirectory { get; }
-	public string WebViewHostCacheDirectory { get; }
 	public string AutomationBrowserTempDirectory { get; }
 	public string LogsDirectory { get; }
 	public string DiagnosticsDirectory { get; }
@@ -97,13 +93,11 @@ public sealed class AppStoragePaths
 		EnsureDirectory(IndexTtsVoicesDirectory);
 		EnsureDirectory(PluginsInstalledDirectory);
 		EnsureDirectory(PluginsDataDirectory);
-		EnsureDirectory(PluginsWebViewCacheDirectory);
 		EnsureDirectory(PluginsPackageInboxDirectory);
 		EnsureDirectory(PluginsStagingDirectory);
 		EnsureDirectory(UpdatesDirectory);
 		EnsureDirectory(UpdatesDownloadDirectory);
 		EnsureDirectory(UpdatesStagingDirectory);
-		EnsureDirectory(WebViewHostCacheDirectory);
 		EnsureDirectory(AutomationBrowserTempDirectory);
 		EnsureDirectory(LogsDirectory);
 		EnsureDirectory(DiagnosticsDirectory);

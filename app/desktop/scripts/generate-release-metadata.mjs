@@ -183,7 +183,7 @@ const manifest = {
 	version,
 	rid,
 	packaging,
-	prerequisites: rid.startsWith("linux-") ? [".NET 10 Runtime", "WebKitGTK 4.x"] : rid.startsWith("osx-") ? [".NET 10 Runtime", "macOS WebKit"] : [".NET 10 Runtime", "Microsoft Edge WebView2 Evergreen Runtime"],
+	prerequisites: rid.startsWith("linux-") ? [".NET 10 Runtime", "libasound2"] : [".NET 10 Runtime"],
 	bundledNativeLibraries: [rid.startsWith("win-") ? "Live2DCubismCore.dll" : rid.startsWith("osx-") ? "libLive2DCubismCore.dylib" : "libLive2DCubismCore.so"],
 	files,
 	metadata: ["THIRD-PARTY-NOTICES.json", "SBOM.cdx.json"],

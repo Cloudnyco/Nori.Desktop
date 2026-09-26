@@ -6,9 +6,8 @@ namespace Nori.Core.Voice.Audio;
 /// 产出 **16 kHz 单声道 WAV**，理由有两条：
 /// - Whisper 的 <c>/audio/transcriptions</c> 内部就是按 16 kHz 单声道跑的，
 ///   送 48 kHz 立体声上去只是让它再降一次；
-/// - 体积。WebView 那条录的是 webm/opus（约 3 KB/s），原生拿到的是裸 PCM；
-///   若按设备原始格式（48 kHz 立体声 16 位 ≈ 192 KB/s）上传，一段 30 秒的话就是
-///   5.6 MB。降到 16 kHz 单声道之后是 32 KB/s，仍比 opus 大，但已经在可接受范围。
+/// - 体积。设备原始格式（48 kHz 立体声 16 位 ≈ 192 KB/s）上传时，一段 30 秒约 5.6 MB。
+///   降到 16 kHz 单声道之后是 32 KB/s。
 ///
 /// 采集设备那一层是 <see cref="IAudioCaptureDevice"/>，只有它需要原生实现；
 /// 这里的编排（攒缓冲、下混、重采样、封 WAV）全是普通托管代码。

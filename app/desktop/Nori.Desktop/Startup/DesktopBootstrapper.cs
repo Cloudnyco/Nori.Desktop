@@ -1,7 +1,6 @@
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
 using Nori.Core;
-using Nori.Core.Assets;
 using Nori.Core.Chat;
 using Nori.Core.Configuration;
 using Nori.Core.Data;
@@ -30,7 +29,6 @@ internal sealed class DesktopBootstrapper
 	private NoriDatabase? _startupDatabase;
 	private SentryTelemetry? _startupTelemetry;
 	private NoriHttpClients? _startupHttpClients;
-	private AssetServer? _startupAssets;
 	private Nori.Core.Mcp.McpManager? _startupMcp;
 	private PluginRuntimeHost? _startupPluginRuntime;
 	private Nori.Core.Update.UpdateService? _startupUpdate;
@@ -69,8 +67,6 @@ internal sealed class DesktopBootstrapper
 	private async Task StartAsyncCore(IClassicDesktopStyleApplicationLifetime desktop, CancellationToken cancellationToken)
 	{
 		cancellationToken.ThrowIfCancellationRequested();
-		bool devMode = string.Equals(Nori.Core.ProductVersion.Current, "Dev", StringComparison.Ordinal)
-			&& Environment.GetEnvironmentVariable("NORI_DEV") == "1";
 		bool safeMode = Program.Options?.SafeMode == true;
 		AppStoragePaths paths = Program.StoragePaths ?? throw new InvalidOperationException("存储路径尚未初始化");
 
@@ -80,27 +76,10 @@ internal sealed class DesktopBootstrapper
 		logger.Write(LogSource.Backend, "info", "日志系统初始化完成", "Lifecycle", "logging.ready");
 
 		// 先挂接但保持关闭。数据库中的明确同意状态读取完成前, Native Sentry 不得初始化,
-		// 这样 WebView/数据库探测等启动失败始终只留在本机。
+		// 这样数据库探测等启动失败始终只留在本机。
 		SentryTelemetry telemetry = new(SentryBuildConfig.NativeDsn, SentryBuildConfig.Release, SentryBuildConfig.Environment);
 		_startupTelemetry = telemetry;
 		CrashReporter.AttachTelemetry(telemetry);
-
-		// WebView 运行时缺失时给个能看懂的提示, 而不是弹几个空白窗口。
-		// 三平台各自的原生引擎: Windows→WebView2, macOS→WKWebView, Linux→WebKitGTK
-		(WebViewAdapterType adapterType, string engineName, string installHint) = OperatingSystem.IsWindows()
-			? (WebViewAdapterType.WebView2, "WebView2", "请安装 Microsoft Edge WebView2 Evergreen Runtime 后重试。")
-			: OperatingSystem.IsMacOS()
-				? (WebViewAdapterType.WkWebView, "WKWebView", "系统 WebKit 组件异常, 请确认 macOS 版本受支持。")
-				: (WebViewAdapterType.WebKitGtk, "WebKitGTK", "请安装 WebKitGTK 运行时 (Debian/Ubuntu: libwebkit2gtk-4.1-0; Fedora: webkit2gtk4.1)。");
-
-		DetailedWebViewAdapterInfo adapter = WebViewAdapterInfo.GetAdapterInfo(adapterType);
-		logger.Write(LogSource.Backend, "info", $"{engineName}: installed={adapter.IsInstalled} version={adapter.Version}");
-		if (!adapter.IsInstalled)
-		{
-			logger.Write(LogSource.Backend, "error", $"{engineName} 运行时不可用: {adapter.UnavailableReason}");
-			CrashReporter.ReportStartupFatal($"缺少 {engineName} 运行时", $"Nori 需要 {engineName} 才能显示界面。{Environment.NewLine}{installHint}");
-			return;
-		}
 
 		cancellationToken.ThrowIfCancellationRequested();
 		NoriDatabase database;
@@ -162,22 +141,17 @@ internal sealed class DesktopBootstrapper
 			logger.Write(LogSource.Backend, "warn", "已启用 allow_insecure_tls: 仅本地/模型端点跳过 TLS 证书校验");
 		}
 		cancellationToken.ThrowIfCancellationRequested();
-		AssetServer? assetServer = null;
 		PluginRuntimeHost pluginRuntime = new(new PluginRuntimeHostOptions
 		{
 			DataDirectory = paths.DataRoot,
 			PluginsDirectory = paths.PluginsInstalledDirectory,
 			PluginDataDirectory = paths.PluginsDataDirectory,
-			WebViewDataDirectory = paths.PluginsWebViewCacheDirectory,
 			PackageInboxDirectory = paths.PluginsPackageInboxDirectory,
 			StagingDirectory = paths.PluginsStagingDirectory,
 			HostVersion = PluginHostVersion(),
 			DevelopmentHost = string.Equals(Nori.Core.ProductVersion.Current, "Dev", StringComparison.Ordinal),
 			SafeMode = safeMode,
 			Logger = logger,
-			AssetUriFactory = (pluginId, path) => assetServer is { } server
-				? ToAbsolutePluginAssetUri(server, pluginId, path)
-				: throw new InvalidOperationException("插件资源服务尚未启动"),
 			OnError = exception =>
 			{
 				// 统一分类: 预期失败只记 warn, 程序缺陷 (如 TypeLoad/激活失败) 上报遥测并带安全标签。
@@ -190,15 +164,6 @@ internal sealed class DesktopBootstrapper
 				$"插件运行事件 [{LogEntry.SafeIdentifier(descriptor.Id)}@{LogEntry.SafeIdentifier(descriptor.Version.ToString())}]", "Plugin", "plugin.runtime", exception),
 		});
 		_startupPluginRuntime = pluginRuntime;
-		assetServer = await AssetServer.StartAsync(new AssetServerOptions
-		{
-			AppRoot = AppRoot(),
-			DevMode = devMode,
-			AdditionalRoutes = [pluginRuntime.AssetRoute],
-		});
-		AssetServer assets = assetServer ?? throw new InvalidOperationException("资源服务启动失败");
-		_startupAssets = assets;
-		logger.Write(LogSource.Backend, "info", $"资源服务已启动: {assets.Origin} (dev={devMode})");
 		pluginRuntime.Discover();
 
 		Nori.Core.Mcp.McpManager mcp = new(http, config);
@@ -228,7 +193,6 @@ internal sealed class DesktopBootstrapper
 			Embedding = new Nori.Core.Embedding.OpenAiEmbeddingAdapter(http),
 			Llm = new LlmClient(http),
 			Mcp = mcp,
-			Assets = assets,
 			PluginRuntime = pluginRuntime,
 			Update = updateService,
 			Http = http,
@@ -250,7 +214,6 @@ internal sealed class DesktopBootstrapper
 		_startupDatabase = null;
 		_startupTelemetry = null;
 		_startupHttpClients = null;
-		_startupAssets = null;
 		_startupMcp = null;
 		_startupPluginRuntime = null;
 		_startupUpdate = null;
@@ -266,11 +229,9 @@ internal sealed class DesktopBootstrapper
 		cancellationToken.ThrowIfCancellationRequested();
 		await Dispatcher.UIThread.InvokeAsync(() =>
 		{
-			services.Windows = new WindowManager(assets, desktop, paths);
+			services.Windows = new WindowManager(desktop);
 			services.Commands = new BridgeCommands(services);
-			NoriBridge bridge = new(services);
-			services.Bridge = bridge;
-			services.Windows.CreateAll(bridge, services);
+			services.Windows.CreateAll(services);
 
 			// 业务运行时 (Agent/技能/情绪/提醒/语音): 伴侣窗口就绪后启动,
 			// 桥接命令通过 services.Runtime 访问
@@ -355,11 +316,6 @@ internal sealed class DesktopBootstrapper
 			try { await _startupMcp.DisposeAsync().ConfigureAwait(false); } catch { }
 			_startupMcp = null;
 		}
-		if (_startupAssets is not null)
-		{
-			try { await _startupAssets.DisposeAsync().ConfigureAwait(false); } catch { }
-			_startupAssets = null;
-		}
 		try { _startupHttpClients?.Dispose(); } catch { }
 		_startupHttpClients = null;
 		try { _startupDatabase?.Dispose(); } catch { }
@@ -379,24 +335,9 @@ internal sealed class DesktopBootstrapper
 	}
 
 	/// <summary>
-	/// 前端 bundle 目录
-	///
-	/// 生产: 与可执行文件同目录的 wwwroot; 开发模式下不使用 (页面由 vite 提供)
-	/// </summary>
-	private static string AppRoot() => Path.Combine(AppContext.BaseDirectory, "wwwroot");
-
-	/// <summary>
 	/// 应用版本, 写入 app_version 配置
 	/// </summary>
 	private static string AppVersion() => Nori.Core.ProductVersion.Current;
-
-	private static Uri ToAbsolutePluginAssetUri(AssetServer server, string pluginId, string path)
-	{
-		string route = server.PublicUrl("plugins", $"{pluginId}/{path}");
-		if (Uri.TryCreate(route, UriKind.Absolute, out Uri? absolute)) return absolute;
-		return new Uri(new Uri(server.Origin + server.Prefix + "/", UriKind.Absolute), route.TrimStart('/'));
-	}
-
 
 	/// <summary>提取插件运行时使用的数字宿主版本。</summary>
 	private static PluginVersion PluginHostVersion()

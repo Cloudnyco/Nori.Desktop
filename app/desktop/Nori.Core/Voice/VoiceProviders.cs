@@ -98,8 +98,8 @@ public sealed class OpenAiTtsProvider(HttpClient httpClient, ConfigStore config)
 /// 自定义 HTTP TTS 适配器。
 ///
 /// POST tts_base_url, 请求体 {text, voice, speed}, 响应为带 Content-Type 的音频字节。
-/// 原生后端仅支持 WAV，自定义服务须在服务端配置为输出 PCM WAV；
-/// 此处仍保留真实编码与 MIME，让显式选择 WebView 的兼容路径继续支持其他音频格式。
+/// 原生后端仅支持 WAV，自定义服务须在服务端配置为输出 PCM WAV。
+/// 响应仍保留真实编码与 MIME，播放端据此拒绝非 WAV。
 /// </summary>
 public sealed class CustomHttpTtsProvider(HttpClient httpClient, ConfigStore config) : ITtsProvider
 {

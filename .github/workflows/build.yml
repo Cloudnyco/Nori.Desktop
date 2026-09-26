@@ -48,7 +48,7 @@ jobs:
         if: matrix.name == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-0 libgtk-3-0
+          sudo apt-get install -y libgtk-3-0 libasound2
 
       - uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
         with:
@@ -73,7 +73,7 @@ jobs:
           restore-keys: |
             nuget-${{ runner.os }}-
 
-      - name: 安装前端依赖
+      - name: 安装主题检查依赖
         run: pnpm install --frozen-lockfile
 
       - name: 一方 TODO/FIXME 门禁
@@ -81,27 +81,27 @@ jobs:
         run: pnpm check:todo
 
       # ESLint 与平台无关，只在 Windows 门禁 job 跑一次，避免三平台重复消耗。
-      - name: 前端门 · 静态检查
+      - name: 主题令牌门 · 静态检查
         if: matrix.name == 'windows'
         run: pnpm lint
 
-      - name: 前端门 · 类型检查与构建
+      - name: 主题令牌门 · 类型检查
         run: pnpm build
 
       # Windows 的覆盖率命令已执行全量测试，无需重复跑普通测试。
-      - name: 前端门 · 单元测试
+      - name: 主题令牌门 · 单元测试
         if: matrix.name != 'windows'
         run: pnpm test
 
-      - name: 前端门 · 覆盖率与阈值
+      - name: 主题令牌门 · 覆盖率与阈值
         if: matrix.name == 'windows'
         run: pnpm coverage
 
-      - name: 上传前端覆盖率产物
+      - name: 上传主题令牌覆盖率产物
         if: matrix.name == 'windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: nori-frontend-coverage
+          name: nori-theme-coverage
           path: app/desktop/coverage/*
           if-no-files-found: error
           retention-days: 7

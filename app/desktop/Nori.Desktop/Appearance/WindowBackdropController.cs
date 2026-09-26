@@ -77,8 +77,7 @@ internal sealed class WindowBackdropController : IDisposable
 		foreach (Window child in window.OwnedWindows) Register(child);
 	}
 
-	internal static bool IsEligible(Window window) => window is not PetWindow and not QuickChatWindow
-		&& (window is not NoriWindow web || web.Label != WindowLabels.AudioHost);
+	internal static bool IsEligible(Window window) => window is not PetWindow and not QuickChatWindow;
 
 	internal void SetEnabled(bool enabled)
 	{
@@ -105,8 +104,7 @@ internal sealed class WindowBackdropController : IDisposable
 		bool active = IsBlurActive(_enabled, window.ActualTransparencyLevel);
 		IBrush surface = NoriThemeTokens.Brush(active ? "bg-glass" : "bg-base");
 		window.Resources["NoriWindowSurfaceBrush"] = surface;
-		// WebView 的页面根节点已铺材质色，宿主保持透明以免叠加两层染色。
-		window.Background = active && window is NoriWindow ? Brushes.Transparent : surface;
+		window.Background = surface;
 	}
 
 	private void OnWindowPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs args)

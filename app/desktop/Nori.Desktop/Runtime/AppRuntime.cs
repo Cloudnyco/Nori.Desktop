@@ -26,8 +26,8 @@ namespace Nori.Desktop.Runtime;
 /// <summary>
 /// 应用运行时协调层
 ///
-/// 承接前端迁移过来的全部业务编排: Agent 会话与取消、工具授权、技能/情绪/提醒/
-/// 记忆/语音服务装配, 以及面向 WebView 的带版本号 UI 状态快照。
+/// 承接应用内的业务编排: Agent 会话与取消、工具授权、技能/情绪/提醒/
+/// 记忆/语音服务装配, 以及带版本号的脱敏 UI 状态快照。
 ///
 /// 事件出口约定:
 /// - nori:agent-event → 只推送给发起会话的原生对话窗口 (状态/chunk/用量/授权/完成/错误)
@@ -56,27 +56,17 @@ public sealed partial class AppRuntime : IAsyncDisposable
 	private readonly ConcurrentDictionary<Task, byte> _backgroundTasks = new();
 	private readonly CancellationTokenSource _lifetimeCts = new();
 	/// <summary>
-	/// 这一轮装配的是哪一套音频后端：native 或 webview。
+	/// 这一轮装配的音频后端名称。三平台固定为 native。
 	///
 	/// 日志里也写了一行，但那条只能事后翻。这个属性让「装配到了哪一份」可断言 ——
 	/// 换后端这种改动一旦悄悄回退到旧路径，现象只是「声音还是老样子」，很难发现。
 	/// </summary>
 	public string AudioBackendName { get; }
 
-	/// <summary>实际在用的播放后端。可能是原生设备，也可能是 WebView 那份。</summary>
+	/// <summary>实际在用的播放后端。三平台都是原生设备。</summary>
 	private readonly IAudioPlayback _playback;
 	private readonly IMicrophoneRecorder _recorder;
 
-	/// <summary>
-	/// WebView 那两份，**只为桥回调保留**。
-	///
-	/// ReportPlaybackFinished / ReportRecordingReady 这些是 WebView 专有的入口：
-	/// 页面播完或录完之后经桥回报。走原生后端时没有页面，这两个字段为 null，
-	/// 对应的桥命令变成空操作。
-	/// </summary>
-	private readonly WebViewAudioPlayback? _webViewPlayback;
-	private readonly WebViewMicrophoneRecorder? _webViewRecorder;
-	private readonly AudioHostChannel _audioChannel;
 	private readonly ReflectionWorker _reflectionWorker;
 	private readonly PetInteractionReactionService _petInteractionService;
 	private readonly SemaphoreSlim _petInteractionGate = new(1, 1);
@@ -132,7 +122,7 @@ public sealed partial class AppRuntime : IAsyncDisposable
 	/// <summary>
 	/// 托盘是否真的可用
 	///
-	/// 由 App 在装载托盘后回填; 不可用时前端在主窗内显示常驻入口与退出按钮。
+	/// 由 App 在装载托盘后回填; 不可用时主窗内显示常驻入口与退出按钮。
 	/// </summary>
 	public bool TrayAvailable { get; set; } = true;
 
@@ -201,33 +191,11 @@ public sealed partial class AppRuntime : IAsyncDisposable
 			reminderStore, config, services.Logger,
 			GetIdleSecondsSafe);
 
-		// Windows 默认使用 WASAPI；兼容后端使用独立的隐藏 WebView，不依赖原生 MainWindow。
-		MediaExchange media = services.Assets?.Media ?? new MediaExchange();
-		Func<string, string> mediaUrl = services.Assets is {} assets
-			? assets.MediaUrl
-			: _ => throw new InvalidOperationException("资源服务未启动, 音频端点不可用");
-		AudioHostChannel channel = new(() => services.Windows?.GetNoriWindow(WindowLabels.AudioHost));
-		_audioChannel = channel;
-
-		bool useNativeAudio = Nori.Core.Voice.Audio.AudioBackend.PrefersNative(
-			config.GetStringOr(ConfigStore.KeyAudioBackend, Nori.Core.Voice.Audio.AudioBackend.Auto), OperatingSystem.IsWindows());
-		if (useNativeAudio)
-		{
-			_playback = Audio.NativeAudioFactory.CreatePlayback();
-			_recorder = Audio.NativeAudioFactory.CreateRecorder();
-			_webViewPlayback = null;
-			_webViewRecorder = null;
-		}
-		else
-		{
-			WebViewAudioPlayback webPlayback = new(media, mediaUrl, channel);
-			WebViewMicrophoneRecorder webRecorder = new(media, mediaUrl, channel);
-			_playback = _webViewPlayback = webPlayback;
-			_recorder = _webViewRecorder = webRecorder;
-		}
-		AudioBackendName = useNativeAudio ? "native" : "webview";
-		services.Logger.Write(LogSource.Backend, "info",
-			$"音频后端：{(useNativeAudio ? "原生设备" : "WebView")}");
+		// 三平台都直接推声卡。旧的 audio_backend=webview 配置不再读取。
+		_playback = Audio.NativeAudioFactory.CreatePlayback();
+		_recorder = Audio.NativeAudioFactory.CreateRecorder();
+		AudioBackendName = "native";
+		services.Logger.Write(LogSource.Backend, "info", "音频后端：原生设备");
 
 		Voice = new VoiceService(services.Http, config, _playback,
 			() => VoiceRetired() ? null : _recorder, services.Paths);
@@ -348,8 +316,6 @@ public sealed partial class AppRuntime : IAsyncDisposable
 		// Voice.Dispose 会逆向释放 _playback; 录音票据要单独作废
 		try { _recorder.Dispose(); } catch { }
 		try { Voice.Dispose(); } catch { }
-		// 音频宿主通道最后解除: 让所有 WaitUntilReadyAsync 等待者立即结束而不是等超时
-		try { _audioChannel.Dispose(); } catch { }
 		try { if (Services.Automation is not null) await Services.Automation.DisposeAsync().ConfigureAwait(false); } catch { }
 		_petInteractionGate.Dispose();
 		_pluginToolsRefreshTimer?.Dispose();

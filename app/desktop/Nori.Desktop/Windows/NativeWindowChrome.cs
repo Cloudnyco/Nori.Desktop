@@ -125,7 +125,7 @@ internal sealed class NativeWindowChrome : Border
 		if (window.CanResize) window.WindowState = window.WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
 	}
 
-	/// <summary>在无系统装饰时保留八方向缩放；WebView 宿主需为这些边缘预留原生空域。</summary>
+	/// <summary>在无系统装饰时保留八方向缩放。</summary>
 	internal static void EnableBorderlessResize(Window window)
 	{
 		window.WindowDecorations = WindowDecorations.None;

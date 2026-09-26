@@ -44,9 +44,6 @@ public sealed class BridgeCommandRouter(AppServices services)
 		CancellationToken cancellationToken = default)
 	{
 		cancellationToken.ThrowIfCancellationRequested();
-		if (source.Label == WindowLabels.AudioHost && command is not
-			("audio_host_ready" or "audio_playback_finished" or "audio_level" or "audio_record_ready" or "audio_record_failed" or "audio_upload_failed" or "write_log"))
-			throw new UnauthorizedAccessException("音频宿主仅允许回报音频状态和结构化日志");
 		MemoryService.ValidateSourceCommand(source, command);
 		ModelService.ValidateSourceCommand(source, command);
 		NativeChatService.ValidateSourceCommand(source, command);

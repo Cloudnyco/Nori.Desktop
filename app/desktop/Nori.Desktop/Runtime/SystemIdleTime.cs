@@ -6,8 +6,7 @@ namespace Nori.Desktop.Runtime;
 /// <summary>
 /// 系统空闲时长 (Windows GetLastInputInfo)
 ///
-/// 挂机主动关怀依赖系统级的键鼠空闲时间, WebView 内的 DOM 事件覆盖不了窗口外,
-/// 因此由宿主直接查询系统输入状态。
+/// 挂机主动关怀依赖系统级的键鼠空闲时间，由宿主直接查询系统输入状态。
 /// </summary>
 public static class SystemIdleTime
 {

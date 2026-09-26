@@ -260,10 +260,9 @@ public partial class BridgeCommandsTests : IDisposable
 		public event Action<string, bool>? VisibilityChanged;
 
 		public Window? Get(string? label) => null;
-		public NoriWindow? GetNoriWindow(string? label) => null;
 		public PetWindow? Pet => null;
 
-		public void CreateAll(NoriBridge bridge, AppServices services)
+		public void CreateAll(AppServices services)
 		{
 		}
 		public void Show(string label) => SetVisible(label, true);

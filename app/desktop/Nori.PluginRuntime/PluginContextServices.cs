@@ -269,12 +269,10 @@ internal sealed class JsonPluginStorage : IPluginStorage
 internal sealed class PluginAssetProvider : IPluginAssets
 {
 	private readonly string _root;
-	private readonly Func<string, Uri>? _uriFactory;
 
-	public PluginAssetProvider(string root, Func<string, Uri>? uriFactory = null)
+	public PluginAssetProvider(string root)
 	{
 		_root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-		_uriFactory = uriFactory;
 	}
 
 	public Stream OpenRead(string relativePath)
@@ -286,7 +284,7 @@ internal sealed class PluginAssetProvider : IPluginAssets
 	public Uri GetUri(string relativePath)
 	{
 		string path = Resolve(relativePath) ?? throw new PluginException(PluginErrorCodes.AssetDenied, "插件资源路径不允许访问");
-		return _uriFactory?.Invoke(relativePath) ?? new Uri(path, UriKind.Absolute);
+		return new Uri(path, UriKind.Absolute);
 	}
 
 	internal static bool IsPublicAsset(string? path)

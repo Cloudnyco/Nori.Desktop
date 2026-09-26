@@ -9,7 +9,7 @@ namespace Nori.Desktop.Chat;
 /// <summary>宿主内部固定的聊天表面，不接受外部传入任意来源标签。</summary>
 internal enum NativeChatSurface { Full, QuickChat }
 
-/// <summary>原生对话来源，不冒充主 WebView；后台只读取缓存的可见性。</summary>
+/// <summary>原生对话来源；后台只读取缓存的可见性。</summary>
 internal sealed class NativeChatContext : INativeChatSource, IDisposable
 {
 	private readonly Window _owner;

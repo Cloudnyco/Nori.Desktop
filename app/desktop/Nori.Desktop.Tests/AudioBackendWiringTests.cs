@@ -1,55 +1,34 @@
 using Nori.Core.Configuration;
-using Nori.Core.Voice.Audio;
 using Nori.Desktop.Runtime;
 
 namespace Nori.Desktop.Tests;
 
 /// <summary>
-/// 运行时装配的是哪一套音频后端。
+/// 运行时始终装配原生音频。
 ///
-/// 判定本身在 <c>Nori.Core.Tests.AudioBackendTests</c> 里测（那层不碰运行时）。
-/// 这一族测的是**接线**：配置真的被读到了、分流真的走到了对应的分支。
-///
-/// 值得单独钉住的理由：这类改动一旦悄悄回退到旧路径，现象只是「声音还是老样子」，
-/// 没有报错也没有异常，很难发现。
+/// 旧配置不能把播放切回页面。这类回退没有报错，只是声音走了另一条链路，所以钉在这里。
 /// </summary>
 public partial class BridgeCommandsTests
 {
 	[Fact]
-	public async Task 默认按平台挑音频后端()
+	public async Task 默认使用原生音频后端()
 	{
 		await using AppRuntime runtime = new(_services);
 
-		// 装配使用真实宿主平台，不能使用自动化夹具固定为 Windows 的全局别名。
-		Assert.Equal(System.OperatingSystem.IsWindows() ? "native" : "webview", runtime.AudioBackendName);
+		Assert.Equal("native", runtime.AudioBackendName);
 	}
 
-	/// <summary>
-	/// 配置里写 webview 就退回老路径。
-	///
-	/// 这一档存在的意义是：原生后端在某台机器上出问题时，用户改一个配置就能拿回声音，
-	/// 不必等修复版本。
-	/// </summary>
-	[Fact]
-	public async Task 配置写webview时退回老路径()
-	{
-		_config.Set(ConfigStore.KeyAudioBackend, new ConfigValue.Text(AudioBackend.WebView));
-
-		await using AppRuntime runtime = new(_services);
-
-		Assert.Equal("webview", runtime.AudioBackendName);
-	}
-
-	/// <summary>写坏的值不该让应用哑掉 —— 按平台默认走。</summary>
+	/// <summary>旧的 webview 配置不再切回页面播放。</summary>
 	[Theory]
+	[InlineData("webview")]
 	[InlineData("")]
 	[InlineData("WEBAUDIO")]
-	public async Task 配置写坏时按平台挑(string configured)
+	public async Task 配置不再切换音频后端(string configured)
 	{
 		_config.Set(ConfigStore.KeyAudioBackend, new ConfigValue.Text(configured));
 
 		await using AppRuntime runtime = new(_services);
 
-		Assert.Equal(System.OperatingSystem.IsWindows() ? "native" : "webview", runtime.AudioBackendName);
+		Assert.Equal("native", runtime.AudioBackendName);
 	}
 }

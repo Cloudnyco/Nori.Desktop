@@ -1,6 +1,6 @@
 # Native Sentry 遥测与发布配置
 
-Nori 仅在原生 .NET/Avalonia 宿主中集成 Sentry。隐藏音频 WebView 不加载 Sentry SDK，也不上传 source map；音频宿主的错误通过受限 Bridge 写入本地结构化日志。
+Nori 仅在原生 .NET/Avalonia 宿主中集成 Sentry，不上传页面 source map。音频错误写在宿主本地结构化日志里。
 
 原生 Sentry 由用户遥测设置控制。没有配置 DSN 时，SDK 不会初始化远程传输；关闭遥测后停止发送事件，本地诊断日志仍保留。
 
@@ -8,7 +8,7 @@ Nori 仅在原生 .NET/Avalonia 宿主中集成 Sentry。隐藏音频 WebView �
 
 原生遥测只记录经过清理的异常、固定操作名、release/environment 标签和性能指标。严禁发送聊天正文、提示词、记忆、语音转写或录音、MCP 参数与结果、API Key、Cookie、请求正文及用户身份。Native Sentry 与本地日志不承担模型下载、更新服务或用户数据备份。
 
-音频 WebView 的日志使用 `write_log` Bridge 命令。宿主忽略传入正文和伪造来源字段，只接受稳定事件名与已知错误类型；调用侧对同类错误每分钟限流。
+诊断日志使用 `write_log` Bridge 命令。宿主忽略传入正文和伪造来源字段，只接受稳定事件名与已知错误类型；调用侧对同类错误每分钟限流。
 
 ## 原生构建变量
 
@@ -38,6 +38,6 @@ Web Sentry 的 DSN、项目名和 source-map 上传配置已移除。
 
 Release workflow 在发布归档前保留 PDB，使用 Sentry CLI 上传 Native 符号，然后从 Windows、Linux 和 macOS 发布目录移除 PDB。用户 ZIP/tar.gz 不包含符号文件。Native release 在正式 tag 创建后由独立 job 创建或复用并 finalize；缺少 Sentry 凭据时跳过相关上传与 finalize，不阻断普通应用发布。
 
-Release 顺序保持为：版本与分发许可校验、前端音频宿主构建及相关检查、Native 三平台构建/测试和发布冒烟、Native 符号上传、创建 tag、完成 Native Sentry release、创建 GitHub Release。
+Release 顺序保持为：版本与分发许可校验、主题令牌检查、Native 三平台构建/测试和发布冒烟、Native 符号上传、创建 tag、完成 Native Sentry release、创建 GitHub Release。
 
 本机可按需设置 `NORI_SENTRY_DSN_NATIVE`、`NORI_SENTRY_RELEASE` 和 `NORI_SENTRY_ENVIRONMENT`。不要把 `SENTRY_AUTH_TOKEN` 保存进项目文件或发布包。

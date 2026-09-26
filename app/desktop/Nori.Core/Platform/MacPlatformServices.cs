@@ -78,7 +78,7 @@ public sealed class MacPlatformServices : IPlatformServices
 	public PlatformCapabilities Capabilities { get; } = new()
 	{
 		SupportsGlobalCursor = true,
-		// performWindowDragWithEvent: 需要一个当前事件; 拿不到时退化为不支持, 前端会显示拖动手柄
+		// performWindowDragWithEvent: 需要一个当前事件; 拿不到时退化为不支持, 界面会显示拖动手柄
 		SupportsWindowDrag = true,
 		// 按光标是否位于模型交互矩形内，在「整窗可点」与「整窗穿透」之间切换
 		SupportsHitThrough = true,
@@ -124,7 +124,7 @@ public sealed class MacPlatformServices : IPlatformServices
 		nint window = ResolveWindow(windowHandle);
 		if (window == 0) throw new InvalidOperationException("无法解析 NSWindow");
 
-		// 用当前事件发起系统拖动; 没有当前事件 (例如事件已被 WebView 吞掉) 时抛错由调用方降级
+		// 用当前事件发起系统拖动; 没有当前事件时抛错由调用方降级
 		nint app = SendPtr(GetClass("NSApplication"), GetSelector("sharedApplication"));
 		nint currentEvent = app == 0 ? 0 : SendPtr(app, GetSelector("currentEvent"));
 		if (currentEvent == 0) throw new InvalidOperationException("没有可用的当前事件, 无法发起窗口拖动");

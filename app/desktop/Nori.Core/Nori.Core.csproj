@@ -18,6 +18,7 @@
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11"/>
+		<PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.11"/>
 		<PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0"/>
 		<PackageReference Include="ModelContextProtocol.Core" Version="2.2.0"/>
 		<PackageReference Include="Microsoft.Extensions.AI" Version="10.9.0"/>
@@ -30,11 +31,6 @@
 		<PackageReference Include="NLog" Version="6.2.0"/>
 		<PackageReference Include="Cronos" Version="0.13.0"/>
 		<PackageReference Include="System.Numerics.Tensors" Version="10.0.11"/>
-	</ItemGroup>
-
-	<ItemGroup>
-		<!-- 本机回环资源服务 (AssetServer) 用 Kestrel: HttpListener 在非管理员下绑端口需要 urlacl -->
-		<FrameworkReference Include="Microsoft.AspNetCore.App"/>
 	</ItemGroup>
 
 	<ItemGroup>
