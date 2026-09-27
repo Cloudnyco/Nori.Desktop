@@ -6,6 +6,7 @@ using Nori.Core.Network;
 namespace Nori.Core.Tests;
 
 [SuppressMessage("Security", "S5332", Justification = "HTTP 地址用于验证网络地址策略边界，调用方另行执行 HTTPS 契约。")]
+[SuppressMessage("Security", "S1313", Justification = "字面 IP 只用于验证私网与公网地址策略，测试不会向这些地址发起连接。")]
 public class UrlAccessPolicyTests
 {
 	[Theory]
