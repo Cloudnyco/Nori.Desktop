@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text;
 using Nori.Core.Data;
 
 namespace Nori.Core.Security;
@@ -9,7 +10,7 @@ namespace Nori.Core.Security;
 ///
 /// 各平台的落点:
 /// - Windows: DPAPI(CurrentUser) 保护的密钥文件 `<PackageRoot>/data/core/security/secret.key`
-/// - macOS:   Keychain (security 命令); 失败回退 `<PackageRoot>/data/core/security/secret.key` (0600)
+/// - macOS:   Keychain (Security 框架写入，security 命令读取); 失败回退 `<PackageRoot>/data/core/security/secret.key` (0600)
 /// - Linux:   libsecret (secret-tool, 若可用); 否则 `<PackageRoot>/data/core/security/secret.key` (0600)
 ///
 /// 回退到裸文件时会写日志 —— 这是「能用但更弱」的状态, 不能静默。
@@ -214,10 +215,10 @@ public sealed class SecretKeyStore : ISecretKeyStore
 
 	private static bool TryKeychainWrite(byte[] key)
 	{
-		string hex = Convert.ToHexString(key);
-		// -U: 已存在则更新
-		return RunTool(KeyStoreTool.MacOsSecurity,
-			["add-generic-password", "-s", KeychainService, "-a", KeychainAccount, "-w", hex, "-U"]) is not null;
+		if (!OperatingSystem.IsMacOS()) return false;
+		// 与 find-generic-password -w 读出的文本一致，但不再把密钥放进进程参数。
+		byte[] payload = Encoding.ASCII.GetBytes(Convert.ToHexString(key));
+		return MacKeychainStore.TryWriteGenericPassword(KeychainService, KeychainAccount, payload);
 	}
 
 	// ---- Linux libsecret ----

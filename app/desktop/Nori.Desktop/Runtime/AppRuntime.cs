@@ -18,6 +18,7 @@ using Nori.Desktop.Observation;
 using Nori.Core.Voice;
 using Nori.Desktop.Audio;
 using Nori.Desktop.Automation;
+using Nori.Desktop.Telemetry;
 using Nori.Desktop.Bridge;
 using Nori.Desktop.Windows;
 
@@ -376,7 +377,8 @@ public sealed partial class AppRuntime : IAsyncDisposable
 		{
 			try
 			{
-				Services.Telemetry.CaptureException(exception, "runtime.background_task");
+				if (!TelemetryNoise.IsNoise(exception))
+					Services.Telemetry.CaptureException(exception, "runtime.background_task");
 				Services.Logger.Write(LogSource.Backend, "warn", $"{name} failed: {SensitiveDataRedactor.ExceptionSummary(exception)}");
 			}
 			catch { }
@@ -387,7 +389,17 @@ public sealed partial class AppRuntime : IAsyncDisposable
 	{
 		if (tasks.Count == 0) return;
 		Task all = Task.WhenAll(tasks);
-		await Task.WhenAny(all, Task.Delay(timeout)).ConfigureAwait(false);
+		Task finished = await Task.WhenAny(all, Task.Delay(timeout)).ConfigureAwait(false);
+		if (!ReferenceEquals(finished, all))
+		{
+			_ = all.ContinueWith(
+				static task => _ = task.Exception,
+				CancellationToken.None,
+				TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+				TaskScheduler.Default);
+			return;
+		}
+		if (all.IsFaulted) _ = all.Exception;
 	}
 
 	/// <summary>活动 Agent 会话状态</summary>
@@ -413,6 +425,12 @@ public sealed partial class AppRuntime : IAsyncDisposable
 		public AutomationApprovalRequest Request { get; } = request;
 		public TaskCompletionSource<bool> Tcs { get; } = tcs;
 		public DateTimeOffset DeadlineUtc { get; private set; }
+		private int _timedOut;
+
+		/// <summary>超时回调已经记过期。完成信号之后用它区分拒绝。</summary>
+		public bool TimedOut => Volatile.Read(ref _timedOut) != 0;
+
+		public void MarkTimedOut() => Volatile.Write(ref _timedOut, 1);
 
 		private System.Threading.Timer? _timeout;
 

@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Sockets;
+using Nori.Core.Voice;
 using Nori.Desktop.Telemetry;
 using Sentry;
 using Sentry.Protocol;
@@ -107,5 +110,46 @@ public sealed class SentryTelemetryTests
 		telemetry.CaptureException(new InvalidOperationException("聊天内容"), "bridge.chat_start",
 			tags: new Dictionary<string, string> { ["failure_kind"] = "timeout" });
 		await telemetry.FlushAsync(TimeSpan.FromMilliseconds(10));
+	}
+
+	[Fact]
+	public void 连接超时与关闭噪声在发送边界之前丢弃()
+	{
+		List<SentryEvent> captured = [];
+		using SentryTelemetry telemetry = new("https://publickey@sentry.invalid/1", "nori@test", "test");
+		telemetry.Configure(true);
+		telemetry.TestBeforeSend = capturedEvent =>
+		{
+			captured.Add(capturedEvent);
+			return null;
+		};
+
+		telemetry.CaptureException(new TaskCanceledException("超时"), "voice.tts_test");
+		telemetry.CaptureException(new TimeoutException("超时"), "voice.tts_test");
+		telemetry.CaptureException(new SocketException((int)SocketError.ConnectionRefused), "rgb.connect");
+		telemetry.CaptureException(
+			new HttpRequestException("连接失败", new SocketException((int)SocketError.ConnectionRefused)),
+			"voice.tts_test");
+		telemetry.CaptureException(
+			new VoiceProviderException("openai", VoiceFailureKind.Network, "网络失败"),
+			"voice.tts_test");
+		telemetry.CaptureException(
+			new VoiceProviderException("gemini", VoiceFailureKind.HttpRejected, "HTTP 429", httpStatusCode: 429),
+			"voice.tts_test");
+		telemetry.CaptureException(new InvalidOperationException("Application is already shutting down."), "ui.shutdown");
+		telemetry.CaptureException(new AggregateException(new TaskCanceledException(), new SocketException()), "runtime.background_task");
+		Assert.Empty(captured);
+
+		telemetry.CaptureException(
+			new HttpRequestException("状态", inner: null, HttpStatusCode.TooManyRequests),
+			"voice.tts_test");
+		telemetry.CaptureException(
+			new VoiceProviderException("minimax", VoiceFailureKind.ProviderRejected, "拒绝"),
+			"voice.tts_test");
+		telemetry.CaptureException(new InvalidOperationException("别的错误"), "bridge.test");
+		telemetry.CaptureException(
+			new AggregateException(new TaskCanceledException(), new InvalidOperationException("bug")),
+			"runtime.background_task");
+		Assert.Equal(4, captured.Count);
 	}
 }

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json.Nodes;
 using Nori.Core.Security;
@@ -8,7 +9,10 @@ namespace Nori.Core.Network;
 /// <summary>
 /// 公网 HTTP 请求的基础 URL 校验。
 ///
-/// 这里只保留协议和主机格式校验，不拦截私网、保留地址或 DNS 结果；公网网络环境可能通过代理、VPN 或自定义 DNS 出口。
+/// <c>allowPrivate</c> 为 false 时拒绝回环、链路本地、私网、元数据地址和保留主机名。
+/// 主机名不是字面 IP 时，抓取路径会解析 DNS，任一结果不是公网单播就拒绝。
+/// DNS 解析本身失败时不单独拦截，交给后续 HTTP 调用报告。
+/// <c>allowPrivate</c> 为 true 时只校验协议和主机名，供本机 LLM/TTS 端点使用。
 /// </summary>
 public static class UrlAccessPolicy
 {
@@ -18,8 +22,13 @@ public static class UrlAccessPolicy
 	/// <summary>重定向跟随上限</summary>
 	public const int MaxRedirects = 5;
 
-	/// <summary>校验 HTTP(S) 地址。</summary>
-	public static void EnsurePublicHttp(Uri uri) => EnsureAllowed(uri, allowPrivate: true);
+	/// <summary>
+	/// 测试替换主机名解析。生产路径保持 null，走系统 DNS。
+	/// </summary>
+	internal static Func<string, CancellationToken, Task<IPAddress[]>>? ResolveHostForTests { get; set; }
+
+	/// <summary>校验公网 HTTP(S) 地址，拒绝私网和保留地址。</summary>
+	public static void EnsurePublicHttp(Uri uri) => EnsureAllowed(uri, allowPrivate: false);
 
 	/// <summary>把公网请求失败翻成用户可见的中文异常。</summary>
 	public static InvalidOperationException Translate(Exception exception, Uri? uri = null)
@@ -29,10 +38,9 @@ public static class UrlAccessPolicy
 		return new InvalidOperationException($"访问公网地址失败: {host}", exception);
 	}
 
-	/// <summary>校验 HTTP(S) 地址。</summary>
+	/// <summary>校验 HTTP(S) 地址。公网请求拒绝私网、链路本地、回环和元数据地址。</summary>
 	public static void EnsureAllowed(Uri uri, bool allowPrivate)
 	{
-		_ = allowPrivate;
 		if (!uri.IsAbsoluteUri || uri.Scheme is not ("http" or "https"))
 		{
 			throw new InvalidOperationException($"不允许访问的地址 (仅支持 http/https): {uri}");
@@ -40,6 +48,11 @@ public static class UrlAccessPolicy
 		if (string.IsNullOrEmpty(uri.Host))
 		{
 			throw new InvalidOperationException($"不允许访问的地址 (缺少主机名): {uri}");
+		}
+		if (allowPrivate) return;
+		if (IsReservedHost(uri.IdnHost) || (TryParseHost(uri.IdnHost, out IPAddress? address) && address is not null && !IsPublicUnicast(address)))
+		{
+			throw new InvalidOperationException($"不允许访问的地址 (私网或保留地址): {uri}");
 		}
 	}
 
@@ -54,6 +67,7 @@ public static class UrlAccessPolicy
 		CancellationToken cancellationToken = default)
 	{
 		EnsureAllowed(uri, allowPrivate);
+		await EnsurePublicResolutionAsync(uri, allowPrivate, cancellationToken);
 		Uri current = uri;
 
 		for (int hop = 0; ; hop++)
@@ -86,6 +100,7 @@ public static class UrlAccessPolicy
 			try
 			{
 				EnsureAllowed(current, allowPrivate);
+				await EnsurePublicResolutionAsync(current, allowPrivate, cancellationToken);
 			}
 			catch
 			{
@@ -94,6 +109,79 @@ public static class UrlAccessPolicy
 			}
 			response.Dispose();
 		}
+	}
+
+	/// <summary>
+	/// 非字面 IP 的主机名在公网模式下解析 DNS。任一地址不是公网单播则拒绝。
+	/// 解析失败不在这里拦截，让后续 HTTP 调用自己失败。
+	/// </summary>
+	private static async Task EnsurePublicResolutionAsync(Uri uri, bool allowPrivate, CancellationToken cancellationToken)
+	{
+		if (allowPrivate || TryParseHost(uri.IdnHost, out _)) return;
+		IPAddress[] addresses;
+		try
+		{
+			addresses = ResolveHostForTests is null
+				? await Dns.GetHostAddressesAsync(uri.IdnHost, cancellationToken)
+				: await ResolveHostForTests(uri.IdnHost, cancellationToken);
+		}
+		catch (Exception exception) when (exception is not OperationCanceledException)
+		{
+			return;
+		}
+		if (addresses is not null && addresses.Any(address => !IsPublicUnicast(address)))
+		{
+			throw new InvalidOperationException($"不允许访问的地址 (解析到私网或保留地址): {uri}");
+		}
+	}
+
+	private static bool IsReservedHost(string host)
+	{
+		string normalized = host.Trim().TrimEnd('.').ToLowerInvariant();
+		if (normalized.Length == 0) return true;
+		if (normalized is "localhost" or "metadata" or "metadata.google.internal") return true;
+		return normalized.EndsWith(".localhost", StringComparison.Ordinal)
+			|| normalized.EndsWith(".metadata.google.internal", StringComparison.Ordinal);
+	}
+
+	private static bool TryParseHost(string host, out IPAddress? address)
+	{
+		string candidate = host.Trim();
+		int zone = candidate.IndexOf('%');
+		if (zone >= 0) candidate = candidate[..zone];
+		return IPAddress.TryParse(candidate, out address);
+	}
+
+	/// <summary>公网单播。回环、未指定、私网、链路本地、共享地址、文档和组播地址都不是。</summary>
+	private static bool IsPublicUnicast(IPAddress address)
+	{
+		if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+		if (address.AddressFamily == AddressFamily.InterNetworkV6) return IsPublicIpv6(address);
+		if (address.AddressFamily != AddressFamily.InterNetwork) return false;
+
+		byte[] bytes = address.GetAddressBytes();
+		if (bytes[0] == 0) return false;
+		if (bytes[0] == 10) return false;
+		if (bytes[0] == 127) return false;
+		if (bytes[0] == 100 && bytes[1] is >= 64 and <= 127) return false;
+		if (bytes[0] == 169 && bytes[1] == 254) return false;
+		if (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) return false;
+		if (bytes[0] == 192 && bytes[1] == 168) return false;
+		if (bytes[0] == 192 && bytes[1] == 0 && bytes[2] == 0) return false;
+		if (bytes[0] == 192 && bytes[1] == 0 && bytes[2] == 2) return false;
+		if (bytes[0] == 198 && bytes[1] == 51 && bytes[2] == 100) return false;
+		if (bytes[0] == 203 && bytes[1] == 0 && bytes[2] == 113) return false;
+		if (bytes[0] == 198 && bytes[1] is 18 or 19) return false;
+		return bytes[0] < 224;
+	}
+
+	private static bool IsPublicIpv6(IPAddress address)
+	{
+		if (IPAddress.IPv6Any.Equals(address) || IPAddress.IPv6Loopback.Equals(address)) return false;
+		if (address.IsIPv6LinkLocal || address.IsIPv6Multicast || address.IsIPv6SiteLocal) return false;
+		byte[] bytes = address.GetAddressBytes();
+		if ((bytes[0] & 0xFE) == 0xFC) return false;
+		return !(bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x0D && bytes[3] == 0xB8);
 	}
 
 	/// <summary>读取受限的 Provider 错误摘要，不把完整响应正文带到 UI 或日志。</summary>
