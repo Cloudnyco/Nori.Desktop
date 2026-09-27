@@ -10,7 +10,7 @@ namespace Nori.Core.Security;
 ///
 /// 各平台的落点:
 /// - Windows: DPAPI(CurrentUser) 保护的密钥文件 `<PackageRoot>/data/core/security/secret.key`
-/// - macOS:   Keychain (Security 框架写入，security 命令读取); 失败回退 `<PackageRoot>/data/core/security/secret.key` (0600)
+/// - macOS:   Keychain (Security 框架读写，旧条目仍可用 security 命令读取); 失败回退 `<PackageRoot>/data/core/security/secret.key` (0600)
 /// - Linux:   libsecret (secret-tool, 若可用); 否则 `<PackageRoot>/data/core/security/secret.key` (0600)
 ///
 /// 回退到裸文件时会写日志 —— 这是「能用但更弱」的状态, 不能静默。
@@ -134,6 +134,7 @@ public sealed class SecretKeyStore : ISecretKeyStore
 
 	private byte[]? TryLoad()
 	{
+		if (OperatingSystem.IsMacOS() && TryFrameworkKeychainRead() is {Length: KeySize} fromFramework) return fromFramework;
 		if (OperatingSystem.IsMacOS() && TryKeychainRead() is {Length: KeySize} fromKeychain) return fromKeychain;
 		if (OperatingSystem.IsLinux() && TrySecretToolRead() is {Length: KeySize} fromSecretTool) return fromSecretTool;
 
@@ -205,6 +206,14 @@ public sealed class SecretKeyStore : ISecretKeyStore
 	}
 
 	// ---- macOS Keychain ----
+
+	private static byte[]? TryFrameworkKeychainRead()
+	{
+		if (!OperatingSystem.IsMacOS()) return null;
+		byte[]? payload = MacKeychainStore.TryReadGenericPassword(KeychainService, KeychainAccount);
+		if (payload is null || payload.Length == 0) return null;
+		return DecodeHex(Encoding.ASCII.GetString(payload));
+	}
 
 	private static byte[]? TryKeychainRead()
 	{
