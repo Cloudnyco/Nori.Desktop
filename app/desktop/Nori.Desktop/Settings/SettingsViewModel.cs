@@ -43,6 +43,7 @@ public sealed class SettingsViewModel : SettingsObservableObject, IDisposable
 	private bool _refreshPending;
 	private int _hostVisible;
 	private int _refreshWhenShown;
+	private int _snapshotEpoch;
 
 	/// <summary>创建设置窗口状态。</summary>
 	public SettingsViewModel(SettingsService service)
@@ -207,10 +208,18 @@ public sealed class SettingsViewModel : SettingsObservableObject, IDisposable
 		while (_refreshPending && !_disposed)
 		{
 			_refreshPending = false;
+			int epoch = Volatile.Read(ref _snapshotEpoch);
 			try
 			{
 				JsonElement snapshot = await _service.GetSnapshotAsync(_lifetimeCts.Token).ConfigureAwait(true);
 				if (_disposed) return;
+				// 窗口在读取期间隐藏时，结果可能已经混入隐藏之后的配置，留到再次显示再读。
+				if (Volatile.Read(ref _snapshotEpoch) != epoch)
+				{
+					Volatile.Write(ref _refreshWhenShown, 1);
+					if (Volatile.Read(ref _hostVisible) != 0) _refreshPending = true;
+					continue;
+				}
 				string language = SettingsSnapshotReader.String(snapshot, Language, "general", "language");
 				if (language is not ("zh-CN" or "en-US")) language = UiLanguage.IsEnglish(language) ? "en-US" : "zh-CN";
 				Language = language;
@@ -271,6 +280,7 @@ public sealed class SettingsViewModel : SettingsObservableObject, IDisposable
 	internal void SetHostVisible(bool visible)
 	{
 		if (_disposed) return;
+		if (!visible && Volatile.Read(ref _hostVisible) != 0) Interlocked.Increment(ref _snapshotEpoch);
 		Volatile.Write(ref _hostVisible, visible ? 1 : 0);
 		if (visible && Interlocked.Exchange(ref _refreshWhenShown, 0) == 1)
 			_ = RefreshSnapshotAsync(_lifetimeCts.Token);
