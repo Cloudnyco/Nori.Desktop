@@ -64,7 +64,7 @@ public sealed class BridgeFailureClassifierTests
 		BridgeFailure failure = BridgeFailureClassifier.Classify(exception);
 
 		Assert.Equal(BridgeFailureClass.ExternalService, failure.Class);
-		Assert.True(failure.Telemetry);
+		Assert.False(failure.Telemetry);
 		Assert.Equal("connect", failure.Tags!["failure_kind"]);
 	}
 
@@ -80,7 +80,7 @@ public sealed class BridgeFailureClassifierTests
 		BridgeFailure failure = BridgeFailureClassifier.Classify(exception);
 
 		Assert.Equal(BridgeFailureClass.ExternalService, failure.Class);
-		Assert.True(failure.Telemetry);
+		Assert.False(failure.Telemetry);
 		Assert.Equal("timeout", failure.Tags!["failure_kind"]);
 	}
 
@@ -144,12 +144,19 @@ public sealed class BridgeFailureClassifierTests
 
 		BridgeFailure network = BridgeFailureClassifier.Classify(
 			new VoiceProviderException("openai", VoiceFailureKind.Network, "网络失败"));
+		Assert.False(network.Telemetry);
 		Assert.Equal("connect", network.Tags!["failure_kind"]);
 
 		BridgeFailure http = BridgeFailureClassifier.Classify(
 			new VoiceProviderException("gemini", VoiceFailureKind.HttpRejected, "HTTP 429", httpStatusCode: 429));
+		Assert.False(http.Telemetry);
 		Assert.Equal("http_status", http.Tags!["failure_kind"]);
 		Assert.Equal("gemini", http.Tags!["provider"]);
+
+		BridgeFailure timeout = BridgeFailureClassifier.Classify(
+			new VoiceProviderException("openai", VoiceFailureKind.Timeout, "超时"));
+		Assert.False(timeout.Telemetry);
+		Assert.Equal("timeout", timeout.Tags!["failure_kind"]);
 	}
 
 	[Fact]

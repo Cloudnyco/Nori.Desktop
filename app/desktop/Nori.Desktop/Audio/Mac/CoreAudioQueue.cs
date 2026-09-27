@@ -34,20 +34,38 @@ internal sealed class CoreAudioQueue : ICoreAudioQueue
 	{
 		ObjectDisposedException.ThrowIf(_disposed, this);
 		ArgumentNullException.ThrowIfNull(render);
+		Abort();
 		_render = render;
-		AudioFormat format = CreateQueue(output: true, sampleRate, channels, OutputThunk);
-		PrimeOutputBuffers(format);
-		return format;
+		try
+		{
+			AudioFormat format = CreateQueue(output: true, sampleRate, channels, OutputThunk);
+			PrimeOutputBuffers(format);
+			return format;
+		}
+		catch
+		{
+			Abort();
+			throw;
+		}
 	}
 
 	public AudioFormat OpenInput(Action<ReadOnlySpan<float>> capture)
 	{
 		ObjectDisposedException.ThrowIf(_disposed, this);
 		ArgumentNullException.ThrowIfNull(capture);
+		Abort();
 		_capture = capture;
-		AudioFormat format = CreateQueue(output: false, 48000, 1, InputThunk);
-		PrimeInputBuffers(format);
-		return format;
+		try
+		{
+			AudioFormat format = CreateQueue(output: false, 48000, 1, InputThunk);
+			PrimeInputBuffers(format);
+			return format;
+		}
+		catch
+		{
+			Abort();
+			throw;
+		}
 	}
 
 	public void SetVolume(double volume)
@@ -92,20 +110,42 @@ internal sealed class CoreAudioQueue : ICoreAudioQueue
 		}
 	}
 
+	public void Abort()
+	{
+		lock (_gate)
+		{
+			if (_disposed) return;
+			ReleaseQueueLocked();
+		}
+		FreeHandle();
+	}
+
 	public void Dispose()
 	{
 		lock (_gate)
 		{
 			if (_disposed) return;
 			_disposed = true;
-			if (_queue != IntPtr.Zero)
-			{
-				if (_started) AudioQueueStop(_queue, 1);
-				AudioQueueDispose(_queue, 0);
-				_queue = IntPtr.Zero;
-				_started = false;
-			}
+			ReleaseQueueLocked();
 		}
+		FreeHandle();
+	}
+
+	private void ReleaseQueueLocked()
+	{
+		_render = null;
+		_capture = null;
+		if (_queue != IntPtr.Zero)
+		{
+			if (_started) AudioQueueStop(_queue, 1);
+			AudioQueueDispose(_queue, 0);
+			_queue = IntPtr.Zero;
+		}
+		_started = false;
+	}
+
+	private void FreeHandle()
+	{
 		if (_handle.IsAllocated) _handle.Free();
 	}
 
@@ -120,7 +160,12 @@ internal sealed class CoreAudioQueue : ICoreAudioQueue
 			: AudioQueueNewInput(ref description, (InputCallback) callback, GCHandle.ToIntPtr(_handle), IntPtr.Zero, IntPtr.Zero, 0, out _queue);
 		if (status != 0 || _queue == IntPtr.Zero)
 		{
-			if (_handle.IsAllocated) _handle.Free();
+			if (_queue != IntPtr.Zero)
+			{
+				AudioQueueDispose(_queue, 1);
+				_queue = IntPtr.Zero;
+			}
+			FreeHandle();
 			throw new AudioDeviceException(output
 				? $"打不开输出设备：AudioQueue {status}"
 				: $"打不开输入设备：AudioQueue {status}");

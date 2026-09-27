@@ -23,4 +23,10 @@ internal interface ICoreAudioQueue : IDisposable
 
 	/// <summary>立刻停，丢掉还没播的缓冲。</summary>
 	void StopImmediate();
+
+	/// <summary>
+	/// 释放已创建的原生队列和固定句柄，但不把对象标成已释放。
+	/// 打开失败后可以再次打开。
+	/// </summary>
+	void Abort();
 }

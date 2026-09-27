@@ -195,6 +195,7 @@ public sealed class SentryTelemetry : ITelemetry
 
 	private SentryEvent? ScrubEvent(SentryEvent current, SentryHint hint)
 	{
+		if (TelemetryNoise.IsNoise(current.Exception)) return null;
 		current.Request = null!;
 		// 保留匿名用户 ID 用于统计,清除其他 PII 字段
 		if (current.User is not null)
