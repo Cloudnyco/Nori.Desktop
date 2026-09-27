@@ -11,7 +11,7 @@ namespace Nori.Desktop.Audio.Linux;
 /// </summary>
 internal sealed class AlsaNativeFactory : IAlsaFactory
 {
-	internal const string MissingLibraryMessage = "未找到 libasound.so.2。请安装 libasound2 后再试。";
+	internal const string MissingLibraryMessage = "未找到 libasound.so.2。请安装 libasound2（Ubuntu 24.04 起为 libasound2t64）后再试。";
 
 	public IAlsaPcm OpenOutput(int sampleRate, int channels) => Open(playback: true, sampleRate, channels);
 

@@ -48,7 +48,9 @@ jobs:
         if: matrix.name == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-0 libasound2
+          alsa=libasound2
+          if apt-cache show libasound2t64 >/dev/null 2>&1; then alsa=libasound2t64; fi
+          sudo apt-get install -y libgtk-3-0 "$alsa"
 
       - uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
         with:

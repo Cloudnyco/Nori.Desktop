@@ -166,7 +166,7 @@ Nori-Desktop-Pet/
 - **操作系统**：Windows 10 / 11（x64，首要验收与发布平台）；macOS 与 Linux 支持开发与单元测试。
 - **.NET SDK**：[.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) 或更高版本。发布包的目标机需要对应的 .NET Runtime 10。
 - **Node.js**：Node.js 24+ 与 [pnpm](https://pnpm.io/)（必须使用 pnpm），用于主题令牌检查。
-- **Linux 音频**：需要 `libgtk-3-0` 与 `libasound2`。macOS 录音需要 `Info.plist` 中的 `NSMicrophoneUsageDescription`。
+- **Linux 音频**：需要 `libgtk-3-0`，以及 `libasound2t64`（Ubuntu 24.04 起）或 `libasound2`。macOS 录音需要 `Info.plist` 中的 `NSMicrophoneUsageDescription`。
 - **浏览器 DOM 自动化（可选）**：仅 Windows 支持，目标机需安装 Microsoft Edge stable；Playwright 使用 `msedge` channel 和进程临时隔离 profile，不随发布包捆绑或下载浏览器。自动化默认关闭，启用后填充等高风险动作仍需主界面审批。
 
 ### 安装与运行
@@ -253,7 +253,7 @@ publish.bat
 
 - **版本规范**：普通构建产品版本精确为 `Dev`；GitHub Actions Release 使用手动 codename，数字版本也不得由另一个发布标签重用，并由数字版本与短提交 hash 派生稳定标签、Sentry release 与 informational version。`ProductVersion.Current` 保留完整 informational 版本号并进入 snapshot、readiness、诊断与 MCP `clientInfo`。
 - **平台矩阵**：Windows x64 为发布 blocker 和首要验收平台；Release workflow 当前发布 `win-x64`、`linux-x64`、`osx-arm64`，macOS/Linux 能力不支持时（如 Wayland 全局光标与穿透）由能力标志驱动优雅降级。
-- **发布产物**：三平台均为 framework-dependent 槽式归档（Windows ZIP、Linux tar.gz、macOS ZIP），完整归档 root。目标机需要 .NET Runtime 10，不提供自包含安装包。Linux 运行还需要 GTK 与 `libasound2`。
+- **发布产物**：三平台均为 framework-dependent 槽式归档（Windows ZIP、Linux tar.gz、macOS ZIP），完整归档 root。目标机需要 .NET Runtime 10，不提供自包含安装包。Linux 运行还需要 GTK，以及 `libasound2t64`（Ubuntu 24.04 起）或 `libasound2`。
 - **模型管理**：仅支持本地模型（`arg-nori`、`nori`）与本地 ZIP/目录导入，不提供远程模型下载或 CDN 网关。
 - **排障与隐私**：提供 `--safe-mode` 人工排障模式；诊断日志导出严格经过白名单脱敏，绝不上传数据库、聊天记忆、提示词、录音或用户凭据。
 

@@ -88,7 +88,7 @@ Run application build, test, and development commands from `app/desktop/`. Use *
 - .NET 10 SDK; published apps need the .NET Runtime 10
 - Node.js 24+
 - pnpm 11+
-- Linux desktop libraries: GTK 3 and `libasound2`
+- Linux desktop libraries: GTK 3 and ALSA (`libasound2t64` on Ubuntu 24.04+, otherwise `libasound2`)
 
 ### Common Workflows
 

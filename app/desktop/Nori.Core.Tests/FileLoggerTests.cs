@@ -160,11 +160,14 @@ public class FileLoggerTests : IDisposable
 		Stopwatch timer = Stopwatch.StartNew();
 		for (int index = 0; index < 50; index++) logger.Write(LogSource.Backend, "error", "固定故障事件");
 		Assert.True(timer.Elapsed < TimeSpan.FromSeconds(1));
-		await Task.Delay(200);
 		Assert.True(logger.GetStatus().DroppedCount > 0);
+		// 覆盖率插桩会拖慢后台写盘启动。固定等几百毫秒时，失败计数可能还是 0。
+		Stopwatch observed = Stopwatch.StartNew();
+		while (logger.GetStatus().WriteFailureCount == 0 && observed.Elapsed < TimeSpan.FromSeconds(5))
+			await Task.Delay(20);
+		Assert.True(logger.GetStatus().WriteFailureCount > 0);
 		Assert.False(await logger.FlushAsync(TimeSpan.FromMilliseconds(50)));
 		Assert.Equal(50, logger.RecentLogs().Count);
-		Assert.True(logger.GetStatus().WriteFailureCount > 0);
 		File.Delete(blocked);
 		Assert.True(await logger.FlushAsync(TimeSpan.FromSeconds(5)));
 		Assert.Null(logger.GetStatus().LastError);

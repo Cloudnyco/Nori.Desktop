@@ -25,10 +25,14 @@ install_linux_dependencies() {
 
 	log "安装 Linux GTK 与 ALSA 依赖。"
 	"${sudo_cmd[@]}" apt-get update
+	local alsa_package="libasound2"
+	if apt-cache show libasound2t64 >/dev/null 2>&1; then
+		alsa_package="libasound2t64"
+	fi
 	"${sudo_cmd[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 		ca-certificates \
 		libgtk-3-0 \
-		libasound2
+		"$alsa_package"
 }
 
 activate_node24() {
