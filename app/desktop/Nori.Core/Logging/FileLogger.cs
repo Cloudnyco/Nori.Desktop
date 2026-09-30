@@ -286,7 +286,8 @@ public sealed class FileLogger : IDisposable, IAsyncDisposable
 	/// </summary>
 	private static string PhysicalLogDirectory(string fullPath)
 	{
-		string name = Path.GetFileName(fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+		fullPath = Path.TrimEndingDirectorySeparator(fullPath);
+		string name = Path.GetFileName(fullPath);
 		string? parent = Path.GetDirectoryName(fullPath);
 		if (string.IsNullOrEmpty(parent) || string.IsNullOrEmpty(name))
 			throw new InvalidOperationException("日志目录无效");

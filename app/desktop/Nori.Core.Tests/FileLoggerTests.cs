@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
-using Nori.Core.Data;
 using Nori.Core.Logging;
 
 namespace Nori.Core.Tests;
@@ -219,6 +218,21 @@ public class FileLoggerTests : IDisposable
 		Assert.All(ReadLines(_directory), line => Assert.NotNull(JsonDocument.Parse(line)));
 	}
 
+	[Theory]
+	[InlineData("/")]
+	[InlineData("//")]
+	public async Task 目录尾分隔符不改变普通及应急日志的位置(string suffix)
+	{
+		string directory = Path.Combine(_directory, "trailing");
+		await using FileLogger logger = new(directory + suffix);
+		logger.Write(LogSource.Backend, "info", "普通日志");
+		Assert.True(await logger.FlushAsync(TimeSpan.FromSeconds(5)));
+		await FileLogger.WriteEmergencyAsync(directory + suffix, "应急日志");
+
+		Assert.Equal(2, ReadLines(directory).Length);
+		Assert.Empty(Directory.GetDirectories(directory));
+	}
+
 	[Fact]
 	public async Task 系统临时目录可写且日志目录本身不能是符号链接()
 	{
@@ -238,7 +252,9 @@ public class FileLoggerTests : IDisposable
 		try { Directory.CreateSymbolicLink(link, real); }
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { return; }
 		Assert.Throws<InvalidOperationException>(() => new FileLogger(link));
-		Assert.Empty(Directory.GetFiles(real, "nori_*.jsonl"));
+		Assert.Throws<InvalidOperationException>(() => new FileLogger(link + Path.DirectorySeparatorChar));
+		await FileLogger.WriteEmergencyAsync(link + Path.DirectorySeparatorChar, "不能写入链接目录");
+		Assert.Empty(Directory.GetFileSystemEntries(real));
 	}
 
 	[Fact]
