@@ -145,7 +145,7 @@ public sealed class WorkspaceToolsTests : IDisposable
 
 
 
-	// ---- findFiles ----
+	// ---- findFiles 工具 ----
 
 	[Fact]
 	public async Task 按扩展名找到深层文件()
@@ -291,7 +291,7 @@ public sealed class WorkspaceToolsTests : IDisposable
 		Assert.Equal(WorkspaceAccess.MaxEntries, result.GetProperty("matches").GetArrayLength());
 	}
 
-	// ---- editFile ----
+	// ---- editFile 工具 ----
 
 	[Fact]
 	public async Task 定点替换只改命中的那一段()

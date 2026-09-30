@@ -18,7 +18,7 @@ public sealed record ApprovalNotice
 	/// <summary>工具自己的说明，没有就为空。</summary>
 	public string? Description { get; init; }
 
-	/// <summary>safe / confirm / dangerous。</summary>
+	/// <summary>权限等级：safe、confirm 或 dangerous。</summary>
 	public string PermissionLevel { get; init; } = "confirm";
 
 	/// <summary>参数摘要，已经压成一行。</summary>

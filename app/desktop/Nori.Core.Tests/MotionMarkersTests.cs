@@ -5,7 +5,7 @@ using Nori.Core.Resources;
 namespace Nori.Core.Tests;
 
 /// <summary>
-/// 动作标记解析, 对应 Rust 版 chat.rs 的 extract_motion_markers
+/// 动作标记解析测试
 /// </summary>
 public class MotionMarkersTests
 {

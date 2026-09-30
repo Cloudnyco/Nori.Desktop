@@ -4,7 +4,7 @@ using Nori.Core.Resources;
 namespace Nori.Core.Tests;
 
 /// <summary>
-/// ZIP 解压安全规则, 对应 Rust 版 downloader.rs 的 sanitize_zip_path / extract_zip
+/// ZIP 解压安全规则测试
 /// </summary>
 public class ZipExtractorTests
 {

@@ -15,10 +15,8 @@ using Nori.PluginRuntime;
 namespace Nori.Desktop.Bridge;
 
 /// <summary>
-/// 应用级服务容器
-///
-/// 承接原来 Rust 侧 tauri::State 的角色: 把数据库/配置/资源/聊天/日志/窗口
-/// 装配在一起交给桥接命令使用.
+/// 应用级服务容器。
+/// 把数据库、配置、资源、聊天、日志、窗口等核心服务装配在一起提供给各模块和桥接命令使用。
 /// </summary>
 public sealed class AppServices : IAsyncDisposable
 {

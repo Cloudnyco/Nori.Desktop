@@ -75,7 +75,7 @@ internal sealed class WasapiAudioDevice : IAudioDevice
 				DeviceName = WasapiNativeApi.FriendlyName(device);
 
 				Guid clientId = WasapiNativeApi.IidAudioClient;
-				device.Activate(ref clientId, 1 /* CLSCTX_INPROC_SERVER */, IntPtr.Zero, out object clientObject);
+				device.Activate(ref clientId, 1 /* CLSCTX_INPROC_SERVER 进程内服务 */, IntPtr.Zero, out object clientObject);
 				WasapiNativeApi.IAudioClient client = (WasapiNativeApi.IAudioClient) clientObject;
 				// 初始化失败也由 Dispose 收回客户端，不能等 RCW 被回收。
 				_client = client;

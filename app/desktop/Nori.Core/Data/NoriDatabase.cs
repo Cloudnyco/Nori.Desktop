@@ -4,10 +4,9 @@ using Microsoft.Data.Sqlite;
 namespace Nori.Core.Data;
 
 /// <summary>
-/// 数据库
-///
-/// 对应 Rust 版的 db.rs: 打开或创建 nori.db, 建表, 补默认配置, 校验结构版本.
-/// Rust 用 Mutex&lt;Connection&gt; 跨命令共享单连接, 这里用同一把锁保持等价语义.
+/// 数据库。
+/// 打开或创建 nori.db，建表，补默认配置，校验并执行结构版本迁移。
+/// 使用锁跨命令共享单连接以保持并发安全。
 /// </summary>
 public sealed class NoriDatabase : IDisposable
 {
@@ -32,7 +31,7 @@ public sealed class NoriDatabase : IDisposable
 
 	private const string MigrationBackupMarker = ".pre-migration-";
 
-	/// <summary>建表语句, 与 Rust 版 SCHEMA 完全一致</summary>
+	/// <summary>基础建表语句</summary>
 	private const string Schema = """
 		CREATE TABLE IF NOT EXISTS config (
 		    key   TEXT PRIMARY KEY,

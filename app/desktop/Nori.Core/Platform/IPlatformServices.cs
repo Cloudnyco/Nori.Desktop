@@ -10,7 +10,7 @@ public enum SessionType
 	/// <summary>Windows 桌面</summary>
 	Windows,
 
-	/// <summary>macOS (Cocoa)</summary>
+	/// <summary>macOS 桌面 (Cocoa)</summary>
 	MacOS,
 
 	/// <summary>Linux + X11 (含 XWayland)</summary>
@@ -34,7 +34,7 @@ public sealed record PlatformCapabilities
 	/// <summary>能否读取窗口外的全局光标 (眼神跟随)</summary>
 	public required bool SupportsGlobalCursor { get; init; }
 
-	/// <summary>能否从 HTML 标题栏发起原生窗口拖动</summary>
+	/// <summary>能否发起原生窗口拖动</summary>
 	public required bool SupportsWindowDrag { get; init; }
 
 	/// <summary>能否按模型交互区域做点击穿透</summary>

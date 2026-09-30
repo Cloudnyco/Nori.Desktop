@@ -32,8 +32,7 @@ internal sealed class OfficialMcpConnection : IAsyncDisposable
 		IClientTransport transport = CreateTransport(config, httpClient);
 		try
 		{
-			// Leave ProtocolVersion unset so SDK 2.2 can probe the server and
-			// downgrade to the newest version it actually supports.
+			// 保持 ProtocolVersion 未设置，以便 SDK 2.2 能探测服务端并降级到其实际支持的最新版本。
 			McpClientOptions options = new();
 
 			ModelContextProtocol.Client.McpClient client = await ModelContextProtocol.Client.McpClient.CreateAsync(
@@ -49,7 +48,7 @@ internal sealed class OfficialMcpConnection : IAsyncDisposable
 			if (transport is IAsyncDisposable disposable)
 			{
 				try { await disposable.DisposeAsync(); }
-				catch { /* Preserve the original connection failure. */ }
+				catch { /* 保留原始连接失败异常 */ }
 			}
 			throw;
 		}
@@ -149,11 +148,11 @@ internal sealed class OfficialMcpConnection : IAsyncDisposable
 		}
 		catch (ClientTransportClosedException)
 		{
-			// Transport closure is an expected shutdown path.
+			// 传输通道关闭是预期的关闭流程。
 		}
 		catch (AggregateException exception) when (exception.Flatten().InnerExceptions.All(IsExpectedClose))
 		{
-			// The SDK may wrap expected session closure in AggregateException.
+			// SDK 可能会将预期的会话关闭包装在 AggregateException 中。
 		}
 		GC.SuppressFinalize(this);
 	}

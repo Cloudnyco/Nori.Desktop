@@ -1,4 +1,4 @@
-﻿// [Nori Modification] Guarded Dispose against native double-free.
+﻿// [Nori 修改] 防御重入释放以避免原生层双重释放 (double-free)。
 using System.Runtime.InteropServices;
 using Live2DCSharpSDK.Framework.Core;
 
@@ -65,7 +65,7 @@ public class CubismMoc : IDisposable
     /// デストラクタ。
     /// </summary>
     /// <summary>
-    /// [Nori Modification] 重入保护
+    /// [Nori 修改] 重入保护
     ///
     /// 原实现无条件 DeallocateAligned(_moc), 被 Dispose 两次就是非托管内存的双重释放,
     /// 表现为进程直接以 0xC0000374 (STATUS_HEAP_CORRUPTION) 崩溃且没有托管栈。

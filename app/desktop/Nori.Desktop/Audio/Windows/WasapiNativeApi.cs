@@ -115,7 +115,7 @@ internal static class WasapiNativeApi
 		private readonly IntPtr _padding;
 	}
 
-	/// <summary>PKEY_Device_FriendlyName。</summary>
+	/// <summary>设备友好名称属性键 (PKEY_Device_FriendlyName)。</summary>
 	internal static PropertyKey FriendlyNameKey =>
 		new(new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"), 14);
 
@@ -209,7 +209,7 @@ internal static class WasapiNativeApi
 	}
 
 	/// <summary>
-	/// WAVEFORMATEX。
+	/// 波形音频格式结构体 (WAVEFORMATEX)。
 	///
 	/// <c>GetMixFormat</c> 返回的实际上常是 WAVEFORMATEXTENSIBLE（前 18 字节与这个
 	/// 结构一致，后面还有 22 字节）。我们只读前半段，并按 <c>cbSize</c> 判断要不要

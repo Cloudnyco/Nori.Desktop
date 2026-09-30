@@ -1,4 +1,4 @@
-﻿// [Nori Modification] Embedded Live2DCSharpSDK with customized Update hooks for desktop pet behaviors.
+﻿// [Nori 修改] 内嵌 Live2DCSharpSDK，并为桌面伴侣行为定制 Update 钩子。
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;

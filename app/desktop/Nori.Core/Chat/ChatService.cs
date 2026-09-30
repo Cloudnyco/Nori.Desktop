@@ -136,10 +136,8 @@ public sealed record ChatMessage
 }
 
 /// <summary>
-/// 聊天服务
-///
-/// 对应 Rust 版 chat.rs. 系统提示词以嵌入资源形式编译进程序集,
-/// 与原来的 include_str! 一样 —— 改了 nori-system-prompt.md 必须重新构建才生效.
+/// 聊天服务。
+/// 系统提示词以嵌入资源形式编译进程序集，修改 nori-system-prompt.md 后必须重新构建才生效。
 /// </summary>
 public sealed class ChatService(HttpClient httpClient, NoriDatabase database, ConfigStore config)
 {

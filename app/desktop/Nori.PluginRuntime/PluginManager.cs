@@ -363,7 +363,7 @@ internal sealed class PluginManager : IAsyncDisposable
 			_stateStore.SetEnabled(pluginId, false);
 
 			try { await DeactivateCoreAsync(pluginId, cancellationToken, disabled: true).ConfigureAwait(false); }
-			catch (PluginException) { /* cleanup still decides whether uninstall can continue */ }
+			catch (PluginException) { /* 由后续清理逻辑决定卸载是否可继续 */ }
 
 			if (!UnloadContext(handle))
 			{

@@ -3,7 +3,7 @@ using Nori.Core.Resources;
 namespace Nori.Core.Tests;
 
 /// <summary>
-/// 资源名称校验, 对应 Rust 版 validate_resource_name
+/// 资源名称校验测试
 /// </summary>
 public class ResourceNameTests
 {

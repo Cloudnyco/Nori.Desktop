@@ -13,9 +13,7 @@ using Nori.Desktop.Windows;
 namespace Nori.Desktop.Tray;
 
 /// <summary>
-/// 系统托盘
-///
-/// 对应 Rust 版 tray.rs. 托盘是唯一常驻的入口: 左键开主界面, 菜单切换 Nori 与退出.
+/// 系统托盘。托盘是常驻入口：左键打开主界面，菜单切换 Nori 宠物窗口与退出应用。
 /// </summary>
 public static class TrayMenu
 {

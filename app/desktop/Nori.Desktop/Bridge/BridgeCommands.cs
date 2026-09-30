@@ -515,7 +515,7 @@ public sealed partial class BridgeCommands
 		// invoke("skills_export", {id}) → JSON 字符串
 		"skills_export" => RequireMain(source, () => Runtime.Skills.Export(Str(args, "id"))),
 
-		// ---- MCP ----
+		// ---- MCP 服务 ----
 		// invoke("mcp_get_servers")
 		"mcp_get_servers" => await McpGetServersAsync(source),
 		// invoke("mcp_save_server", {id, name, transport, command, args, env, url, enabled, autoConnect})

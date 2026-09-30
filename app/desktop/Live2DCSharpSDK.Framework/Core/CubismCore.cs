@@ -1,4 +1,4 @@
-﻿// [Nori Modification] Entry point renamed for Cubism Core 6 (csmGetRenderOrders).
+﻿// [Nori 修改] 为 Cubism Core 6 重命名入口点 (csmGetRenderOrders)。
 using System.Numerics;
 using System.Runtime.InteropServices;
 
@@ -272,9 +272,8 @@ public static partial class CubismCore
     /// Gets drawable render orders.
     /// The higher the order, the more up front a drawable is.
     ///
-    /// [Nori Modification] Cubism Core 6 renamed this export from
-    /// "csmGetDrawableRenderOrders" to "csmGetRenderOrders"; binding the old name
-    /// throws EntryPointNotFoundException on the very first frame that draws a model.
+    /// [Nori 修改] Cubism Core 6 将此导出名称从 "csmGetDrawableRenderOrders"
+    /// 重命名为 "csmGetRenderOrders"；绑定旧名称会在绘制模型的第一帧抛出 EntryPointNotFoundException。
     /// </summary>
     /// <param name="model">Model to query.</param>
     /// <returns>Valid pointer on success; '0'otherwise.</returns>

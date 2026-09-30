@@ -4,10 +4,8 @@ using Avalonia.Media;
 namespace Nori.Desktop.Windows;
 
 /// <summary>
-/// 窗口定义
-///
-/// 逐条对应原 tauri.conf.json 的 app.windows 配置.
-/// 启动时预建的原生窗口。设置、记忆、模型和对话窗口按需创建。
+/// 窗口定义。
+/// 启动时预建的原生窗口配置。设置、记忆、模型和对话窗口按需创建。
 /// </summary>
 public sealed record WindowDefinition
 {
@@ -17,7 +15,7 @@ public sealed record WindowDefinition
 	/// <summary>窗口标题</summary>
 	public required string Title { get; init; }
 
-	/// <summary>宽度 (DIP, 与 Tauri 的逻辑像素同义)</summary>
+	/// <summary>宽度 (DIP，逻辑像素)</summary>
 	public required double Width { get; init; }
 
 	/// <summary>高度 (DIP)</summary>

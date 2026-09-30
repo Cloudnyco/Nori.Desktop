@@ -4,8 +4,8 @@ using Nori.Core.Configuration;
 namespace Nori.Core.Tests;
 
 /// <summary>
-/// ConfigValue 的读时类型推断必须与 Rust 版 config.rs 逐字等价.
-/// 这是整个移植里最容易静默出错的地方: 推断规则一变, 伴侣的缩放/表情配置会悄悄失效.
+/// ConfigValue 的读时类型推断测试。
+/// 确保推断规则稳定：推断规则一变，伴侣的缩放/表情配置会悄悄失效。
 /// </summary>
 public class ConfigValueTests
 {
@@ -34,8 +34,8 @@ public class ConfigValueTests
 	[Fact]
 	public void FromStorage_小数落到字符串而不是整数()
 	{
-		// l2d_scale 存的是 "1.25" 这类值: Rust 里 i64 解析失败, 又不是 JSON 容器, 最终是字符串.
-		// 前端 parseNumber 依赖这一点.
+		// l2d_scale 存的是 "1.25" 这类值: 非整数且不是 JSON 容器，最终作为字符串处理。
+		// 前端 parseNumber 依赖这一点。
 		ConfigValue value = ConfigValue.FromStorage("1.25");
 		ConfigValue.Text text = Assert.IsType<ConfigValue.Text>(value);
 		Assert.Equal("1.25", text.Value);
@@ -102,7 +102,7 @@ public class ConfigValueTests
 		Assert.Equal("42", ConfigValue.AsStringOr(ConfigValue.FromStorage("42"), "fallback"));
 		Assert.Equal("true", ConfigValue.AsStringOr(ConfigValue.FromStorage("1"), "fallback"));
 		Assert.Equal("fallback", ConfigValue.AsStringOr(null, "fallback"));
-		// 空字符串视为缺失, 与 Rust 的 `if !value.is_empty()` 一致
+		// 空字符串视为缺失
 		Assert.Equal("fallback", ConfigValue.AsStringOr(ConfigValue.FromStorage(""), "fallback"));
 	}
 }

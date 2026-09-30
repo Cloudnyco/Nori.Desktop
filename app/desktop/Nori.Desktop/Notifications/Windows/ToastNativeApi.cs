@@ -21,7 +21,7 @@ namespace Nori.Desktop.Notifications.Windows;
 [SupportedOSPlatform("windows")]
 internal static class ToastNativeApi
 {
-	// ── HSTRING ────────────────────────────────────────────────────────────
+	// ── HSTRING 字符串互操作 ────────────────────────────────────────────────────────────
 
 	[DllImport("combase.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
 	internal static extern IntPtr WindowsCreateString(

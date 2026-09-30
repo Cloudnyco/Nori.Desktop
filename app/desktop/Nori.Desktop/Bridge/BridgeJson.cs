@@ -51,7 +51,7 @@ public sealed record BridgeMessage
 /// </summary>
 public sealed record BridgeResult
 {
-	/// <summary>resolve / reject</summary>
+	/// <summary>结果类型：resolve 或 reject</summary>
 	[JsonPropertyName("kind")]
 	public required string Kind { get; init; }
 

@@ -22,7 +22,7 @@ public sealed class ApprovalToastTests
 		Description = description,
 	};
 
-	// ── XML ────────────────────────────────────────────────────────────────
+	// ── XML 格式生成 ──────────────────────────────────────────────────────
 
 	[Fact]
 	public void 组出来的是一份合法XML()

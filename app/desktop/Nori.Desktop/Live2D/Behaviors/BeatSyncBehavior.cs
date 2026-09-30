@@ -6,7 +6,7 @@ public sealed record BeatStyleConfig
 	public required float TopRoll { get; init; }
 	public required float BottomDip { get; init; }
 	public float? SwingLift { get; init; }
-	public required string Pattern { get; init; } // "v", "sway", "swing"
+	public required string Pattern { get; init; } // 律动模式: "v"、"sway" 或 "swing"
 }
 
 public sealed class BeatSyncSegment

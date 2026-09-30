@@ -1,4 +1,4 @@
-﻿// [Nori Modification] Per-frame vertex/index buffers use GL_DYNAMIC_DRAW.
+﻿// [Nori 修改] 逐帧顶点/索引缓冲区使用 GL_DYNAMIC_DRAW。
 using System.Runtime.InteropServices;
 using Live2DCSharpSDK.App;
 using Live2DCSharpSDK.Framework;

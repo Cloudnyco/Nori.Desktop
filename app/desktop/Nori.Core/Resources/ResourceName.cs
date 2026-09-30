@@ -1,10 +1,8 @@
 namespace Nori.Core.Resources;
 
 /// <summary>
-/// 资源名称校验
-///
-/// 对应 Rust 版 resource/mod.rs 的 validate_resource_name:
-/// 资源名称只能表示一个目录名, 不能是路径
+/// 资源名称校验。
+/// 资源名称只能表示一个目录名，不能是路径。
 /// </summary>
 public static class ResourceName
 {

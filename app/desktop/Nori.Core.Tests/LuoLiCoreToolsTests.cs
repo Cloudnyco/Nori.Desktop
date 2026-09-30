@@ -56,7 +56,7 @@ public sealed class LuoLiCoreToolsTests : IDisposable
 		Content = new StringContent(body, Encoding.UTF8, "application/json"),
 	};
 
-	// ---- GET /sdk/v1/tools ----
+	// ---- 接口测试: GET /sdk/v1/tools ----
 
 	[Fact]
 	public async Task 列出对端可用的工具()

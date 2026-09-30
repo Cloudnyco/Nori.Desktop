@@ -68,7 +68,7 @@ public sealed class MacPlatformServices : IPlatformServices
 	[DllImport(AppKit, EntryPoint = "NSApplicationLoad")]
 	private static extern void EnsureAppKitLoaded();
 
-	/// <summary>NSFloatingWindowLevel</summary>
+	/// <summary>NSFloatingWindowLevel 浮动窗口层级常数</summary>
 	private const long FloatingWindowLevel = 3;
 
 	/// <inheritdoc />

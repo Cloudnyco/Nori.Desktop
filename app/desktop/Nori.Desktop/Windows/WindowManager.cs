@@ -13,10 +13,7 @@ using Nori.Core.Configuration;
 namespace Nori.Desktop.Windows;
 
 /// <summary>
-/// 窗口调度
-///
-/// 承接原来 Rust 侧 lib.rs setup / tray.rs 的窗口调度职责.
-/// 用户窗口都是原生的。
+/// 窗口调度。负责管理与调度所有原生窗口的生命周期与显示状态。
 /// </summary>
 public sealed class WindowManager : IWindowManager
 {

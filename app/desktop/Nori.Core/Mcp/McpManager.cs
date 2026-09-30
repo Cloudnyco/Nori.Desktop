@@ -352,17 +352,17 @@ public sealed class McpManager(HttpClient httpClient, ConfigStore configStore) :
 		{
 			Task all = Task.WhenAll(_backgroundTasks.ToArray());
 			try { await all.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
-			catch (TimeoutException) { /* transports below still get a bounded close */ }
+			catch (TimeoutException) { /* 下方传输通道仍会执行有界的关闭操作 */ }
 		}
 		catch
 		{
-			// Exit cancellation must not block other resource cleanup.
+			// 退出取消不能阻塞其他资源的清理。
 		}
 
 		foreach ((string _, OfficialMcpConnection client) in _activeClients)
 		{
 			try { await client.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); }
-			catch { /* Transport closure during exit is expected. */ }
+			catch { /* 退出期间传输通道关闭属于预期行为。 */ }
 		}
 		_activeClients.Clear();
 		_serverStatuses.Clear();
@@ -430,7 +430,7 @@ public sealed class McpManager(HttpClient httpClient, ConfigStore configStore) :
 			if (client is not null)
 			{
 				try { await client.DisposeAsync(); }
-				catch { /* Keep the original connection error. */ }
+				catch { /* 保留原始连接错误 */ }
 			}
 
 			McpServerStatusInfo errorStatus = new()

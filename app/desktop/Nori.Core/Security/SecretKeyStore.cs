@@ -205,7 +205,7 @@ public sealed class SecretKeyStore : ISecretKeyStore
 		if (!OperatingSystem.IsWindows()) IsFileFallback = true;
 	}
 
-	// ---- macOS Keychain ----
+	// ---- macOS 钥匙串 (Keychain) ----
 
 	private static byte[]? TryFrameworkKeychainRead()
 	{
@@ -230,7 +230,7 @@ public sealed class SecretKeyStore : ISecretKeyStore
 		return MacKeychainStore.TryWriteGenericPassword(KeychainService, KeychainAccount, payload);
 	}
 
-	// ---- Linux libsecret ----
+	// ---- Linux 密钥环 (libsecret) ----
 
 	private static byte[]? TrySecretToolRead()
 	{

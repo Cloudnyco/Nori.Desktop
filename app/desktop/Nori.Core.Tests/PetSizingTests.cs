@@ -59,7 +59,7 @@ public class PetSizingTests
 	[InlineData(4.0)]
 	public void WindowSize_ScalesWithUserScale_OnLargeScreen(double userScale)
 	{
-		// On a large screen the requested display scale maps directly to the pet window.
+		// 在大屏幕上，请求的显示缩放比例直接映射到伴侣窗口。
 		var (width, height) = PetSizing.CalculateWindowSize(400, 520, userScale, 3840, 2160, 1.0);
 		Assert.Equal((int)Math.Round(400 * userScale), width);
 		Assert.Equal((int)Math.Round(520 * userScale), height);
@@ -69,8 +69,8 @@ public class PetSizingTests
 	public void WindowSize_ClampedByMinimum80Px()
 	{
 		var (width, height) = PetSizing.CalculateWindowSize(400, 520, 0.1, 1920, 1080, 1.0);
-		Assert.Equal(80, width); // 40 clamped to 80
-		Assert.Equal(80, height); // 52 clamped to 80
+		Assert.Equal(80, width); // 40 限制到最小 80
+		Assert.Equal(80, height); // 52 限制到最小 80
 	}
 
 	[Fact]
