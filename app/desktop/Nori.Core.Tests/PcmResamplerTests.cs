@@ -152,20 +152,27 @@ public sealed class PcmResamplerTests
 	}
 
 	[Fact]
-	public async Task 长片段转换途中可取消()
+	public void 长片段转换途中可取消()
 	{
 		using CancellationTokenSource cancellation = new();
-		TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		PcmAudio source = new() { Samples = new float[48000 * 120], SampleRate = 48000, Channels = 1 };
-		Task conversion = Task.Run(() =>
+		// CPU 密集转换期间，线程池可能延后 continuation 和 CancelAfter 回调。
+		// 用专用线程发出取消，避免测试结果取决于线程池是否及时扩容。
+		Thread cancelThread = new(() =>
 		{
-			entered.SetResult();
-			PcmResampler.Prepare(source, new(44100, 1), cancellation.Token);
+			Thread.Sleep(TimeSpan.FromMilliseconds(10));
+			cancellation.Cancel();
 		});
-		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-		cancellation.CancelAfter(TimeSpan.FromMilliseconds(10));
-
-		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => conversion.WaitAsync(TimeSpan.FromSeconds(5)));
+		cancelThread.Start();
+		try
+		{
+			Assert.ThrowsAny<OperationCanceledException>(() => PcmResampler.Prepare(source, new(44100, 1), cancellation.Token));
+		}
+		finally
+		{
+			// 取消线程退出后才允许释放 CancellationTokenSource。
+			cancelThread.Join();
+		}
 	}
 
 	private static PcmAudio Tone(int sampleRate, int frequency)
