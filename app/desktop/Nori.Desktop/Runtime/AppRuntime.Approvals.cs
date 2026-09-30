@@ -174,6 +174,7 @@ public sealed partial class AppRuntime
 		{
 			if (_desktopApprovals.TryRemove(request.RequestId.ToString("D"), out PendingDesktopApproval? expired))
 			{
+				expired.MarkTimedOut();
 				expired.Tcs.TrySetResult(false);
 				expired.Dispose();
 				Services.Automation?.ClearAutomationApproval(request.RequestId);
@@ -183,10 +184,12 @@ public sealed partial class AppRuntime
 		try
 		{
 			bool approved = await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-			return AutomationApprovalDecision.Create(
-				request,
-				approved ? AutomationApprovalOutcome.Approved : AutomationApprovalOutcome.Denied,
-				DateTimeOffset.UtcNow);
+			AutomationApprovalOutcome outcome = approved
+				? AutomationApprovalOutcome.Approved
+				: approval.TimedOut
+					? AutomationApprovalOutcome.Expired
+					: AutomationApprovalOutcome.Denied;
+			return AutomationApprovalDecision.Create(request, outcome, DateTimeOffset.UtcNow);
 		}
 		catch (OperationCanceledException)
 		{

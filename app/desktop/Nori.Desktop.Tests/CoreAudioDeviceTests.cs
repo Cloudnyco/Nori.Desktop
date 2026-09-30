@@ -64,6 +64,34 @@ public sealed class CoreAudioDeviceTests
 	}
 
 	[Fact]
+	public void 输出启动失败会中止队列并允许再次打开()
+	{
+		FakeQueue queue = new(new AudioFormat(48_000, 1)) { FailStart = true };
+		using CoreAudioOutputDevice device = new(queue, bufferSamples: 8);
+
+		Assert.Throws<AudioDeviceException>(() => device.Open(48_000, 1));
+		Assert.True(queue.AbortCount >= 1);
+
+		queue.FailStart = false;
+		Assert.Equal(new AudioFormat(48_000, 1), device.Open(48_000, 1));
+		Assert.True(queue.Started);
+	}
+
+	[Fact]
+	public void 输入启动失败会中止队列并允许再次打开()
+	{
+		FakeQueue queue = new(new AudioFormat(48_000, 1)) { FailStart = true };
+		using CoreAudioCaptureDevice device = new(queue, bufferSamples: 8);
+
+		Assert.Throws<AudioDeviceException>(() => device.Open());
+		Assert.True(queue.AbortCount >= 1);
+
+		queue.FailStart = false;
+		Assert.Equal(new AudioFormat(48_000, 1), device.Open());
+		Assert.True(queue.Started);
+	}
+
+	[Fact]
 	public void 非macOS缺少AudioToolbox时给出中文原因()
 	{
 		if (System.OperatingSystem.IsMacOS()) return;
@@ -86,6 +114,8 @@ public sealed class CoreAudioDeviceTests
 		public double Volume { get; private set; } = 1;
 		public bool Started { get; private set; }
 		public bool Stopped { get; private set; }
+		public int AbortCount { get; private set; }
+		public bool FailStart { get; set; }
 
 		public AudioFormat OpenOutput(int sampleRate, int channels, Func<Span<float>, int> render)
 		{
@@ -102,9 +132,14 @@ public sealed class CoreAudioDeviceTests
 		}
 
 		public void SetVolume(double volume) => Volume = volume;
-		public void Start() => Started = true;
+		public void Start()
+		{
+			if (FailStart) throw new AudioDeviceException("启动音频队列失败：测试");
+			Started = true;
+		}
 		public void Finish() => Stopped = true;
 		public void StopImmediate() => Stopped = true;
+		public void Abort() => AbortCount++;
 		public void Dispose() { }
 	}
 }

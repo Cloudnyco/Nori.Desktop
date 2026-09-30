@@ -36,17 +36,15 @@ internal sealed class CoreAudioCaptureDevice : IAudioCaptureDevice
 			_queue.Start();
 			return format;
 		}
-		catch (AudioDeviceException)
+		catch (Exception exception)
 		{
+			_buffer?.Dispose();
+			_buffer = null;
+			_queue.Abort();
+			if (exception is AudioDeviceException) throw;
+			if (exception is DllNotFoundException or EntryPointNotFoundException or TypeLoadException)
+				throw new AudioDeviceException("未找到 AudioToolbox。macOS 系统音频组件不可用。", exception);
 			throw;
-		}
-		catch (DllNotFoundException exception)
-		{
-			throw new AudioDeviceException("未找到 AudioToolbox。macOS 系统音频组件不可用。", exception);
-		}
-		catch (Exception exception) when (exception is EntryPointNotFoundException or TypeLoadException)
-		{
-			throw new AudioDeviceException("未找到 AudioToolbox。macOS 系统音频组件不可用。", exception);
 		}
 	}
 
