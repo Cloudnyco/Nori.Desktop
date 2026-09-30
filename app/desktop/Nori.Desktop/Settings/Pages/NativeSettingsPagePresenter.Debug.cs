@@ -22,15 +22,11 @@ public sealed partial class NativeSettingsPagePresenter
 	private static readonly string[] DebugLevels = ["all", "error", "warn", "info", "debug", "trace", "fatal"];
 	private IReadOnlyList<DebugLogItem>? _debugRenderedLogs;
 	private ComboBox? _debugFilter;
-	private TextBlock? _debugGcResult;
-	private Expander? _debugDanger;
 	private Button? _debugCopyLogs;
 	private Button? _debugCopyDiagnostic;
-	private readonly List<Button> _debugCrashButtons = [];
 
 	private void BuildDebug(StackPanel root, DebugSettingsViewModel viewModel)
 	{
-		root.Children.Add(new TextBlock {Text = NativeSettingsResources.Get("debug.warning"), Foreground = Brush("SettingsSecondaryBrush"), TextWrapping = TextWrapping.Wrap});
 		StackPanel diagnostic = CardBody(NativeSettingsResources.Get("debug.diagnostic"), null);
 		_debugCopyDiagnostic = Button(NativeSettingsResources.Get("common.copy"), () => _ = RunAsync(() => viewModel.CopyDiagnosticAsync()));
 		WrapPanel diagnosticActions = ActionGroup(
@@ -107,27 +103,6 @@ public sealed partial class NativeSettingsPagePresenter
 		logs.Children.Add(new Grid {Children = {logItems, _debugEmpty}});
 		root.Children.Add(WrapCard(logs));
 
-		StackPanel tools = CardBody(NativeSettingsResources.Get("debug.crash"), null);
-		tools.Children.Add(Button(NativeSettingsResources.Get("debug.gc"), () => _ = RunAsync(async () =>
-		{
-			long released = await viewModel.CollectGarbageAsync().ConfigureAwait(true);
-			await NativeSettingsDialogs.ShowMessageAsync(Owner(), NativeSettingsResources.Get("debug.gc"), $"{NativeSettingsResources.Get("debug.released")}: {released}").ConfigureAwait(true);
-		})));
-		tools.Children.Add(Button(NativeSettingsResources.Get("debug.testLog"), () => _ = RunAsync(() => viewModel.WriteTestLogAsync())));
-		_debugGcResult = new TextBlock {Foreground = Brush("SettingsAccentBrush"), TextWrapping = TextWrapping.Wrap};
-		tools.Children.Add(_debugGcResult);
-		root.Children.Add(WrapCard(tools));
-		StackPanel danger = new() {Spacing = 10, Margin = new Avalonia.Thickness(0, 12, 0, 0)};
-		_debugCrashButtons.Clear();
-		bool crashEnabled = viewModel.CrashTestsAvailable;
-		_debugCrashButtons.Add(Button(NativeSettingsResources.Get("debug.uiCrash"), () => _ = RunAsync(() => RunCrashAsync(viewModel, "ui_thread", false)), danger: true, enabled: crashEnabled));
-		_debugCrashButtons.Add(Button(NativeSettingsResources.Get("debug.backgroundCrash"), () => _ = RunAsync(() => RunCrashAsync(viewModel, "background_thread", true)), danger: true, enabled: crashEnabled));
-		_debugCrashButtons.Add(Button(NativeSettingsResources.Get("debug.taskCrash"), () => _ = RunAsync(() => RunCrashAsync(viewModel, "unobserved_task", false)), danger: true, enabled: crashEnabled));
-		foreach (Button button in _debugCrashButtons) danger.Children.Add(button);
-		danger.Children.Add(Button(NativeSettingsResources.Get("debug.settingsError"), () => _ = RunAsync(() =>
-			Task.FromException(new InvalidOperationException(NativeSettingsResources.Get("debug.settingsErrorResult")))), danger: true));
-		_debugDanger = new Expander {Header = NativeSettingsResources.Get("debug.danger"), Content = danger, IsExpanded = false, IsVisible = crashEnabled};
-		root.Children.Add(_debugDanger);
 		UpdateDebug(viewModel);
 		StartDebugRefresh();
 	}
@@ -141,13 +116,8 @@ public sealed partial class NativeSettingsPagePresenter
 			_errorText.Text = viewModel.ErrorMessage;
 			_errorText.IsVisible = !string.IsNullOrWhiteSpace(viewModel.ErrorMessage);
 		}
-		if (_debugDanger is not null) _debugDanger.IsVisible = viewModel.CrashTestsAvailable;
 		if (_debugCopyLogs is not null) _debugCopyLogs.IsEnabled = viewModel.FilteredLogs.Count > 0;
 		if (_debugCopyDiagnostic is not null) _debugCopyDiagnostic.IsEnabled = viewModel.Diagnostic.Count > 0;
-		if (_debugGcResult is not null)
-			_debugGcResult.Text = viewModel.ReleasedBytes is long released ? $"{NativeSettingsResources.Get("debug.released")}: {released:N0}" : "";
-		foreach (Button button in _debugCrashButtons)
-			button.IsEnabled = viewModel.CrashTestsAvailable && !viewModel.IsBusy;
 		if (_debugFilter is not null)
 			_debugFilter.SelectedIndex = Array.IndexOf(DebugLevels, viewModel.LevelFilter);
 		if (_debugMinimum is not null) _debugMinimum.SelectedItem = viewModel.MinimumLevel;

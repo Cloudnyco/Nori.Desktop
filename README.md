@@ -7,7 +7,7 @@
 # Nori Desktop
 
 <p align="center">
-  <strong>基于 .NET 10 + Avalonia 12 原生宿主与 TypeScript 音频兼容层的新一代高性能 Live2D 桌面智能伴侣</strong>
+  <strong>基于 .NET 10 + Avalonia 12 原生宿主的新一代高性能 Live2D 桌面智能伴侣</strong>
 </p>
 
 <p align="center">

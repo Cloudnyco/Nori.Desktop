@@ -284,6 +284,13 @@ public partial class BridgeCommandsTests
 
 		JsonElement snapshot = await settings.GetSnapshotAsync();
 		Assert.False(snapshot.GetProperty("general").GetProperty("autoCheckUpdates").GetBoolean());
+
+		int beforeMainUpdate = stateChanged;
+		await CreateCommands().InvokeAsync(new FakeBridgeSource(WindowLabels.Main), "settings_update_general", Args(new {autoCheckUpdates = true}));
+		Assert.Equal("true", _config.GetStringOr("auto_check_updates", "false"));
+		Assert.True(stateChanged > beforeMainUpdate);
+		snapshot = await settings.GetSnapshotAsync();
+		Assert.True(snapshot.GetProperty("general").GetProperty("autoCheckUpdates").GetBoolean());
 	});
 
 	[Fact]
@@ -309,6 +316,26 @@ public partial class BridgeCommandsTests
 
 		await Assert.ThrowsAsync<InvalidOperationException>(() => settings.ExecuteAsync("chat_start", new {text = "不能从设置窗口发起聊天"}));
 		await Assert.ThrowsAsync<InvalidOperationException>(() => settings.ExecuteAsync("window_open_settings", new {page = "ai"}));
+	});
+
+	[Theory]
+	[InlineData("run_gc_collect")]
+	[InlineData("debug_crash_test")]
+	[InlineData("write_log")]
+	public Task RemovedDiagnosticCommandsAreUnknownAndRejectedBySettingsPolicy(string command) => WithSettingsUiAsync(async () =>
+	{
+		FakeBridgeSource main = new(WindowLabels.Main);
+		// 不传崩溃模式或事件参数，回归测试只检查已移除的命令入口。
+		JsonElement args = Args(new { });
+		InvalidOperationException direct = await Assert.ThrowsAsync<InvalidOperationException>(() => CreateCommands().InvokeAsync(main, command, args));
+		Assert.Equal($"未知的命令: {command}", direct.Message);
+		InvalidOperationException routed = await Assert.ThrowsAsync<InvalidOperationException>(() => new BridgeCommandRouter(_services).InvokeAsync(main, command, args));
+		Assert.Equal($"未知的命令: {command}", routed.Message);
+
+		Assert.False(SettingsService.IsCommandAllowed(command));
+		using SettingsService settings = new(_services, new Window());
+		InvalidOperationException denied = await Assert.ThrowsAsync<InvalidOperationException>(() => settings.ExecuteAsync(command, args));
+		Assert.Contains("原生设置窗口不允许执行命令", denied.Message, StringComparison.Ordinal);
 	});
 
 	[Fact]
@@ -370,10 +397,15 @@ public partial class BridgeCommandsTests
 		using SettingsService service = new(_services, window);
 		using SettingsViewModel viewModel = new(service);
 		SettingsPagePresenter presenter = new();
+		SettingsPageItemViewModel updates = Assert.Single(viewModel.Groups.SelectMany(group => group.Pages),
+			item => item.Page.Sections.SelectMany(section => section.Fields).Any(field => field.Key is "autoCheck" or "autoCheckUpdates"));
+		Assert.IsType<UpdatesSettingsPage>(updates.Page);
+		Assert.Equal("autoCheck", Assert.Single(updates.Page.Sections.SelectMany(section => section.Fields),
+			field => field.Key is "autoCheck" or "autoCheckUpdates").Key);
 		try
 		{
 			window.Show();
-			foreach (string key in new[] {"ai", "skills", "mcp", "automation", "plugins", "debug", "general", "ai"})
+			foreach (string key in new[] {"ai", "skills", "mcp", "automation", "plugins", "debug", "general", "updates", "ai"})
 			{
 				window.Content = null;
 				viewModel.Navigate(key);
@@ -423,6 +455,8 @@ public partial class BridgeCommandsTests
 			await viewModel.RefreshSnapshotAsync();
 			await Dispatcher.UIThread.InvokeAsync(window.UpdateLayout, DispatcherPriority.Background);
 			Assert.Empty(viewModel.ErrorMessage);
+			JsonElement snapshot = await service.GetSnapshotAsync();
+			Assert.False(snapshot.GetProperty("app").TryGetProperty("debugCrashTestsAvailable", out _));
 			SettingsPagePresenter pagePresenter = Assert.IsType<SettingsPagePresenter>(window.FindControl<SettingsPagePresenter>("PagePresenter"));
 			NativeSettingsPagePresenter presenter = Assert.IsType<NativeSettingsPagePresenter>(pagePresenter.Content);
 			Control root = Assert.IsAssignableFrom<Control>(presenter.Content);
@@ -496,23 +530,4 @@ public partial class BridgeCommandsTests
 		}
 		finally { window.Close(); }
 	});
-	[Fact]
-	public async Task SettingsUpdateGeneral_UpdatesAutoCheckUpdates()
-	{
-		BridgeCommands commands = CreateCommands();
-
-		// 更新 autoCheckUpdates 为 false
-		await commands.InvokeAsync(new FakeBridgeSource(WindowLabels.Main), "settings_update_general", Args(new { autoCheckUpdates = false }));
-		Assert.Equal("false", _config.GetStringOr("auto_check_updates", "true"));
-
-		// 验证快照反映该值
-		object snapshot = _runtime.BuildSnapshot();
-		string snapshotJson = JsonSerializer.Serialize(snapshot);
-		using JsonDocument doc = JsonDocument.Parse(snapshotJson);
-		Assert.False(doc.RootElement.GetProperty("general").GetProperty("autoCheckUpdates").GetBoolean());
-
-		// 重新开启
-		await commands.InvokeAsync(new FakeBridgeSource(WindowLabels.Main), "settings_update_general", Args(new { autoCheckUpdates = true }));
-		Assert.Equal("true", _config.GetStringOr("auto_check_updates", "false"));
-	}
 }

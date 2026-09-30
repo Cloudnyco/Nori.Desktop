@@ -26,8 +26,6 @@ public sealed class DebugSettingsViewModel : SettingsPageViewModelBase
 	private string _healthText = "";
 	private long _logRequest;
 	private bool _refreshingLogs;
-	private bool _crashTestsAvailable;
-	private long? _releasedBytes;
 
 	/// <summary>创建调试诊断 ViewModel。</summary>
 	public DebugSettingsViewModel(SettingsService service) : base(service) { }
@@ -76,20 +74,6 @@ public sealed class DebugSettingsViewModel : SettingsPageViewModelBase
 		MinimumLevel = level;
 	}
 
-	/// <summary>是否允许危险崩溃探针。</summary>
-	public bool CrashTestsAvailable
-	{
-		get => _crashTestsAvailable;
-		private set => SetProperty(ref _crashTestsAvailable, value);
-	}
-
-	/// <summary>最近一次垃圾回收释放的字节数。</summary>
-	public long? ReleasedBytes
-	{
-		get => _releasedBytes;
-		private set => SetProperty(ref _releasedBytes, value);
-	}
-
 	/// <summary>过滤后的日志。</summary>
 	public IReadOnlyList<DebugLogItem> FilteredLogs => Logs.Where(item =>
 		(LevelFilter == "all" || item.Level.Equals(LevelFilter, StringComparison.OrdinalIgnoreCase))
@@ -103,8 +87,6 @@ public sealed class DebugSettingsViewModel : SettingsPageViewModelBase
 		IsBusy = true;
 		try
 		{
-			JsonElement snapshot = await Service.GetSnapshotAsync(cancellationToken).ConfigureAwait(true);
-			CrashTestsAvailable = SettingsJson.Bool(SettingsJson.Object(snapshot, "app"), "debugCrashTestsAvailable");
 			await RefreshDiagnosticCoreAsync(cancellationToken).ConfigureAwait(true);
 			await RefreshLogsCoreAsync(cancellationToken).ConfigureAwait(true);
 		}
@@ -159,30 +141,6 @@ public sealed class DebugSettingsViewModel : SettingsPageViewModelBase
 			SettingsJson.String(result, "fileName"),
 			SettingsJson.Long(result, "bytes"),
 			ReadStrings(result, "skipped"));
-	}
-
-	/// <summary>触发一次托管垃圾回收。</summary>
-	public async Task<long> CollectGarbageAsync(CancellationToken cancellationToken = default)
-	{
-		JsonElement result = await ExecuteAsync("run_gc_collect", cancellationToken: cancellationToken).ConfigureAwait(true);
-		long released = SettingsJson.Long(result, "released_bytes", SettingsJson.Long(result, "releasedBytes"));
-		ReleasedBytes = released;
-		return released;
-	}
-
-	/// <summary>写入一条调试日志。</summary>
-	public async Task WriteTestLogAsync(CancellationToken cancellationToken = default)
-	{
-		await ExecuteAsync("write_log", new {level = "warn", eventId = "diagnostics.test", message = ""}, cancellationToken).ConfigureAwait(true);
-		await RefreshLogsCoreAsync(cancellationToken).ConfigureAwait(true);
-	}
-
-	/// <summary>触发受宿主构建限制保护的崩溃探针。</summary>
-	public async Task TriggerCrashAsync(string mode, CancellationToken cancellationToken = default)
-	{
-		if (!CrashTestsAvailable) throw new InvalidOperationException("当前构建未开放调试崩溃探针。");
-		if (mode is not ("ui_thread" or "background_thread" or "unobserved_task")) throw new ArgumentException("未知的崩溃探针。", nameof(mode));
-		await ExecuteAsync("debug_crash_test", new {mode}, cancellationToken).ConfigureAwait(true);
 	}
 
 	private async Task RefreshLogsCoreAsync(CancellationToken cancellationToken)

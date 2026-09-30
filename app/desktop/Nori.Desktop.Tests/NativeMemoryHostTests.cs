@@ -25,7 +25,6 @@ public partial class BridgeCommandsTests
 	[InlineData("automation_get_snapshot")]
 	[InlineData("memory_future_command")]
 	[InlineData("ui_get_snapshot")]
-	[InlineData("write_log")]
 	public async Task NativeMemoryPolicyCannotBeBypassedAtEitherHostEntry(string command)
 	{
 		NativeMemoryTestSource source = new();

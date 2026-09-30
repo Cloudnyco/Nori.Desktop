@@ -7,7 +7,6 @@ using Nori.Core.Sandbox;
 using Nori.Core.Security;
 using Nori.Core.Tools;
 using Nori.Desktop.Bridge;
-using Nori.Desktop.Telemetry;
 using Nori.Desktop.Windows;
 
 namespace Nori.Desktop.Runtime;
@@ -109,7 +108,6 @@ public sealed partial class AppRuntime
 				appVersion = ProductVersion.Current,
 				productVersion = ProductVersion.Current,
 				platform = PlatformOsName(),
-				debugCrashTestsAvailable = !SentryTelemetry.IsProductionBuild,
 				safeMode = Services.SafeMode,
 			},
 			general = new

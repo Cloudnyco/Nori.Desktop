@@ -26,7 +26,7 @@ public partial class BridgeCommandsTests
 	});
 
 	[Fact]
-	public Task NativeGeneralHonorsPlatformCapability() => WithSettingsUiAsync(() =>
+	public Task NativeGeneralHonorsPlatformCapability() => WithSettingsUiAsync(async () =>
 	{
 		using SettingsService service = new(_services, new Window());
 		using GeneralSettingsPage page = new(service);
@@ -37,7 +37,16 @@ public partial class BridgeCommandsTests
 		using JsonDocument available = JsonDocument.Parse("""{"platform":{"supportsHitThrough":true}}""");
 		page.ApplySnapshot(available.RootElement);
 		Assert.False(clickThrough.IsReadOnly);
-		return Task.CompletedTask;
+		clickThrough.Boolean = true;
+		Assert.True(await page.FlushPendingSavesAsync());
+		Assert.True(_config.GetBoolOr("l2d_click_through", false));
+		JsonElement snapshot = await service.GetSnapshotAsync();
+		Assert.True(snapshot.GetProperty("behaviors").GetProperty("clickThrough").GetBoolean());
+		clickThrough.Boolean = false;
+		Assert.True(await page.FlushPendingSavesAsync());
+		Assert.False(_config.GetBoolOr("l2d_click_through", true));
+		snapshot = await service.GetSnapshotAsync();
+		Assert.False(snapshot.GetProperty("behaviors").GetProperty("clickThrough").GetBoolean());
 	});
 
 	[Fact]
@@ -62,15 +71,18 @@ public partial class BridgeCommandsTests
 		using SettingsService service = new(_services, new Window());
 		using UpdatesSettingsPage page = new(service);
 		Dictionary<string, SettingsFieldViewModel> fields = page.Sections.SelectMany(section => section.Fields).ToDictionary(field => field.Key);
-		using JsonDocument download = JsonDocument.Parse("""{"updater":{"state":"downloading","progress":0.42,"downloadedBytes":1048576,"totalBytes":2097152}}""");
+		using JsonDocument download = JsonDocument.Parse("""{"general":{"autoCheckUpdates":false},"updater":{"state":"downloading","progress":0.42,"downloadedBytes":1048576,"totalBytes":2097152}}""");
 		page.ApplySnapshot(download.RootElement);
+		Assert.Equal(SettingsEditorKind.Boolean, fields["autoCheck"].EditorKind);
+		Assert.False(fields["autoCheck"].Boolean);
 		Assert.Equal(42, fields["progress"].Number);
 		Assert.True(fields["progress"].IsVisible);
 		Assert.True(fields["check"].IsReadOnly);
 		Assert.True(fields["cancel"].IsVisible);
 		Assert.False(fields["restart"].IsVisible);
-		using JsonDocument ready = JsonDocument.Parse("""{"updater":{"state":"readytorestart","availableVersion":"next"}}""");
+		using JsonDocument ready = JsonDocument.Parse("""{"general":{"autoCheckUpdates":true},"updater":{"state":"readytorestart","availableVersion":"next"}}""");
 		page.ApplySnapshot(ready.RootElement);
+		Assert.True(fields["autoCheck"].Boolean);
 		Assert.False(fields["progress"].IsVisible);
 		Assert.True(fields["restart"].IsVisible);
 		Assert.False(fields["restart"].IsReadOnly);

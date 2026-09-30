@@ -145,12 +145,6 @@ public sealed partial class NativeSettingsPagePresenter : ContentControl, IDispo
 		if (result is not null) await NativeSettingsDialogs.ShowMessageAsync(Owner(), NativeSettingsResources.Get("debug.export"), $"{result.FileName}\n{result.Bytes} bytes").ConfigureAwait(true);
 	}
 
-	private async Task RunCrashAsync(DebugSettingsViewModel viewModel, string mode, bool mayExit)
-	{
-		string prompt = mayExit ? NativeSettingsResources.Get("debug.exitConfirm") : NativeSettingsResources.Get("debug.crashConfirm");
-		if (await NativeSettingsDialogs.ConfirmAsync(Owner(), NativeSettingsResources.Get("debug.crash"), prompt, true).ConfigureAwait(true)) await viewModel.TriggerCrashAsync(mode).ConfigureAwait(true);
-	}
-
 	private StackPanel CardBody(string title, string? subtitle, bool compact = false)
 	{
 		StackPanel body = new() {Spacing = compact ? 6 : 4};

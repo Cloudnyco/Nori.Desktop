@@ -20,7 +20,7 @@ namespace Nori.Desktop.Bridge;
 /// <summary>
 /// 桥接命令。
 ///
-/// 生产入口是音频宿主的固定回报，以及设置、对话、模型、记忆四个原生窗口的白名单。
+/// 生产入口是设置、对话、模型、记忆四个原生窗口的白名单。
 /// 秘密只写不读。命令名保持 snake_case 且动词开头。
 /// </summary>
 public sealed partial class BridgeCommands
@@ -64,9 +64,6 @@ public sealed partial class BridgeCommands
 		}
 		object? result = cmd switch
 		{
-		// invoke("write_log", {level: "info", message: "xxx"})
-		"write_log" => WriteFrontendLog(source, args),
-
 		// invoke("settings_ack_voice_notice")
 		"settings_ack_voice_notice" => RequireMain(source, () =>
 			Run(() =>
@@ -612,8 +609,6 @@ public sealed partial class BridgeCommands
 		// invoke("export_diagnostics") → {fileName, bytes, skipped}
 		"export_diagnostics" => await ExportDiagnosticsAsync(source, cancellationToken),
 		"open_log_folder" => RequireMain(source, () => Run(OpenLogFolder)),
-		"run_gc_collect" => RequireMain(source, RunGcCollect),
-		"debug_crash_test" => RequireMain(source, () => Run(() => DebugCrashTest(Str(args, "mode")))),
 
 			_ => throw new InvalidOperationException($"未知的命令: {cmd}"),
 		};

@@ -89,9 +89,6 @@ public sealed class SettingsService : IDisposable
 		"open_log_folder",
 		"clipboard_write_text",
 		"open_url",
-		"run_gc_collect",
-		"write_log",
-		"debug_crash_test",
 		"settings_update_general",
 		"model_set_behavior",
 		"updater_check",
@@ -310,7 +307,6 @@ public sealed class SettingsService : IDisposable
 			or "plugin_disable"
 			or "plugin_uninstall"
 			or "clear_recent_logs"
-			or "run_gc_collect"
 			or "updater_check"
 			or "updater_install"
 			or "updater_cancel"

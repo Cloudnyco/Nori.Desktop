@@ -32,17 +32,6 @@ public sealed class AgentToolIterationsTests : IDisposable
 		_tempDatabase.Dispose();
 	}
 
-	/// <summary>
-	/// 通过反射读私有属性。
-	///
-	/// 这条判据本身是「配置能不能改到循环上限」，而把它做成公开 API 只是为了方便测试 ——
-	/// 那会让一个内部决定变成对外承诺。
-	/// </summary>
-	private int Budget(AgentEngine engine) =>
-		(int)typeof(AgentEngine)
-			.GetProperty("ToolIterations", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
-			.GetValue(engine)!;
-
 	private AgentEngine Build(int? explicitLimit = null)
 	{
 		ChatService chat = new(new HttpClient(), _database, _config);
@@ -61,7 +50,7 @@ public sealed class AgentToolIterationsTests : IDisposable
 	[Fact]
 	public void 没配过时用默认值()
 	{
-		Assert.Equal(AgentEngine.DefaultToolIterations, Budget(Build()));
+		Assert.Equal(AgentEngine.DefaultToolIterations, Build().ConfiguredToolIterations);
 	}
 
 	[Fact]
@@ -69,7 +58,7 @@ public sealed class AgentToolIterationsTests : IDisposable
 	{
 		_config.Set(ConfigStore.KeyAgentMaxToolIterations, new ConfigValue.Text("20"));
 
-		Assert.Equal(20, Budget(Build()));
+		Assert.Equal(20, Build().ConfiguredToolIterations);
 	}
 
 	/// <summary>上界不是为了省钱，是为了让一个跑飞的循环有个尽头。</summary>
@@ -81,7 +70,7 @@ public sealed class AgentToolIterationsTests : IDisposable
 	{
 		_config.Set(ConfigStore.KeyAgentMaxToolIterations, new ConfigValue.Text(configured));
 
-		Assert.Equal(expected, Budget(Build()));
+		Assert.Equal(expected, Build().ConfiguredToolIterations);
 	}
 
 	/// <summary>一个打错的配置值不该让整条对话路径失败。</summary>
@@ -90,7 +79,7 @@ public sealed class AgentToolIterationsTests : IDisposable
 	{
 		_config.Set(ConfigStore.KeyAgentMaxToolIterations, new ConfigValue.Text("很多次"));
 
-		Assert.Equal(AgentEngine.DefaultToolIterations, Budget(Build()));
+		Assert.Equal(AgentEngine.DefaultToolIterations, Build().ConfiguredToolIterations);
 	}
 
 	/// <summary>构造时显式给了值就以它为准，不受用户配置干扰。</summary>
@@ -99,7 +88,7 @@ public sealed class AgentToolIterationsTests : IDisposable
 	{
 		_config.Set(ConfigStore.KeyAgentMaxToolIterations, new ConfigValue.Text("20"));
 
-		Assert.Equal(3, Budget(Build(explicitLimit: 3)));
+		Assert.Equal(3, Build(explicitLimit: 3).ConfiguredToolIterations);
 	}
 
 }

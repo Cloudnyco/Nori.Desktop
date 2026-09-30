@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace Nori.Desktop.Settings;
 
-/// <summary>界面语言、启动行为与隐私设置页。</summary>
+/// <summary>界面语言、启动行为与诊断设置页。</summary>
 public sealed class GeneralSettingsPage : SettingsPageBase
 {
 	/// <summary>创建常规设置页。</summary>
@@ -40,15 +40,12 @@ public sealed class GeneralSettingsPage : SettingsPageBase
 				? "" : Localized(snapshot, "当前桌面环境不支持点击穿透。", "Click through is unavailable in this desktop environment."),
 			"", (_, _) => Task.FromResult(default(JsonElement)), readOnly: true);
 
-		SettingsSectionViewModel privacy = AddSection(new("诊断与更新", "Diagnostics and updates"));
-		AddField(privacy, "telemetryEnabled", new("发送匿名诊断", "Send anonymous diagnostics"), new("只发送经过脱敏的崩溃和性能信息。", "Only redacted crash and performance data is sent."), SettingsEditorKind.Boolean,
+		SettingsSectionViewModel diagnostic = AddSection(new("诊断", "Diagnostics"));
+		AddField(diagnostic, "telemetryEnabled", new("发送匿名诊断", "Send anonymous diagnostics"), new("只发送经过脱敏的崩溃和性能信息。", "Only redacted crash and performance data is sent."), SettingsEditorKind.Boolean,
 			snapshot => SettingsSnapshotReader.Boolean(snapshot, false, "telemetry", "enabled"), false,
 			(value, token) => ExecuteAsync("settings_update_general", new { telemetryEnabled = Convert.ToBoolean(value) }, token));
-		AddField(privacy, "telemetryStatus", new("诊断状态", "Diagnostics status"), new("", ""), SettingsEditorKind.Text,
+		AddField(diagnostic, "telemetryStatus", new("诊断状态", "Diagnostics status"), new("", ""), SettingsEditorKind.Text,
 			TelemetryStatus, "", (_, _) => Task.FromResult(default(JsonElement)), readOnly: true);
-		AddField(privacy, "autoCheckUpdates", new("自动检查更新", "Check for updates automatically"), new("启动后一段时间和每天定期检查稳定版更新。", "Check for stable releases after startup and periodically."), SettingsEditorKind.Boolean,
-			snapshot => SettingsSnapshotReader.Boolean(snapshot, true, "general", "autoCheckUpdates"), true,
-			(value, token) => ExecuteAsync("settings_update_general", new { autoCheckUpdates = Convert.ToBoolean(value) }, token));
 	}
 	/// <inheritdoc />
 	internal override void ApplySnapshot(JsonElement snapshot)

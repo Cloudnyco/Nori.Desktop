@@ -72,11 +72,6 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 	public const string KeyToastApprovals = "toast_approvals";
 
 	/// <summary>
-	/// 旧的音频后端配置。三平台都使用原生设备，读取时忽略这个键。
-	/// </summary>
-	public const string KeyAudioBackend = "audio_backend";
-
-	/// <summary>
 	/// 情绪表达通道的开关前缀，完整键名即通道自己的 Key。
 	///
 	/// 每条通道一个开关而不是一个总开关：改整个系统强调色和让托盘换个颜色，打扰程度差着

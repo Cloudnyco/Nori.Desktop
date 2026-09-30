@@ -61,51 +61,6 @@ public partial class BridgeCommandsTests
 	}
 
 	[Fact]
-	public async Task 前端日志不接受正文与伪造来源()
-	{
-		BridgeCommands commands = CreateCommands();
-		foreach (string eventId in new[] { "window.error", "user_private_content", "" })
-		{
-			int before = _services.Logger.RecentLogs().Count;
-			await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(new FakeBridgeSource("first-run"), "write_log", Args(new
-			{ level = "error", message = "聊天正文和请求正文", eventId, source = "backend", category = "私人内容", windowLabel = "settings", errorType = "私密错误名" })));
-			Assert.Equal(before, _services.Logger.RecentLogs().Count);
-		}
-		int legacyBefore = _services.Logger.RecentLogs().Count;
-		await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(
-			new FakeBridgeSource("main"), "write_log", Args(new { level = "warn", message = "旧参数正文" })));
-		Assert.Equal(legacyBefore, _services.Logger.RecentLogs().Count);
-
-		await commands.InvokeAsync(new FakeBridgeSource("first-run"), "write_log", Args(new
-		{ level = "error", message = "聊天正文和请求正文", eventId = "audio.error", source = "backend", category = "私人内容", windowLabel = "settings", errorType = "TypeError" }));
-		LogEntry entry = _services.Logger.RecentLogs().Last();
-		Assert.Equal(LogSource.Frontend, entry.Source);
-		Assert.Equal("first-run", entry.WindowLabel);
-		Assert.Equal("Frontend", entry.Category);
-		Assert.Equal("audio.error", entry.EventId);
-		Assert.Equal("音频操作失败：TypeError", entry.Message);
-		string json = JsonSerializer.Serialize(entry);
-		Assert.DoesNotContain("正文", json);
-		Assert.DoesNotContain("私人", json);
-		Assert.DoesNotContain("user_private", json);
-	}
-
-	[Fact]
-	public async Task 调试日志事件允许原生设置()
-	{
-		BridgeCommands commands = CreateCommands();
-
-		await commands.InvokeAsync(new FakeBridgeSource(WindowLabels.Settings), "write_log", Args(new {level = "warn", eventId = "diagnostics.test", message = "不应写入的正文"}));
-		LogEntry entry = _services.Logger.RecentLogs().Last();
-		Assert.Equal(LogSource.Backend, entry.Source);
-		Assert.Equal(WindowLabels.Settings, entry.WindowLabel);
-		Assert.Equal("NativeSettings", entry.Category);
-		Assert.Equal("diagnostics.test", entry.EventId);
-		Assert.Equal("调试日志链路正常", entry.Message);
-		Assert.DoesNotContain("不应写入", entry.Message);
-	}
-
-	[Fact]
 	public async Task 日志管理只允许宿主授权的管理来源()
 	{
 		BridgeCommands commands = CreateCommands();
@@ -118,7 +73,7 @@ public partial class BridgeCommandsTests
 	}
 
 	[Fact]
-	public Task 原生诊断测试日志来源与筛选一致() => WithSettingsUiAsync(async () =>
+	public Task 原生诊断查询与日志管理保留组合筛选() => WithSettingsUiAsync(async () =>
 	{
 		using BridgeCommandsTests fixture = new(safeMode: true);
 		SettingsWindow window = new();
@@ -127,16 +82,32 @@ public partial class BridgeCommandsTests
 		try
 		{
 			window.Show();
-			await viewModel.WriteTestLogAsync();
-			LogEntry entry = fixture._services.Logger.RecentLogs().Last();
-			Assert.Equal(LogSource.Backend, entry.Source); Assert.Equal("settings", entry.WindowLabel);
-			Assert.Equal("diagnostics.test", entry.EventId);
-			Assert.Equal("调试日志链路正常", entry.Message);
-			viewModel.LevelFilter = "warn"; viewModel.SourceFilter = "backend"; viewModel.CategoryFilter = "NativeSettings"; viewModel.SearchText = "diagnostics.test";
+			fixture._services.Logger.Write(LogSource.Backend, "warn", "日志管理回归记录", "NativeSettings", "logs.refresh", windowLabel: WindowLabels.Settings);
+			fixture._services.Logger.Write(LogSource.Backend, "info", "低级别回归记录", "NativeSettings", "logs.refresh");
+			fixture._services.Logger.Write(LogSource.Backend, "warn", "其他模块回归记录", "BackgroundMaintenance", "logs.refresh");
+			fixture._services.Logger.Write(LogSource.Backend, "warn", "健康状态回归记录", "NativeSettings", "logs.health");
+			await viewModel.RefreshLogsAsync();
+			viewModel.LevelFilter = "warn";
+			viewModel.SourceFilter = "backend";
+			viewModel.CategoryFilter = "NativeSettings";
+			viewModel.SearchText = "logs.refresh";
+			DebugLogItem entry = Assert.Single(viewModel.FilteredLogs);
+			Assert.Equal("backend", entry.Source);
+			Assert.Equal(WindowLabels.Settings, entry.WindowLabel);
+			Assert.Equal("NativeSettings", entry.Category);
+			Assert.Equal("logs.refresh", entry.EventId);
+			Assert.Equal("日志管理回归记录", entry.Message);
+			viewModel.SourceFilter = "frontend";
+			Assert.Empty(viewModel.FilteredLogs);
+			viewModel.SourceFilter = "backend";
 			Assert.Single(viewModel.FilteredLogs);
-			viewModel.SourceFilter = "frontend"; Assert.Empty(viewModel.FilteredLogs);
-			await viewModel.SetMinimumLevelAsync("debug"); Assert.Equal("debug", fixture._services.Logger.GetStatus().MinimumLevel);
-			await viewModel.ClearLogsAsync(); Assert.Empty(fixture._services.Logger.RecentLogs());
+			await viewModel.SetMinimumLevelAsync("debug");
+			Assert.Equal("debug", fixture._services.Logger.GetStatus().MinimumLevel);
+			Assert.Equal("debug", viewModel.MinimumLevel);
+			await viewModel.ClearLogsAsync();
+			Assert.Empty(fixture._services.Logger.RecentLogs());
+			Assert.Empty(viewModel.Logs);
+			Assert.Empty(viewModel.FilteredLogs);
 		}
 		finally { window.Close(); }
 	});

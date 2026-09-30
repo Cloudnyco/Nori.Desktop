@@ -11,7 +11,7 @@ namespace Nori.Desktop.Windows;
 
 public sealed partial class ModelsWindow
 {
-	internal static readonly string[] BehaviorKeys = ["clickInteraction", "clickThrough", "aiInteraction", "autoBlink", "eyeTracking", "idleEyeAnimation", "idleAnimation", "expressionEnabled", "lipSync", "beatSync"];
+	internal static readonly string[] BehaviorKeys = ["clickInteraction", "aiInteraction", "autoBlink", "eyeTracking", "idleEyeAnimation", "idleAnimation", "expressionEnabled", "lipSync", "beatSync"];
 	private readonly ContentControl _selectedDisplay = new() { HorizontalContentAlignment = HorizontalAlignment.Stretch };
 	private string _displayFor = "";
 	private bool _selectedDisplayHasMetadata;
@@ -32,7 +32,7 @@ public sealed partial class ModelsWindow
 	}
 	private MemorySettingDraft BehaviorDraft(string field)
 	{
-		bool initial = P(_snapshot, "behaviors").ValueKind == JsonValueKind.Object ? B(P(_snapshot, "behaviors"), field) : field is not ("clickThrough" or "aiInteraction" or "beatSync");
+		bool initial = P(_snapshot, "behaviors").ValueKind == JsonValueKind.Object ? B(P(_snapshot, "behaviors"), field) : field is not ("aiInteraction" or "beatSync");
 		return Draft(BehaviorKey(field), initial, "model_set_behavior", value => new Dictionary<string, object> { [field] = value });
 	}
 	private MemorySettingDraft DisplayDraft(string id, string field, object initial) => Draft(DisplayKey(id, field), initial, "model_set_display", value => new Dictionary<string, object> { ["modelId"] = id, [field] = value });
@@ -67,7 +67,7 @@ public sealed partial class ModelsWindow
 	private Control BuildBehaviorGroups()
 	{
 		var groups = Stack(
-			Card(() => T("触碰与回应", "Touch & response"), BuildBehaviorControls(["clickInteraction", "clickThrough", "aiInteraction"])),
+			Card(() => T("触碰与回应", "Touch & response"), BuildBehaviorControls(["clickInteraction", "aiInteraction"])),
 			Card(() => T("目光与动作", "Gaze & movement"), BuildBehaviorControls(["autoBlink", "eyeTracking", "idleEyeAnimation", "idleAnimation", "expressionEnabled"])),
 			Card(() => T("声音与律动", "Voice & rhythm"), BuildBehaviorControls(["lipSync", "beatSync"])));
 		groups.Spacing = 18;
@@ -84,7 +84,7 @@ public sealed partial class ModelsWindow
 			Bind(() =>
 			{
 				toggle.IsChecked = (bool)draft.Value && (field != "aiInteraction" || AiAvailable);
-				toggle.IsEnabled = field switch { "clickThrough" => B(P(_snapshot, "platform"), "supportsHitThrough"), "aiInteraction" => AiAvailable, _ => true };
+				toggle.IsEnabled = field != "aiInteraction" || AiAvailable;
 			});
 			body.Children.Add(SettingLine(() => BehaviorLabel(field), () => BehaviorHint(field), toggle));
 		}
@@ -92,14 +92,13 @@ public sealed partial class ModelsWindow
 	}
 	private string BehaviorLabel(string field) => field switch
 	{
-		"clickInteraction" => T("点击互动", "Click interaction"), "clickThrough" => T("鼠标穿透", "Click-through"), "aiInteraction" => T("AI 互动", "AI interaction"),
+		"clickInteraction" => T("点击互动", "Click interaction"), "aiInteraction" => T("AI 互动", "AI interaction"),
 		"autoBlink" => T("自动眨眼", "Auto blink"), "eyeTracking" => T("视线跟随", "Eye tracking"), "idleEyeAnimation" => T("待机眼部动画", "Idle eye animation"),
 		"idleAnimation" => T("待机动画", "Idle animation"), "expressionEnabled" => T("表情行为", "Expression behavior"), "lipSync" => T("口型同步", "Lip sync"), _ => T("节拍同步", "Beat sync"),
 	};
 	private string BehaviorHint(string field) => field switch
 	{
 		"clickInteraction" => T("点击模型时播放动作与表情。", "Play actions and expressions when the model is clicked."),
-		"clickThrough" => B(P(_snapshot, "platform"), "supportsHitThrough") ? T("鼠标可穿过桌宠窗口，不影响下层应用。", "Let pointer input pass through the desktop pet.") : T("当前桌面环境不支持鼠标穿透。", "Click-through is unavailable in this desktop session."),
 		"aiInteraction" => AiAvailable ? T("AI 按区域回应，会消耗 Token 并可能产生 API 费用；离线或请求失败时播放本地兜底动作。", "AI reacts to touch and consumes tokens, which may incur API costs. Local actions are used when offline or on failure.") : B(P(_snapshot, "app"), "safeMode") ? T("安全模式下不启用 AI 互动。", "AI interaction is disabled in safe mode.") : T("请先在设置中配置 AI 服务。", "Configure an AI provider in Settings first."),
 		"autoBlink" => T("自然地自动眨眼。", "Blink naturally at intervals."),
 		"eyeTracking" => T("视线跟随鼠标位置。", "Follow the pointer with Nori’s gaze."),

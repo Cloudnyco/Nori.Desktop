@@ -5,7 +5,6 @@ using Avalonia.Input.Platform;
 using Nori.Core.Logging;
 using Nori.Desktop.Diagnostics;
 using Nori.Desktop.Runtime;
-using Nori.Desktop.Telemetry;
 using Nori.Desktop.Windows;
 
 namespace Nori.Desktop.Bridge;
@@ -50,38 +49,6 @@ public sealed partial class BridgeCommands
 		return new {fileName = result.FileName, bytes = result.Bytes, skipped = result.Skipped};
 	}
 
-	private object? RunGcCollect()
-	{
-		long before = GC.GetTotalMemory(false);
-		GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true);
-		long after = GC.GetTotalMemory(true);
-		long released = Math.Max(0, before - after);
-		_services.Logger.Write(LogSource.Backend, "info", $"调试垃圾回收完成: 释放 {released} 字节");
-		return new {released_bytes = released};
-	}
-
-	private object? DebugCrashTest(string mode)
-	{
-		if (SentryTelemetry.IsProductionBuild)
-			throw new InvalidOperationException("生产环境不支持调试崩溃测试");
-
-		switch (mode)
-		{
-			case "ui_thread":
-				_uiDispatcher.Post(() => throw new InvalidOperationException("调试崩溃测试: UI 线程未处理异常"));
-				break;
-			case "background_thread":
-				new Thread(() => throw new InvalidOperationException("调试崩溃测试: 后台线程未处理异常")).Start();
-				break;
-			case "unobserved_task":
-				_ = Task.Run(() => throw new InvalidOperationException("调试崩溃测试: 未观察任务异常"));
-				break;
-			default:
-				throw new InvalidOperationException($"未知的崩溃测试模式: {mode}");
-		}
-		return null;
-	}
-
 	/// <summary>读取日志健康状态。前端调用：invoke("get_logging_status")</summary>
 	private object GetLoggingStatus() => _services.Logger.GetStatus();
 
@@ -91,30 +58,6 @@ public sealed partial class BridgeCommands
 		string level = Str(args, "level");
 		if (!FileLogger.IsLevel(level)) throw new InvalidOperationException("日志级别无效");
 		_services.Logger.SetMinimumLevel(level);
-		return null;
-	}
-
-	/// <summary>记录白名单事件，窗口身份由宿主赋值。调用：invoke("write_log", {level: "error", eventId: "audio.error", message: ""})</summary>
-	private object? WriteFrontendLog(IBridgeSource source, JsonElement args)
-	{
-		string level = Str(args, "level").Trim().ToLowerInvariant();
-		if (!FileLogger.IsLevel(level))
-			throw new InvalidOperationException("日志级别无效");
-		string eventId = OptionalStr(args, "eventId") ?? "";
-		if (eventId is not ("audio.error" or "logging.suppressed" or "diagnostics.test"))
-			throw new InvalidOperationException("日志事件无效");
-		string message = eventId switch
-		{
-			"logging.suppressed" => $"重复日志事件已被限流：{Math.Clamp(OptionalInt(args, "suppressedCount") ?? 1, 1, 1_000_000)}",
-			"diagnostics.test" => "调试日志链路正常",
-			_ => "音频操作失败",
-		};
-		string errorType = OptionalStr(args, "errorType") ?? "";
-		if (errorType is "Error" or "TypeError" or "RangeError" or "ReferenceError" or "SyntaxError" or "URIError" or "EvalError" or "AggregateError")
-			message += $"：{errorType}";
-		bool native = source.Label == "settings";
-		_services.Logger.Write(native ? LogSource.Backend : LogSource.Frontend, level, message,
-			native ? "NativeSettings" : "Frontend", eventId, windowLabel: source.Label);
 		return null;
 	}
 

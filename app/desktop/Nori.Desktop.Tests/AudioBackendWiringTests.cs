@@ -19,13 +19,10 @@ public partial class BridgeCommandsTests
 	}
 
 	/// <summary>旧的 webview 配置不再切回页面播放。</summary>
-	[Theory]
-	[InlineData("webview")]
-	[InlineData("")]
-	[InlineData("WEBAUDIO")]
-	public async Task 配置不再切换音频后端(string configured)
+	[Fact]
+	public async Task 旧webview配置仍使用原生音频后端()
 	{
-		_config.Set(ConfigStore.KeyAudioBackend, new ConfigValue.Text(configured));
+		_config.Set("audio_backend", new ConfigValue.Text("webview"));
 
 		await using AppRuntime runtime = new(_services);
 

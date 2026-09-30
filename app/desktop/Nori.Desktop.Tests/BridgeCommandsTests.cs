@@ -19,6 +19,7 @@ using Nori.Desktop.Windows;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.LogicalTree;
 
 namespace Nori.Desktop.Tests;
 
@@ -53,12 +54,19 @@ public partial class BridgeCommandsTests : IDisposable
 				await models.RefreshAsync(); await memory.RefreshAsync();
 				Assert.Equal("Nori · 模型", models.Title);
 				Assert.Contains("记忆", memory.Title);
+				models.Navigate("behaviors");
+				models.UpdateLayout();
+				ToggleSwitch[] behaviors = models.PageContent.GetLogicalDescendants().OfType<ToggleSwitch>().ToArray();
+				Assert.DoesNotContain(behaviors, toggle => toggle.Name == "ModelsBehavior_clickThrough");
+				Assert.Contains(behaviors, toggle => toggle.Name == "ModelsBehavior_clickInteraction");
+				Assert.Contains(behaviors, toggle => toggle.Name == "ModelsBehavior_aiInteraction");
 				fixture._config.Set(ConfigStore.KeyLanguage, new ConfigValue.Text("en-US"));
 				fixture._runtime.InvalidateSnapshot();
 				await models.RefreshAsync(); await memory.RefreshAsync();
 				await WaitUntilAsync(() => models.Title == "Nori · Models" && memory.Title?.Contains("Memory", StringComparison.Ordinal) == true);
 				Assert.Equal("Nori · Models", models.Title);
 				Assert.Contains("Memory", memory.Title);
+				Assert.DoesNotContain(models.PageContent.GetLogicalDescendants().OfType<ToggleSwitch>(), toggle => toggle.Name == "ModelsBehavior_clickThrough");
 				await models.PrepareShutdownAsync(); await memory.PrepareShutdownAsync();
 			}
 			finally { models.AllowClose = memory.AllowClose = true; models.Close(); memory.Close(); }
