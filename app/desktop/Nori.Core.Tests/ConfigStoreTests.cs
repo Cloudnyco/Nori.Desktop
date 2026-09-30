@@ -29,6 +29,32 @@ public class ConfigStoreTests : IDisposable
 		GC.SuppressFinalize(this);
 	}
 
+	[Theory]
+	[InlineData(0, 0)]
+	[InlineData(1, 1)]
+	[InlineData(-1, 0)]
+	[InlineData(25, 20)]
+	public void 整数配置存取后保留数值并夹紧(int stored, int expected)
+	{
+		_config.Set("numeric_test", new ConfigValue.Integer(stored));
+
+		Assert.Equal(expected, _config.GetClampedInt("numeric_test", 6, 0, 20));
+	}
+
+	[Theory]
+	[InlineData("0", 0)]
+	[InlineData("1", 1)]
+	[InlineData("0.5", 0.5)]
+	[InlineData("-1", 0)]
+	[InlineData("2", 1)]
+	[InlineData("invalid", 0.25)]
+	public void 浮点配置存取后保留数值并夹紧(string stored, double expected)
+	{
+		_config.Set("numeric_test", new ConfigValue.Text(stored));
+
+		Assert.Equal(expected, _config.GetClampedDouble("numeric_test", 0.25, 0, 1));
+	}
+
 	[Fact]
 	public void 配置迁移会复用一次可恢复的迁移前备份()
 	{

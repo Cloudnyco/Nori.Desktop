@@ -414,6 +414,7 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 		GetClampedInt(Get(key), fallback, min, max);
 
 	internal static int GetClampedInt(ConfigValue? stored, int fallback, int min, int max) =>
+		stored is ConfigValue.Boolean boolean ? Math.Clamp(boolean.Value ? 1 : 0, min, max) :
 		int.TryParse(ConfigValue.AsStringOr(stored, ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
 			? Math.Clamp(value, min, max)
 			: fallback;
@@ -423,6 +424,7 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 		GetClampedDouble(Get(key), fallback, min, max);
 
 	internal static double GetClampedDouble(ConfigValue? stored, double fallback, double min, double max) =>
+		stored is ConfigValue.Boolean boolean ? Math.Clamp(boolean.Value ? 1d : 0d, min, max) :
 		double.TryParse(ConfigValue.AsStringOr(stored, ""), NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
 			? Math.Clamp(value, min, max)
 			: fallback;
