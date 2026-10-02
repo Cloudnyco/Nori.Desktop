@@ -103,7 +103,7 @@ flowchart TD
     end
 
     subgraph Live2DCore[Live2D 渲染系统]
-        cubism[Live2D Cubism Core Native]
+        cubism[PurismCore Native · MIT]
         sdk[Live2DCSharpSDK.OpenGL ES 2.0]
     end
 
@@ -134,7 +134,7 @@ Nori-Desktop-Pet/
 │   ├── Live2DCSharpSDK.Framework/   # Live2D Cubism Framework C# 实现
 │   ├── Live2DCSharpSDK.OpenGL/      # Live2D OpenGL ES 2.0 渲染器
 │   ├── Live2DCSharpSDK.App/         # Live2D 模型与纹理加载管理
-│   ├── Live2D/native/               # 各平台 Cubism Core 原生动态库
+│   ├── Live2D/native/               # 各平台 PurismCore 原生动态库（MIT，兼容 Cubism ABI）
 │   ├── src/                         # 原生主题令牌与对比度计算
 │   │   └── assets/style/            # tokens.ts
 │   ├── tests/                       # 主题 Vitest

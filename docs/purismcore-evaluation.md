@@ -1,15 +1,21 @@
 # PurismCore 可行性与性能评估
 
-## 决定与结论
+## 当前集成决定
 
-本次评估曾在本地 `experimental` 分支验证 PurismCore v1.1.0。现已决定结束该实验、删除分支，**仅在 main 保留结论，不保留原生库替换、兼容改动或新增测试**。main 继续使用原官方 Cubism Core。
+main 现已采用固定的 **PurismCore v1.1.0 / v6 ABI**，直接替换桌面平台原生库并恢复 reset-before-update 兼容顺序，没有新增后端配置。来源、MIT 全文、SHA-256 和当前回归命令见 [原生运行时说明](../app/desktop/Live2D/README.md)。该决定基于开源运行时替换需求，不代表已证明性能更好，也不解决上层 SDK 或模型资产授权。
+
+下文保留已结束实验的历史证据与当时决定；历史测试数量、截图和性能结果不充当本次集成的验证结果。
+
+## 历史决定与结论
+
+本次评估曾在本地 `experimental` 分支验证 PurismCore v1.1.0。当时决定结束实验、删除分支，仅在 main 保留结论，未保留原生库替换、兼容改动或新增测试；main 当时继续使用原官方 Cubism Core。
 
 - **技术上可作为替代方案继续研究，并非仅支持 Windows。** 上游 v6 产物覆盖 Nori 的 win-x64、linux-x64、linux-arm64、osx-x64、osx-arm64；macOS 可使用 universal 库。
 - **没有证明性能更好。** 本机纯 Core 更新耗时比官方库高约 9%～11%，绝对差约 0.017～0.024 ms/帧；包含物理与 GL 绘制后的帧耗时相近。
 - **主要价值是开放源码及跨平台构建可控性，不是已证实的提速。** 不建议仅以性能为理由替换当前稳定方案。
 - **可以修改源码优化。** MIT 允许修改、重新编译和分发，需保留版权及许可声明；其余 SDK、模型资产及官方 Core 的许可不随此改变。本次未修改 PurismCore 源码，也未验证自定义优化补丁。
 
-以下是已结束实验的历史证据，不代表 main 当前已经集成 PurismCore。
+以下是已结束实验的历史证据，当前集成状态以上文和原生运行时说明为准。
 
 ## 评估基线与来源
 
@@ -38,13 +44,13 @@
 
 实验沿用现有 C# SDK、OpenGL 渲染器、模型导入和行为管线，将原生库改名为既有的 `Live2DCubismCore.dll`、`libLive2DCubismCore.so`、`libLive2DCubismCore.dylib`，没有引入后端配置层。
 
-Linux ARM64 在基线项目中缺少原生库复制项；未来重新接入时，需要同时检查显式 RID 发布及未指定 RID 的 Linux 本机构建，避免 ARM64 误用 x64 库。发布时还需将上游 MIT 许可全文复制到原生库同目录。
+Linux ARM64 在基线项目中缺少原生库复制项；重新接入时，需要同时检查显式 RID 发布及未指定 RID 的 Linux 本机构建，避免 ARM64 误用 x64 库。发布时还需将上游 MIT 许可全文复制到原生库同目录。
 
 ### 动态标记与遮罩
 
 PurismCore v1.1.0 的 `csmResetDrawableDynamicFlags` 会立即清除除可见性外的变化标记。基线 `CubismModel.Update()` 先更新、后 reset，导致后续遮罩绘制读不到 `VertexPositionsDidChange`，跳过 mask。
 
-实验把顺序改为先 reset、再 update 后，两份模型及遮罩绘制通过检查；原官方 Core 也通过同一调用顺序的检查。**此兼容改动已随实验清理，不在 main 保留。**
+实验把顺序改为先 reset、再 update 后，两份模型及遮罩绘制通过检查；原官方 Core 也通过同一调用顺序的检查。**该兼容改动当时随实验清理，本次集成已重新加入。**
 
 上游相关讨论：[Issue #3](https://github.com/SakuraMotion/PurismCore/issues/3)、[PR #4](https://github.com/SakuraMotion/PurismCore/pull/4)。本次没有合入该 PR 的动态标记或性能补丁。
 

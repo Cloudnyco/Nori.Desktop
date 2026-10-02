@@ -51,17 +51,12 @@ jobs:
     env:
       # 法律/分发确认仍保留，但改成仓库级一次性 Variables，避免每次发布重复勾选。
       NORI_AVALONIA_WEBVIEW_DISTRIBUTION_LICENSE_CONFIRMED: ${{ vars.NORI_AVALONIA_WEBVIEW_DISTRIBUTION_LICENSE_CONFIRMED || 'false' }}
-      NORI_CUBISM_CORE_DISTRIBUTION_LICENSE_CONFIRMED: ${{ vars.NORI_CUBISM_CORE_DISTRIBUTION_LICENSE_CONFIRMED || 'false' }}
     steps:
       - name: 检查仓库级分发许可确认
         shell: bash
         run: |
           if [ "$NORI_AVALONIA_WEBVIEW_DISTRIBUTION_LICENSE_CONFIRMED" != "true" ]; then
             echo "请先在 Repository Variables 中将 NORI_AVALONIA_WEBVIEW_DISTRIBUTION_LICENSE_CONFIRMED 设为 true。" >&2
-            exit 1
-          fi
-          if [ "$NORI_CUBISM_CORE_DISTRIBUTION_LICENSE_CONFIRMED" != "true" ]; then
-            echo "请先在 Repository Variables 中将 NORI_CUBISM_CORE_DISTRIBUTION_LICENSE_CONFIRMED 设为 true。" >&2
             exit 1
           fi
 

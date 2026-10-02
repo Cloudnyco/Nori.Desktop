@@ -26,7 +26,8 @@ $requiredFiles = @(
 	"$currentSlot\Nori.Desktop.dll",
 	"$currentSlot\Nori.Desktop.deps.json",
 	"$currentSlot\Nori.Desktop.runtimeconfig.json",
-	"$currentSlot\Live2DCubismCore.dll"
+	"$currentSlot\Live2DCubismCore.dll",
+	"$currentSlot\PurismCore.LICENSE.txt"
 )
 foreach ($relativePath in $requiredFiles) {
 	$requiredPath = Join-Path $publish $relativePath

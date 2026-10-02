@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Live2DCSharpSDK.App;
@@ -267,6 +268,67 @@ public sealed class PreparedModelAssetsTests : IDisposable
 					}
 					Assert.True(allocator.AllocationCount > 0);
 					Assert.Equal(0, allocator.Outstanding);
+				}
+			}
+			finally { CubismFramework.CleanUp(); }
+		});
+	}
+
+	[DllImport("Live2DCubismCore", EntryPoint = "csmGetTrueVersion", CallingConvention = CallingConvention.Cdecl)]
+	private static extern uint GetPurismCoreVersion();
+
+	[Fact]
+	public void 原生库为固定版本PurismCore() => Assert.Equal(0x01010000u, GetPurismCoreVersion());
+
+	[Live2DAssetsFact]
+	public unsafe void 两份真实模型更新保留遮罩标记与参数形变()
+	{
+		CubismFramework.RunSynchronized(() =>
+		{
+			Assert.True(CubismFramework.StartUp(new LAppAllocator(), new CubismOption {LogFunction = _ => { }, LoggingLevel = LogLevel.Off}));
+			try
+			{
+				foreach ((string id, string name) in new[] { ("arg-nori", "ARGNori"), ("nori", "Nori") })
+				{
+					using var moc = new CubismMoc(File.ReadAllBytes(FindFixture(id, $"{name}.moc3")), shouldCheckMocConsistency: true);
+					CubismModel model = moc.Model;
+					Assert.True(model.GetParameterCount() > 0);
+					Assert.Contains("ParamAngleX", model.ParameterIds);
+					Assert.True(model.IsUsingMasking());
+					int count = model.GetDrawableCount();
+					Assert.True(count > 0);
+					float[]? previousVertices = null;
+					foreach (float angle in new[] { -20f, 20f, -20f })
+					{
+						model.SetParameterValue("ParamAngleX", angle);
+						model.Update();
+						var vertices = new List<float>();
+						var orders = new HashSet<int>();
+						bool visible = false, changedMask = false;
+						for (int drawable = 0; drawable < count; drawable++)
+						{
+							int order = model.GetDrawableRenderOrders()[drawable];
+							Assert.InRange(order, 0, count - 1);
+							Assert.True(orders.Add(order));
+							visible |= model.GetDrawableDynamicFlagIsVisible(drawable);
+							int vertexCount = model.GetDrawableVertexCount(drawable);
+							var positions = new float[vertexCount * 2];
+							Marshal.Copy((nint)model.GetDrawableVertices(drawable), positions, 0, positions.Length);
+							Assert.All(positions, value => Assert.True(float.IsFinite(value)));
+							vertices.AddRange(positions);
+							for (int mask = 0; mask < model.GetDrawableMaskCounts()[drawable]; mask++)
+							{
+								int maskDrawable = model.GetDrawableMasks()[drawable][mask];
+								Assert.InRange(maskDrawable, 0, count - 1);
+								changedMask |= model.GetDrawableDynamicFlagVertexPositionsDidChange(maskDrawable);
+							}
+						}
+						Assert.True(visible);
+						Assert.True(changedMask, "更新后遮罩顶点变化标记必须保留，不能被 reset 清除。");
+						Assert.NotEmpty(vertices);
+						if (previousVertices is not null) Assert.False(previousVertices.SequenceEqual(vertices));
+						previousVertices = vertices.ToArray();
+					}
 				}
 			}
 			finally { CubismFramework.CleanUp(); }

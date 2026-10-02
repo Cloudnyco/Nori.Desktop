@@ -106,13 +106,12 @@ public class CubismModel : IDisposable
     /// <summary>
     /// モデルのパラメータを更新する。
     /// </summary>
-    public void Update()
-    {
-        // Update model.
-        CubismCore.UpdateModel(Model);
-        // Reset dynamic drawable flags.
-        CubismCore.ResetDrawableDynamicFlags(Model);
-    }
+	public void Update()
+	{
+		// PurismCore 的 reset 立即清除变化标记，须在更新前调用，供后续遮罩绘制读取本帧标记。
+		CubismCore.ResetDrawableDynamicFlags(Model);
+		CubismCore.UpdateModel(Model);
+	}
 
     /// <summary>
     /// Pixel単位でキャンバスの幅の取得

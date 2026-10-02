@@ -12,7 +12,7 @@ Nori Desktop Pet is an AI desktop companion built with a **.NET 10 + Avalonia 12
 - **Root Entry & Slot Deployment (`Nori.AppLauncher`)**: The stable root binary `Nori` selects and launches an immutable deployment slot (`app-<version>-<revision>`) validated by `deployment.json`. The launcher does not own locks or update slots; all runtime state resides in `<PackageRoot>/data`.
 - **Window Architecture (`Nori.Desktop/Windows`)**:
   - User windows are native Avalonia: `first-run`, `init`, `main`, and `pet`, plus on-demand settings, memory, models, chat, and quick chat. Windows are borderless (`WindowDecorations.None`) and transparent. Closing a window hides it; `main` is persistent for the app lifetime.
-  - Native Desk Pet (`pet`): An Avalonia `PetWindow` running native OpenGL ES 2.0 via `Live2DCSharpSDK` and Cubism Core. It renders directly to the desktop.
+  - Native Desk Pet (`pet`): An Avalonia `PetWindow` running native OpenGL ES 2.0 via `Live2DCSharpSDK` and PurismCore (MIT, Cubism v6 ABI). It renders directly to the desktop.
   - Native Settings: `SettingsWindow` hosts Avalonia settings pages; inspect this native path for settings UI work.
   - Audio: `NativeAudioFactory` opens WASAPI on Windows, AudioQueue on macOS, and ALSA device `default` on Linux. Legacy `audio_backend=webview` does not switch implementations.
 - **Native Live2D Desk Pet**:
@@ -60,7 +60,7 @@ Nori-Desktop-Pet/
 ├── docs/                       # Chinese specs — see docs/ for full list
 ├── app/desktop/                # Primary application workspace
 │   ├── Nori.slnx
-│   ├── Live2D/                 # Cubism Native Core
+│   ├── Live2D/                 # PurismCore native runtime (MIT)
 │   ├── Live2DCSharpSDK.*/      # Ported Live2D OpenGL engine
 │   ├── Nori.AppLauncher/       # Dependency-free root launcher
 │   ├── Nori.AppLauncher.Tests/

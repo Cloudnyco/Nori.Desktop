@@ -69,9 +69,9 @@ file(`${sidecarBase}.dll`);
 file(`${sidecarBase}.deps.json`);
 file(`${sidecarBase}.runtimeconfig.json`);
 const native = rid.startsWith("win-") ? "Live2DCubismCore.dll" : rid.startsWith("osx-") ? "libLive2DCubismCore.dylib" : "libLive2DCubismCore.so";
-file(rid.startsWith("osx-")
-	? join(slot, "Nori.Desktop.app", "Contents", "MacOS", native)
-	: join(slot, native));
+const nativeDirectory = rid.startsWith("osx-") ? join(slot, "Nori.Desktop.app", "Contents", "MacOS") : slot;
+file(join(nativeDirectory, native));
+file(join(nativeDirectory, "PurismCore.LICENSE.txt"));
 const forbidden = new Set(["data", "dotnet", "shared", "coreclr", "hostfxr", "hostpolicy"]);
 const lower = (value) => value.toLowerCase();
 const walkForbidden = (path) => {

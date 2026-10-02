@@ -41,23 +41,22 @@
 		<ProjectReference Include="../Live2DCSharpSDK.OpenGL/Live2DCSharpSDK.OpenGL.csproj" />
 	</ItemGroup>
 
+	<!-- PurismCore v1.1.0 / v6 ABI；保留现有 P/Invoke 文件名，无 RID 时按 SDK 宿主架构选择。 -->
+	<PropertyGroup>
+		<NoriCoreRid>$(RuntimeIdentifier)</NoriCoreRid>
+		<NoriCoreRid Condition="'$(NoriCoreRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</NoriCoreRid>
+		<NoriCorePath Condition="'$(NoriCoreRid)' == 'win-x64'">../Live2D/native/win-x64/Live2DCubismCore.dll</NoriCorePath>
+		<NoriCorePath Condition="'$(NoriCoreRid)' == 'linux-x64' Or '$(NoriCoreRid)' == 'linux-arm64'">../Live2D/native/$(NoriCoreRid)/libLive2DCubismCore.so</NoriCorePath>
+		<NoriCorePath Condition="'$(NoriCoreRid)' == 'osx-x64' Or '$(NoriCoreRid)' == 'osx-arm64'">../Live2D/native/macos/libLive2DCubismCore.dylib</NoriCorePath>
+	</PropertyGroup>
 	<ItemGroup>
-		<!-- Cubism Core 原生库: 按 RID 只打包当前目标平台的一份 -->
-		<None Include="../Live2D/native/win-x64/Live2DCubismCore.dll" Link="Live2DCubismCore.dll" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-x64' Or ('$(RuntimeIdentifier)' == '' And '$(NoriIsWindowsBuild)' == 'true')" />
-		<None Include="../Live2D/native/linux-x64/libLive2DCubismCore.so" Link="libLive2DCubismCore.so" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'linux-x64' Or ('$(RuntimeIdentifier)' == '' And $([MSBuild]::IsOSPlatform('Linux')))" />
-		<None Include="../Live2D/native/macos/libLive2DCubismCore.dylib" Link="libLive2DCubismCore.dylib" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'osx-x64' Or '$(RuntimeIdentifier)' == 'osx-arm64' Or ('$(RuntimeIdentifier)' == '' And $([MSBuild]::IsOSPlatform('OSX')))" />
+		<None Include="$(NoriCorePath)" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="'$(NoriCorePath)' != ''" />
+		<None Include="../Live2D/PurismCore.LICENSE.txt" Link="PurismCore.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
 	</ItemGroup>
 
-	<!--
-		缺少目标平台的 Cubism Core 原生库时构建期就报错
-
-		否则要等到运行时才炸 DllNotFoundException, 排查成本高得多。
-		linux-arm64 官方 SDK 暂未提供, 需要自备后放到 Live2D/native/linux-arm64/。
-	-->
-	<Target Name="NoriCheckCubismCore" BeforeTargets="Build">
-		<Error Condition="'$(RuntimeIdentifier)' == 'linux-arm64' And !Exists('../Live2D/native/linux-arm64/libLive2DCubismCore.so')" Text="缺少 linux-arm64 的 Cubism Core 原生库: 请把 libLive2DCubismCore.so 放到 Live2D/native/linux-arm64/" />
-		<Error Condition="'$(RuntimeIdentifier)' == 'linux-x64' And !Exists('../Live2D/native/linux-x64/libLive2DCubismCore.so')" Text="缺少 linux-x64 的 Cubism Core 原生库: Live2D/native/linux-x64/libLive2DCubismCore.so" />
-		<Error Condition="($(RuntimeIdentifier.StartsWith('osx'))) And !Exists('../Live2D/native/macos/libLive2DCubismCore.dylib')" Text="缺少 macOS 的 Cubism Core 原生库: Live2D/native/macos/libLive2DCubismCore.dylib" />
+	<!-- 提前报告缺失或不支持的目标，避免运行时才出现 DllNotFoundException。 -->
+	<Target Name="NoriCheckPurismCore" BeforeTargets="Build">
+		<Error Condition="'$(NoriCorePath)' == '' Or !Exists('$(NoriCorePath)')" Text="缺少 $(NoriCoreRid) 的 PurismCore 原生库，请检查 Live2D/native/。" />
 	</Target>
 
 	<ItemGroup>

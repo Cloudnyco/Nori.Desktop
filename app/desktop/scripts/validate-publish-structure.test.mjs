@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import {chmodSync, mkdtempSync, mkdirSync, writeFileSync} from "node:fs"
+import {chmodSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync} from "node:fs"
 import {tmpdir} from "node:os"
 import {join} from "node:path"
 import {spawnSync} from "node:child_process"
@@ -24,7 +24,7 @@ const createFixture = (rid) => {
 	const slotBase = mac ? join(slot, "Nori.Desktop.app", "Contents", "MacOS", "Nori.Desktop") : join(slot, "Nori.Desktop")
 	const slotExecutable = mac ? slotBase : rid.startsWith("win-") ? `${slotBase}.exe` : slotBase
 	const native = rid.startsWith("win-") ? "Live2DCubismCore.dll" : rid.startsWith("osx-") ? "libLive2DCubismCore.dylib" : "libLive2DCubismCore.so"
-	const files = [rootExecutable, `${rootBase}.dll`, `${rootBase}.deps.json`, `${rootBase}.runtimeconfig.json`, join(root, "LICENSE"), join(root, ".current"), join(slot, "deployment.json"), slotExecutable, `${slotBase}.dll`, `${slotBase}.deps.json`, `${slotBase}.runtimeconfig.json`, mac ? join(slot, "Nori.Desktop.app", "Contents", "MacOS", native) : join(slot, native)]
+	const files = [rootExecutable, `${rootBase}.dll`, `${rootBase}.deps.json`, `${rootBase}.runtimeconfig.json`, join(root, "LICENSE"), join(root, ".current"), join(slot, "deployment.json"), slotExecutable, `${slotBase}.dll`, `${slotBase}.deps.json`, `${slotBase}.runtimeconfig.json`, mac ? join(slot, "Nori.Desktop.app", "Contents", "MacOS", native) : join(slot, native), join(slotBase, "..", "PurismCore.LICENSE.txt")]
 	for (const file of files) {
 		// eslint-disable-next-line security/detect-non-literal-fs-filename -- 测试fixture临时目录
 		mkdirSync(join(file, ".."), {recursive: true})
@@ -40,10 +40,18 @@ const createFixture = (rid) => {
 	return root
 }
 
-for (const rid of ["win-x64", "linux-x64", "osx-arm64"]) {
+for (const rid of ["win-x64", "linux-x64", "linux-arm64", "osx-x64", "osx-arm64"]) {
 	const root = createFixture(rid)
 	const result = spawnSync(process.execPath, [script, root, rid], {encoding: "utf8"})
 	assert.equal(result.status, 0, `${rid}: ${result.stderr}`)
+	const license = rid.startsWith("osx-")
+		? join(root, "app-1.2.3-4", "Nori.Desktop.app", "Contents", "MacOS", "PurismCore.LICENSE.txt")
+		: join(root, "app-1.2.3-4", "PurismCore.LICENSE.txt")
+	// eslint-disable-next-line security/detect-non-literal-fs-filename -- 测试fixture临时文件
+	unlinkSync(license)
+	const missingLicense = spawnSync(process.execPath, [script, root, rid], {encoding: "utf8"})
+	assert.notEqual(missingLicense.status, 0)
+	assert.match(missingLicense.stderr, /PurismCore\.LICENSE\.txt/)
 }
 const root = createFixture("linux-x64")
 // eslint-disable-next-line security/detect-non-literal-fs-filename -- 测试fixture临时文件
