@@ -1,6 +1,5 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Text.Json;
-using Live2DCSharpSDK.Framework.Core;
 using Live2DCSharpSDK.Framework.Math;
 using Live2DCSharpSDK.Framework.Model;
 
@@ -299,10 +298,10 @@ public class CubismPhysics
             _currentRemainTime = 0.0f;
         }
 
-        var parameterValues = CubismCore.GetParameterValues(model.Model);
-        var parameterMaximumValues = CubismCore.GetParameterMaximumValues(model.Model);
-        var parameterMinimumValues = CubismCore.GetParameterMinimumValues(model.Model);
-        var parameterDefaultValues = CubismCore.GetParameterDefaultValues(model.Model);
+        var parameterValues = model.Native.GetParameterValues();
+        var parameterMaximumValues = model.Native.GetParameterMaximumValues();
+        var parameterMinimumValues = model.Native.GetParameterMinimumValues();
+        var parameterDefaultValues = model.Native.GetParameterDefaultValues();
 
         if (_parameterCaches.Length < model.GetParameterCount())
         {
@@ -508,9 +507,9 @@ public class CubismPhysics
         int currentOutputIndex;
         CubismPhysicsSubRig currentSetting;
 
-        parameterValues = CubismCore.GetParameterValues(model.Model);
-        parameterMaximumValues = CubismCore.GetParameterMaximumValues(model.Model);
-        parameterMinimumValues = CubismCore.GetParameterMinimumValues(model.Model);
+        parameterValues = model.Native.GetParameterValues();
+        parameterMaximumValues = model.Native.GetParameterMaximumValues();
+        parameterMinimumValues = model.Native.GetParameterMinimumValues();
 
         for (settingIndex = 0; settingIndex < _physicsRig.SubRigCount; ++settingIndex)
         {

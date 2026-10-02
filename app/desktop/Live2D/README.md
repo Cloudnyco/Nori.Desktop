@@ -24,7 +24,7 @@
 
 `Nori.Desktop.csproj` 按显式 RID 或无 RID 构建的 SDK 宿主架构复制一份库，并把 `PurismCore.LICENSE.txt` 放在同目录。`publish.bat` / `publish.sh` 沿用此复制结果；发布结构检查拒绝缺少该许可的包。Linux 库为 ELF64 x86-64 / AArch64，要求 GLIBC ≥ 2.27；macOS 库为 x86_64 + arm64 universal。
 
-`CubismModel.Update()` 必须先 reset、再 update，否则 PurismCore 会在渲染器读取前清除本帧遮罩变化标记。保留现有上层行为管线，没有后端选择配置。
+`Nori.Live2D.NativeModel.Update()` 必须先 reset、再 update（旧 `CubismModel.Update()` 仅转发），否则 PurismCore 会在渲染器读取前清除本帧遮罩变化标记。保留现有上层行为管线，没有后端选择配置。
 
 在 `app/desktop` 执行回归检查（真实模型为外部只读资源，不提交到仓库）：
 
@@ -35,7 +35,7 @@ node scripts/validate-publish-structure.test.mjs
 
 默认从本地 `data/resources/installed/live2d` 查找 `arg-nori/ARGNori.moc3` 与 `nori/Nori.moc3`，也可用 `NORI_LIVE2D_FIXTURES` 指定资源根。未显式启用时真实模型测试显示跳过；无需模型的版本测试仍执行。
 
-本次集成验证（Windows 主机）：
+以下为 PurismCore 原生库替换阶段的验证（Windows 主机）；后续自有模型层的当前职责与验证见 [Nori.Live2D](../Nori.Live2D/README.md)：
 
 - Desktop Release 测试 542 项通过，启用真实模型资源，0 跳过；新增回归检查固定的 PurismCore 版本、两模型连续三帧的可见性、遮罩变化标记、有限顶点、参数形变和有效且唯一的 renderOrder。
 - 五个 RID 均通过现有发布脚本的 framework-dependent 发布、结构及体积检查；逐个确认只有对应原生库、SHA-256 与上表一致、MIT 全文随库复制、NOTICE/SBOM 标明 PurismCore 1.1.0 / MIT。Windows ZIP 解压检查通过。

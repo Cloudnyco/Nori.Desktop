@@ -5,6 +5,7 @@ const ROOT = process.cwd()
 const SCAN_SCRIPT = path.join(ROOT, "scripts", "check-first-party-todos.mjs")
 const FIRST_PARTY_ROOTS = [
 	"Nori.Core",
+	"Nori.Live2D",
 	"Nori.Core.Tests",
 	"Nori.Desktop",
 	"Nori.Desktop.Tests",

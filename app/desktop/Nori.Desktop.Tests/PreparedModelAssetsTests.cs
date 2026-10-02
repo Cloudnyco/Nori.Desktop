@@ -8,6 +8,7 @@ using Live2DCSharpSDK.Framework.Motion;
 using Live2DCSharpSDK.Framework.Physics;
 using Live2DCSharpSDK.Framework.Rendering;
 using Nori.Desktop.Live2D;
+using Nori.Live2D;
 
 namespace Nori.Desktop.Tests;
 
@@ -232,7 +233,7 @@ public sealed class PreparedModelAssetsTests : IDisposable
 		byte[] moc = File.ReadAllBytes(FindFixture("arg-nori", "ARGNori.moc3"));
 		CubismFramework.RunSynchronized(() =>
 		{
-			var allocator = new TrackingAllocator();
+			var allocator = new LAppAllocator();
 			Assert.True(CubismFramework.StartUp(allocator, new CubismOption {LogFunction = _ => { }, LoggingLevel = LogLevel.Off}));
 			try
 			{
@@ -266,19 +267,20 @@ public sealed class PreparedModelAssetsTests : IDisposable
 						Assert.True(Assert.Single(app.CreatedTextures).Disposed);
 						Assert.True(app.CreatedRenderer!.Disposed);
 					}
-					Assert.True(allocator.AllocationCount > 0);
-					Assert.Equal(0, allocator.Outstanding);
+					if (app.CreatedModel is { } created)
+					{
+						Assert.True(created.Native.IsDisposed);
+						Assert.True(created.Native.Memory.IsClosed);
+						Assert.True(created.Native.Memory.IsInvalid);
+					}
 				}
 			}
 			finally { CubismFramework.CleanUp(); }
 		});
 	}
 
-	[DllImport("Live2DCubismCore", EntryPoint = "csmGetTrueVersion", CallingConvention = CallingConvention.Cdecl)]
-	private static extern uint GetPurismCoreVersion();
-
 	[Fact]
-	public void 原生库为固定版本PurismCore() => Assert.Equal(0x01010000u, GetPurismCoreVersion());
+	public void 原生库为固定版本PurismCore() => Assert.Equal(0x01010000u, NativeRuntime.ImplementationVersion);
 
 	[Live2DAssetsFact]
 	public unsafe void 两份真实模型更新保留遮罩标记与参数形变()
@@ -352,7 +354,7 @@ public sealed class PreparedModelAssetsTests : IDisposable
 		return prepared ?? throw new InvalidOperationException("模型准备未返回结果");
 	}
 
-	private static string FindFixture(string modelId, string fileName)
+	internal static string FindFixture(string modelId, string fileName)
 	{
 		string? configuredRoot = Environment.GetEnvironmentVariable("NORI_LIVE2D_FIXTURES");
 		if (!string.IsNullOrWhiteSpace(configuredRoot))
@@ -392,10 +394,12 @@ public sealed class PreparedModelAssetsTests : IDisposable
 		public bool FailRendererDispose { get; init; }
 		public int FailTextureIndex { get; init; } = -1;
 		public FakeRenderer? CreatedRenderer { get; private set; }
+		public CubismModel? CreatedModel { get; private set; }
 		public List<FakeTexture> CreatedTextures { get; } = [];
 
 		public override CubismRenderer CreateRenderer(CubismModel model)
 		{
+			CreatedModel = model;
 			if (FailRenderer) throw new InvalidOperationException("渲染器创建失败");
 			return CreatedRenderer = new FakeRenderer(model) {FailDispose = FailRendererDispose};
 		}
@@ -412,27 +416,6 @@ public sealed class PreparedModelAssetsTests : IDisposable
 		{
 			DecodeCalled = true;
 			throw new InvalidOperationException("测试不允许同步纹理解码");
-		}
-	}
-
-	private sealed class TrackingAllocator : ICubismAllocator
-	{
-		private readonly LAppAllocator _inner = new();
-		public int Outstanding { get; private set; }
-		public int AllocationCount { get; private set; }
-		public nint Allocate(int size) => _inner.Allocate(size);
-		public void Deallocate(nint memory) => _inner.Deallocate(memory);
-		public nint AllocateAligned(int size, int alignment)
-		{
-			nint memory = _inner.AllocateAligned(size, alignment);
-			Outstanding++;
-			AllocationCount++;
-			return memory;
-		}
-		public void DeallocateAligned(nint memory)
-		{
-			_inner.DeallocateAligned(memory);
-			Outstanding--;
 		}
 	}
 

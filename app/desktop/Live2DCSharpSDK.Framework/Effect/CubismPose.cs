@@ -115,7 +115,7 @@ public class CubismPose
     public void UpdateParameters(CubismModel model, float deltaTimeSeconds)
     {
         // 前回のモデルと同じではないときは初期化が必要
-        if (model.Model != _lastModel?.Model)
+        if (!ReferenceEquals(model, _lastModel))
         {
             // パラメータインデックスの初期化
             Reset(model);

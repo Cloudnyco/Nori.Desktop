@@ -1,4 +1,4 @@
-﻿using Live2DCSharpSDK.Framework.Core;
+using Nori.Live2D;
 using Live2DCSharpSDK.Framework.Id;
 
 namespace Live2DCSharpSDK.Framework;
@@ -89,7 +89,7 @@ public static class CubismFramework
 			s_option = option;
 			if (s_option != null)
 			{
-				CubismCore.SetLogFunction(s_option.LogFunction);
+				NativeRuntime.SetLogFunction(s_option.LogFunction);
 			}
 
 			if (allocator == null)
@@ -104,7 +104,7 @@ public static class CubismFramework
 			s_startupCount = 1;
 
 			// 显示 Live2D Cubism Core 版本信息。
-			var version = CubismCore.GetVersion();
+			var version = NativeRuntime.Version;
 
 			uint major = (version & 0xFF000000) >> 24;
 			uint minor = (version & 0x00FF0000) >> 16;
@@ -131,6 +131,7 @@ public static class CubismFramework
 			IsStarted = false;
 			s_allocator = null;
 			s_option = null;
+			NativeRuntime.SetLogFunction(null);
 		}
 	}
 
@@ -140,7 +141,7 @@ public static class CubismFramework
     /// <param name="data">ログメッセージ</param>
     public static void CoreLogFunction(string data)
     {
-        CubismCore.GetLogFunction()?.Invoke(data);
+        NativeRuntime.LogFunction?.Invoke(data);
     }
 
     /// <summary>

@@ -78,6 +78,7 @@
 
 ### 核心特性
 
+- **自有原生模型数据层**：`Nori.Live2D` 已接入实际桌宠与预览加载路径，负责 PurismCore 绑定、模型内存和参数/网格访问；动作、物理及 GL 渲染仍使用原 SDK，尚非完整自研 SDK。
 - **原生 OpenGL Live2D 伴侣视窗**：基于 `Live2DCSharpSDK` 直接在 Avalonia `PetGlControl` (OpenGL ES 2.0) 上绘制，支持高精度 2048x2048 遮罩缓冲与 16x 各向异性过滤，原生支持物理摆动、自动眨眼、视线追踪、节拍同步与音频 RMS 口型同步。
 - **模型尺寸透明点击穿透**：Alpha 缓冲动态采样（~10Hz）生成可见模型的连续外接矩形，并结合 Win32 `WM_NCHITTEST` 钩子让矩形外区域穿透至桌面底层；4px 阈值原生平滑拖拽与坐标自动持久化；多平台能力感知驱动优雅降级。
 - **原生设置与四窗口架构**：用户窗口采用 Avalonia 原生控件，调度四独立窗口生命周期（`first-run` 首次引导、`init` 初始化、`main` 控制台、`pet` 原生伴侣视窗）。设置、记忆、模型和对话按需打开。
@@ -131,7 +132,8 @@ Nori-Desktop-Pet/
 │   ├── Nori.Desktop.Tests/          # 宿主层集成与桥接测试套件
 │   ├── Nori.Core/                   # 核心逻辑层（SQLite/LLM/Agent/MCP/Voice/Memory/安全密钥/存储迁移）
 │   ├── Nori.Core.Tests/             # 核心业务单元测试套件（xUnit）
-│   ├── Live2DCSharpSDK.Framework/   # Live2D Cubism Framework C# 实现
+│   ├── Nori.Live2D/                # 自有原生模型数据层（Purism ABI、内存、参数与网格）
+│   ├── Live2DCSharpSDK.Framework/   # 暂留动作/物理及模型薄适配器
 │   ├── Live2DCSharpSDK.OpenGL/      # Live2D OpenGL ES 2.0 渲染器
 │   ├── Live2DCSharpSDK.App/         # Live2D 模型与纹理加载管理
 │   ├── Live2D/native/               # 各平台 PurismCore 原生动态库（MIT，兼容 Cubism ABI）

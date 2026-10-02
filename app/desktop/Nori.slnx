@@ -1,4 +1,5 @@
 <Solution>
+  <Project Path="Nori.Live2D/Nori.Live2D.csproj" />
   <Project Path="Nori.AppLauncher/Nori.AppLauncher.csproj" />
   <Project Path="Nori.AppLauncher.Tests/Nori.AppLauncher.Tests.csproj" />
   <Project Path="Live2DCSharpSDK.Framework/Live2DCSharpSDK.Framework.csproj" />

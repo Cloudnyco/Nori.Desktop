@@ -1,5 +1,3 @@
-﻿using Live2DCSharpSDK.Framework.Core;
-
 namespace Live2DCSharpSDK.Framework;
 
 /// <summary>
@@ -41,7 +39,7 @@ public class CubismOption
     /// <summary>
     /// ログ出力の関数ポイ
     /// </summary>
-    public required LogFunction LogFunction;
+    public required Action<string> LogFunction;
     /// <summary>
     /// ログ出力レベル設定
     /// </summary>
