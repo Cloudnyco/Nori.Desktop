@@ -11,15 +11,12 @@ public static class VoicePipeline
 	public static async Task JoinAsync(Task producer, Task consumer)
 	{
 		Task first = await Task.WhenAny(producer, consumer).ConfigureAwait(false);
-		if (first.IsFaulted)
-		{
-			Task other = ReferenceEquals(first, producer) ? consumer : producer;
-			await ObserveQuietlyAsync(other).ConfigureAwait(false);
-			await first.ConfigureAwait(false);
-			return;
-		}
-		await producer.ConfigureAwait(false);
-		await consumer.ConfigureAwait(false);
+		Task other = ReferenceEquals(first, producer) ? consumer : producer;
+		await ObserveQuietlyAsync(other).ConfigureAwait(false);
+		// 取消可能比触发它的故障更早完成；必须观察双方，并优先保留真实故障。
+		if (!first.IsFaulted && other.IsFaulted) await other.ConfigureAwait(false);
+		await first.ConfigureAwait(false);
+		await other.ConfigureAwait(false);
 	}
 
 	private static async Task ObserveQuietlyAsync(Task task)

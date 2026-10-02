@@ -76,6 +76,38 @@ public partial class BridgeCommandsTests
 	});
 
 	[Fact]
+	public Task 主窗口用户关闭后可由托盘显示路径重复唤起() => WithSettingsUiAsync(() =>
+	{
+		using BridgeCommandsTests fixture = new(safeMode: true);
+		WindowManager manager = new(_ => { });
+		fixture._services.Windows = manager;
+		MainWindow main = new(WindowDefinition.All.Single(item => item.Label == WindowLabels.Main), fixture._services);
+		RegisterNativeTestWindow(manager, WindowLabels.Main, main);
+		int closed = 0;
+		main.Closed += (_, _) => closed++;
+		try
+		{
+			manager.Show(WindowLabels.Main);
+			for (int attempt = 0; attempt < 2; attempt++)
+			{
+				main.Close();
+				Assert.False(manager.IsWindowVisible(WindowLabels.Main));
+				Assert.Same(main, manager.Get(WindowLabels.Main));
+				Assert.Equal(0, closed);
+
+				manager.Show(WindowLabels.Main);
+				Assert.True(manager.IsWindowVisible(WindowLabels.Main));
+			}
+		}
+		finally
+		{
+			main.AllowClose = true;
+			main.Close();
+		}
+		return Task.CompletedTask;
+	});
+
+	[Fact]
 	public Task 退出统一放行新原生窗口且重复退出只执行一次() => WithSettingsUiAsync(async () =>
 	{
 		using BridgeCommandsTests fixture = new(safeMode: true);

@@ -65,6 +65,91 @@ public class VoiceServiceTests : IDisposable
 		Assert.False(voice.IsSpeaking);
 	}
 
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public async Task 播放失败时已释放取消回调不会覆盖原始异常(bool nested)
+	{
+		IOException primary = new("播放失败");
+		ObjectDisposedException disposed = new("已释放的播放资源");
+		FakePlayback playback = new()
+		{
+			Failure = primary,
+			CancellationFailure = nested ? new AggregateException(disposed) : disposed,
+		};
+		using HttpClient client = new(new AudioHandler());
+		using VoiceService voice = new(client, _config, playback, () => null);
+
+		IOException error = await Assert.ThrowsAsync<IOException>(() => voice.SpeakAsync("第一句。第二句。"));
+
+		Assert.Same(primary, error);
+		Assert.Equal(1, playback.CancellationCallbackCount);
+		Assert.Equal(1, playback.StopCount);
+		Assert.False(voice.IsSpeaking);
+	}
+
+	[Fact]
+	public async Task 后续合成失败时已释放播放回调不会覆盖提供商异常()
+	{
+		FakePlayback playback = new()
+		{
+			WaitForCancellation = true,
+			CancellationFailure = new ObjectDisposedException("已释放的播放资源"),
+		};
+		using HttpClient client = new(new AudioHandler(playback.Started.Task));
+		using VoiceService voice = new(client, _config, playback, () => null);
+
+		VoiceProviderException error = await Assert.ThrowsAsync<VoiceProviderException>(() =>
+			voice.SpeakAsync("第一句。第二句。").WaitAsync(TimeSpan.FromSeconds(5)));
+
+		Assert.IsType<HttpRequestException>(error.InnerException);
+		Assert.Equal(1, playback.CancellationCallbackCount);
+		Assert.Equal(1, playback.StopCount);
+		Assert.False(voice.IsSpeaking);
+	}
+
+	[Fact]
+	public async Task Stop忽略已释放回调并继续停止播放()
+	{
+		FakePlayback playback = new()
+		{
+			WaitForCancellation = true,
+			CancellationFailure = new ObjectDisposedException("已释放的播放资源"),
+		};
+		using HttpClient client = new(new AudioHandler());
+		using VoiceService voice = new(client, _config, playback, () => null);
+		Task speak = voice.SpeakAsync("停止测试。");
+		await playback.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+		voice.Stop();
+
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => speak);
+		Assert.Equal(1, playback.CancellationCallbackCount);
+		Assert.True(playback.StopCount > 0);
+		Assert.False(voice.IsSpeaking);
+	}
+
+	[Fact]
+	public async Task Stop不会吞掉混合聚合中的其他回调错误()
+	{
+		InvalidOperationException unexpected = new("取消回调失败");
+		FakePlayback playback = new()
+		{
+			WaitForCancellation = true,
+			CancellationFailure = new AggregateException(new ObjectDisposedException("已释放资源"), unexpected),
+		};
+		using HttpClient client = new(new AudioHandler());
+		using VoiceService voice = new(client, _config, playback, () => null);
+		Task speak = voice.SpeakAsync("停止测试。");
+		await playback.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+		AggregateException error = Assert.Throws<AggregateException>(voice.Stop);
+
+		Assert.Contains(unexpected, error.Flatten().InnerExceptions);
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => speak);
+		Assert.False(voice.IsSpeaking);
+	}
+
 	[Fact]
 	public async Task IndexTTS整段一次合成不拆段()
 	{
@@ -89,13 +174,22 @@ public class VoiceServiceTests : IDisposable
 		_tempDatabase.Dispose();
 	}
 
-	private sealed class AudioHandler : HttpMessageHandler
+	private sealed class AudioHandler(Task? failAfterPlaybackStarted = null) : HttpMessageHandler
 	{
-		protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-			Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+		private int _requestCount;
+
+		protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+		{
+			if (++_requestCount == 2 && failAfterPlaybackStarted is not null)
+			{
+				await failAfterPlaybackStarted.WaitAsync(cancellationToken);
+				throw new HttpRequestException("后续合成失败");
+			}
+			return new HttpResponseMessage(HttpStatusCode.OK)
 			{
 				Content = AudioContent([1, 2, 3]),
-			});
+			};
+		}
 
 		private static ByteArrayContent AudioContent(byte[] bytes)
 		{
@@ -131,6 +225,10 @@ public class VoiceServiceTests : IDisposable
 	private sealed class FakePlayback : IAudioPlayback
 	{
 		public bool WaitForCancellation { get; init; }
+		public Exception? Failure { get; init; }
+		public Exception? CancellationFailure { get; init; }
+		public int CancellationCallbackCount { get; private set; }
+		public int StopCount { get; private set; }
 		public List<EncodedAudio> Played { get; } = [];
 		public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		public bool IsPlaying { get; private set; }
@@ -144,10 +242,20 @@ public class VoiceServiceTests : IDisposable
 
 		public async Task PlayAsync(EncodedAudio audio, CancellationToken cancellationToken)
 		{
+			if (CancellationFailure is { } cancellationFailure)
+			{
+				// 故意保留回调，模拟播放资源已释放但取消注册尚未摘除的竞态。
+				_ = cancellationToken.Register(() =>
+				{
+					CancellationCallbackCount++;
+					throw cancellationFailure;
+				});
+			}
 			Played.Add(audio);
 			IsPlaying = true;
 			PlayingChanged?.Invoke(true);
 			Started.TrySetResult(true);
+			if (Failure is { } failure) throw failure;
 			if (WaitForCancellation) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
 			IsPlaying = false;
 			PlayingChanged?.Invoke(false);
@@ -155,6 +263,7 @@ public class VoiceServiceTests : IDisposable
 
 		public void Stop()
 		{
+			StopCount++;
 			IsPlaying = false;
 			PlayingChanged?.Invoke(false);
 		}

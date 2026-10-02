@@ -64,6 +64,18 @@ public sealed class VoicePipelineTests
 	}
 
 	[Fact]
+	public async Task 生产者先取消时仍观察并保留消费者失败()
+	{
+		IOException primary = new("播放失败");
+		Task producer = Task.FromCanceled(new CancellationToken(true));
+		Task consumer = Task.FromException(primary);
+
+		IOException error = await Assert.ThrowsAsync<IOException>(() => VoicePipeline.JoinAsync(producer, consumer));
+
+		Assert.Same(primary, error);
+	}
+
+	[Fact]
 	public async Task 双方正常完成时不抛出()
 	{
 		await VoicePipeline.JoinAsync(Task.CompletedTask, Task.CompletedTask);
