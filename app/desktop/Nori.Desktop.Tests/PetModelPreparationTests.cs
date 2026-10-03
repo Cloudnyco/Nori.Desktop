@@ -30,6 +30,10 @@ public class PetModelPreparationTests : IDisposable
 		File.WriteAllText(path, content);
 	}
 
+	private const string MotionJson = """
+		{"Version":3,"Meta":{"Duration":1},"Curves":[]}
+		""";
+
 	private const string MODEL3_JSON = """
 		{
 		  "Version": 3,
@@ -53,9 +57,9 @@ public class PetModelPreparationTests : IDisposable
 	{
 		WriteFile("sample.model3.json", MODEL3_JSON);
 		WriteFile("sample.moc3", "MOC3");
-		WriteFile("motions/idle_01.motion3.json", "{}");
-		WriteFile("motions/tap_a.motion3.json", "{}");
-		WriteFile("motions/tap_b.motion3.json", "{}");
+		WriteFile("motions/idle_01.motion3.json", MotionJson);
+		WriteFile("motions/tap_a.motion3.json", MotionJson);
+		WriteFile("motions/tap_b.motion3.json", MotionJson);
 		WriteFile("expressions/smile.exp3.json", """
 			{"Type":"Live2D Expression","Parameters":[
 				{"Id":"ParamMouthForm","Value":1,"Blend":"Add"},
@@ -152,9 +156,9 @@ public class PetModelPreparationTests : IDisposable
 	{
 		WriteFile("sample.model3.json", MODEL3_JSON);
 		WriteFile("sample.moc3", "MOC3");
-		WriteFile("motions/idle_01.motion3.json", "{}");
-		WriteFile("motions/tap_a.motion3.json", "{}");
-		WriteFile("motions/tap_b.motion3.json", "{}");
+		WriteFile("motions/idle_01.motion3.json", MotionJson);
+		WriteFile("motions/tap_a.motion3.json", MotionJson);
+		WriteFile("motions/tap_b.motion3.json", MotionJson);
 		WriteFile("expressions/smile.exp3.json", "{not valid json");
 		WriteFile("expressions/sad.exp3.json", "{\"Parameters\":[{\"Id\":\"B\",\"Value\":2}]}");
 

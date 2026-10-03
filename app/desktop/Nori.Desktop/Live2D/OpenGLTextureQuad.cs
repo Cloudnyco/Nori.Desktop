@@ -1,4 +1,4 @@
-using Live2DCSharpSDK.OpenGL;
+using Nori.Desktop.Live2D.Gl;
 
 namespace Nori.Desktop.Live2D;
 
@@ -9,6 +9,8 @@ namespace Nori.Desktop.Live2D;
 /// </summary>
 internal sealed class OpenGLTextureQuad : IDisposable
 {
+	private const int FuncAdd = 0x8006;
+
 	private const string VertexShaderSource = """
 		attribute vec2 a_position;
 		attribute vec2 a_texCoord;
@@ -148,65 +150,39 @@ internal sealed class OpenGLTextureQuad : IDisposable
 	{
 		if (!IsAvailable || program == 0 || texture == 0) return false;
 
-		_gl.GetIntegerv(_gl.GL_ARRAY_BUFFER_BINDING, out int oldArrayBuffer);
-		_gl.GetIntegerv(_gl.GL_ELEMENT_ARRAY_BUFFER_BINDING, out int oldElementBuffer);
-		_gl.GetIntegerv(_gl.GL_CURRENT_PROGRAM, out int oldProgram);
-		_gl.GetIntegerv(_gl.GL_ACTIVE_TEXTURE, out int oldActiveTexture);
-		_gl.ActiveTexture(_gl.GL_TEXTURE0);
-		_gl.GetIntegerv(_gl.GL_TEXTURE_BINDING_2D, out int oldTexture);
-		bool oldBlend = _gl.IsEnabled(_gl.GL_BLEND);
-		bool oldCull = _gl.IsEnabled(_gl.GL_CULL_FACE);
-		bool oldDepth = _gl.IsEnabled(_gl.GL_DEPTH_TEST);
-		_gl.GetIntegerv(_gl.GL_BLEND_SRC_RGB, out int oldBlendSrcRgb);
-		_gl.GetIntegerv(_gl.GL_BLEND_DST_RGB, out int oldBlendDstRgb);
-		_gl.GetIntegerv(_gl.GL_BLEND_SRC_ALPHA, out int oldBlendSrcAlpha);
-		_gl.GetIntegerv(_gl.GL_BLEND_DST_ALPHA, out int oldBlendDstAlpha);
+		using var state = new GlStateScope(_gl);
 
-		try
+		// 合成不继承模型或 Avalonia 留下的裁剪、测试和颜色写入状态。
+		_gl.Disable(_gl.GL_CULL_FACE);
+		_gl.Disable(_gl.GL_DEPTH_TEST);
+		_gl.Disable(_gl.GL_STENCIL_TEST);
+		_gl.Disable(_gl.GL_SCISSOR_TEST);
+		_gl.ColorMask(true, true, true, true);
+		_gl.BlendEquationSeparate(FuncAdd, FuncAdd);
+		if (useBlend)
 		{
-			_gl.Disable(_gl.GL_CULL_FACE);
-			_gl.Disable(_gl.GL_DEPTH_TEST);
-			if (useBlend)
-			{
-				_gl.Enable(_gl.GL_BLEND);
-				// Cubism 的颜色已经是预乘 alpha；否则合成会再次乘 alpha 造成透明部件变暗。
-				_gl.BlendFuncSeparate(_gl.GL_ONE, _gl.GL_ONE_MINUS_SRC_ALPHA, _gl.GL_ONE, _gl.GL_ONE_MINUS_SRC_ALPHA);
-			}
-			else
-			{
-				_gl.Disable(_gl.GL_BLEND);
-			}
-			_gl.UseProgram(program);
-			_gl.BindVertexArray(_vertexArray);
-			_gl.BindBuffer(_gl.GL_ARRAY_BUFFER, _vertexBuffer);
-			_gl.BindBuffer(_gl.GL_ELEMENT_ARRAY_BUFFER, _indexBuffer);
-			_gl.EnableVertexAttribArray(positionLocation);
-			_gl.EnableVertexAttribArray(texCoordLocation);
-			_gl.VertexAttribPointer(positionLocation, 2, _gl.GL_FLOAT, false, 4 * sizeof(float), 0);
-			_gl.VertexAttribPointer(texCoordLocation, 2, _gl.GL_FLOAT, false, 4 * sizeof(float), 2 * sizeof(float));
-			_gl.ActiveTexture(_gl.GL_TEXTURE0);
-			_gl.BindTexture(_gl.GL_TEXTURE_2D, texture);
-			_gl.Uniform1i(textureLocation, 0);
-			_gl.Uniform4f(offsetScaleLocation, offsetX, offsetY, 1.0f, 1.0f);
-			if (tintLocation >= 0) _gl.Uniform4f(tintLocation, tintR, tintG, tintB, tintA);
-			_gl.DrawElements(_gl.GL_TRIANGLES, Indices.Length, _gl.GL_UNSIGNED_SHORT, 0);
+			_gl.Enable(_gl.GL_BLEND);
+			// Cubism 的颜色已经是预乘 alpha；否则合成会再次乘 alpha 造成透明部件变暗。
+			_gl.BlendFuncSeparate(_gl.GL_ONE, _gl.GL_ONE_MINUS_SRC_ALPHA, _gl.GL_ONE, _gl.GL_ONE_MINUS_SRC_ALPHA);
 		}
-		finally
+		else
 		{
-			_gl.DisableVertexAttribArray(positionLocation);
-			_gl.DisableVertexAttribArray(texCoordLocation);
-			_gl.BindVertexArray(0);
-			_gl.BindBuffer(_gl.GL_ARRAY_BUFFER, oldArrayBuffer);
-			_gl.BindBuffer(_gl.GL_ELEMENT_ARRAY_BUFFER, oldElementBuffer);
-			_gl.UseProgram(oldProgram);
-			_gl.ActiveTexture(_gl.GL_TEXTURE0);
-			_gl.BindTexture(_gl.GL_TEXTURE_2D, oldTexture);
-			_gl.ActiveTexture(oldActiveTexture);
-			_gl.BlendFuncSeparate(oldBlendSrcRgb, oldBlendDstRgb, oldBlendSrcAlpha, oldBlendDstAlpha);
-			SetEnabled(_gl.GL_BLEND, oldBlend);
-			SetEnabled(_gl.GL_CULL_FACE, oldCull);
-			SetEnabled(_gl.GL_DEPTH_TEST, oldDepth);
+			_gl.Disable(_gl.GL_BLEND);
 		}
+		_gl.UseProgram(program);
+		_gl.BindVertexArray(_vertexArray);
+		_gl.BindBuffer(_gl.GL_ARRAY_BUFFER, _vertexBuffer);
+		_gl.BindBuffer(_gl.GL_ELEMENT_ARRAY_BUFFER, _indexBuffer);
+		_gl.EnableVertexAttribArray(positionLocation);
+		_gl.EnableVertexAttribArray(texCoordLocation);
+		_gl.VertexAttribPointer(positionLocation, 2, _gl.GL_FLOAT, false, 4 * sizeof(float), 0);
+		_gl.VertexAttribPointer(texCoordLocation, 2, _gl.GL_FLOAT, false, 4 * sizeof(float), 2 * sizeof(float));
+		_gl.ActiveTexture(_gl.GL_TEXTURE0);
+		_gl.BindTexture(_gl.GL_TEXTURE_2D, texture);
+		_gl.Uniform1i(textureLocation, 0);
+		_gl.Uniform4f(offsetScaleLocation, offsetX, offsetY, 1.0f, 1.0f);
+		if (tintLocation >= 0) _gl.Uniform4f(tintLocation, tintR, tintG, tintB, tintA);
+		_gl.DrawElements(_gl.GL_TRIANGLES, Indices.Length, _gl.GL_UNSIGNED_SHORT, 0);
 
 		return true;
 	}
@@ -254,6 +230,7 @@ internal sealed class OpenGLTextureQuad : IDisposable
 
 	private void TryInitialize()
 	{
+		using var state = new GlStateScope(_gl);
 		try
 		{
 			_program = CreateProgram(VertexShaderSource, FragmentShaderSource);
@@ -299,9 +276,6 @@ internal sealed class OpenGLTextureQuad : IDisposable
 					_gl.BufferData(_gl.GL_ELEMENT_ARRAY_BUFFER, Indices.Length * sizeof(ushort), (nint)pointer, _gl.GL_STATIC_DRAW);
 				}
 			}
-			_gl.BindVertexArray(0);
-			_gl.BindBuffer(_gl.GL_ARRAY_BUFFER, 0);
-			_gl.BindBuffer(_gl.GL_ELEMENT_ARRAY_BUFFER, 0);
 		}
 		catch
 		{
@@ -370,9 +344,4 @@ internal sealed class OpenGLTextureQuad : IDisposable
 		return shader;
 	}
 
-	private void SetEnabled(int capability, bool enabled)
-	{
-		if (enabled) _gl.Enable(capability);
-		else _gl.Disable(capability);
-	}
 }

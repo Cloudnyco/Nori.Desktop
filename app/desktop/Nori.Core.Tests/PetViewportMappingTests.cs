@@ -7,7 +7,7 @@ public sealed class PetViewportMappingTests
 	[Fact]
 	public void TallModelFillsSquareViewport()
 	{
-		// CubismModelMatrix 使用 Unit 尺寸：1×2 画布 SetHeight(2) 后 scale=1。
+		// 模型布局使用 Unit 尺寸：1×2 画布规范化到高度 2 后 scale=1。
 		PetViewportMapping mapping = PetViewportMapping.Create(
 			500, 500, 1, 2, 1, 1);
 

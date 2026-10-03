@@ -24,7 +24,7 @@
 
 `Nori.Desktop.csproj` 按显式 RID 或无 RID 构建的 SDK 宿主架构复制一份库，并把 `PurismCore.LICENSE.txt` 放在同目录。`publish.bat` / `publish.sh` 沿用此复制结果；发布结构检查拒绝缺少该许可的包。Linux 库为 ELF64 x86-64 / AArch64，要求 GLIBC ≥ 2.27；macOS 库为 x86_64 + arm64 universal。
 
-`Nori.Live2D.NativeModel.Update()` 必须先 reset、再 update（旧 `CubismModel.Update()` 仅转发），否则 PurismCore 会在渲染器读取前清除本帧遮罩变化标记。保留现有上层行为管线，没有后端选择配置。
+`Nori.Live2D.NativeModel.Update()` 必须先 reset、再 update，否则 PurismCore 会在渲染器读取前清除本帧遮罩变化标记。保留现有上层行为管线，没有后端选择配置。
 
 在 `app/desktop` 执行回归检查（真实模型为外部只读资源，不提交到仓库）：
 

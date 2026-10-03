@@ -1,12 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using System.Text.Json.Nodes;
-using Live2DCSharpSDK.App;
-using Live2DCSharpSDK.Framework;
-using Live2DCSharpSDK.Framework.Model;
-using Live2DCSharpSDK.Framework.Motion;
-using Live2DCSharpSDK.Framework.Physics;
-using Live2DCSharpSDK.Framework.Rendering;
+using System.Numerics;
 using Nori.Desktop.Live2D;
 using Nori.Live2D;
 
@@ -103,7 +97,7 @@ public sealed class PreparedModelAssetsTests : IDisposable
 		Assert.True(prepared.Assets.HasPhysics);
 		Assert.True(prepared.Assets.HasPose);
 		Assert.Equal(1, prepared.Assets.MotionCount);
-		LAppTextureAsset texture = Assert.Single(prepared.Assets.Textures);
+		PreparedTexture texture = Assert.Single(prepared.Assets.Textures);
 		Assert.Equal(1, texture.Width);
 		Assert.Equal(1, texture.Height);
 		Assert.Equal(4, texture.PixelByteLength);
@@ -123,71 +117,44 @@ public sealed class PreparedModelAssetsTests : IDisposable
 		Assert.True(prepared.Assets.HasPhysics);
 		Assert.False(prepared.Assets.HasPose);
 		Assert.Equal(18, prepared.Assets.MotionCount);
-		LAppTextureAsset texture = Assert.Single(prepared.Assets.Textures);
+		PreparedTexture texture = Assert.Single(prepared.Assets.Textures);
 		Assert.True(texture.Width > 0);
 		Assert.True(texture.Height > 0);
 		Assert.Equal(checked(texture.Width * texture.Height * 4), texture.PixelByteLength);
 	}
 
 	[Live2DAssetsFact]
-	public void 预加载SDK入口不读取文件或调用纹理解码器()
+	public void 宿主提交预载模型不读取文件且两份实例独占资源()
 	{
-		byte[] moc = File.ReadAllBytes(FindFixture("arg-nori", "ARGNori.moc3"));
-		CubismMotionObj motion = JsonSerializer.Deserialize(
-			MotionJson,
-			CubismMotionObjContext.Default.CubismMotionObj)!;
-		CubismPhysicsObj physics = JsonSerializer.Deserialize(
-			PhysicsJson,
-			CubismPhysicsObjContext.Default.CubismPhysicsObj)!;
-		JsonObject pose = JsonNode.Parse("{\"Groups\":[]}")!.AsObject();
-		var setting = new ModelSettingObj
-		{
-			FileReferences = new ModelSettingObj.FileReference
-			{
-				Moc = "不存在.moc3",
-				Textures = ["不存在.png"],
-				Physics = "不存在.physics3.json",
-				Pose = "不存在.pose3.json",
-				Motions = new Dictionary<string, List<ModelSettingObj.FileReference.Motion>>
-				{
-					["Idle"] = [new ModelSettingObj.FileReference.Motion {File = "不存在.motion3.json"}],
-				},
-			},
-			Groups = [],
-			HitAreas = [],
-			Layout = [],
-		};
-		var assets = new LAppModelAssets(
-			"内存模型",
-			setting,
-			moc,
-			physics,
-			pose,
-			new Dictionary<string, CubismMotionObj> { ["Idle_0"] = motion },
-			[new LAppTextureAsset(0, "不存在.png", new TexturePixels(1, 1, [255, 255, 255, 255]))]);
-
-		CubismFramework.RunSynchronized(() =>
-		{
-			var allocator = new LAppAllocator();
-			var option = new CubismOption {LogFunction = _ => { }, LoggingLevel = LogLevel.Off};
-			Assert.True(CubismFramework.StartUp(allocator, option));
-			var app = new RejectingDecodeDelegate();
-			try
-			{
-				LAppModel model = app.Live2dManager.LoadModel(assets);
-				Assert.False(app.DecodeCalled);
-				Assert.Single(app.CreatedTextures);
-				Assert.NotNull(model.StartMotion("Idle", 0, MotionPriority.PriorityForce));
-				app.Live2dManager.RemoveModel(model);
-				Assert.True(app.CreatedTextures[0].Disposed);
-			}
-			finally
-			{
-				app.Dispose();
-				CubismFramework.CleanUp();
-			}
-		});
+		PreparedModelData data = MemoryModel();
+		var gl = new RecordingGlApi { CreateResources = true };
+		using var first = new NativeModelHost(gl, data);
+		using var second = new NativeModelHost(gl, data);
+		Assert.NotSame(first.Model, second.Model);
+		int secondTexture = second.Renderer.GetBindedTextureId(0);
+		Assert.NotEqual(first.Renderer.GetBindedTextureId(0), secondTexture);
+		Assert.NotNull(first.Animation.StartMotion("Idle", 0, MotionPriority.Force));
+		first.Dispose();
+		Assert.True(first.Model.IsDisposed);
+		Assert.False(second.Model.IsDisposed);
+		Assert.DoesNotContain(secondTexture, gl.DeletedTextures);
+		second.Update(0.016f);
+		second.Draw(Matrix4x4.Identity);
+		Assert.True(gl.DrawCalls > 0);
+		second.Dispose();
+		Assert.Equal(gl.CreatedTextures.Order(), gl.DeletedTextures.Order());
 	}
+
+	private static PreparedModelData MemoryModel() => new(
+		"内存模型",
+		ModelDefinition.Parse("""
+			{"FileReferences":{"Moc":"不存在.moc3","Textures":["不存在.png"],"Motions":{"Idle":[{"File":"不存在.motion3.json"}]}}}
+			"""u8.ToArray()),
+		File.ReadAllBytes(FindFixture("arg-nori", "ARGNori.moc3")),
+		PhysicsDefinition.Parse(System.Text.Encoding.UTF8.GetBytes(PhysicsJson)),
+		PoseDefinition.Parse("{\"Groups\":[]}"u8.ToArray()),
+		new Dictionary<string, MotionClip> { ["Idle_0"] = MotionClip.Parse(System.Text.Encoding.UTF8.GetBytes(MotionJson)) },
+		[new PreparedTexture(0, "不存在.png", new(1, 1, [255, 255, 255, 255]))]);
 
 	[Fact]
 	public async Task 解码串行且排队取消不调用解码器()
@@ -196,20 +163,20 @@ public sealed class PreparedModelAssetsTests : IDisposable
 		using CancellationTokenSource queuedCancellation = new();
 		using ManualResetEventSlim release = new();
 		TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
-		Task<TexturePixels> first = Task.Run(() => ModelPreparation.DecodeTextureAsync([], firstCancellation.Token, _ =>
+		Task<Nori.Desktop.Live2D.TexturePixels> first = Task.Run(() => ModelPreparation.DecodeTextureAsync([], firstCancellation.Token, _ =>
 		{
 			entered.SetResult();
 			Assert.True(release.Wait(TimeSpan.FromSeconds(5)));
-			return new TexturePixels(1, 1, [0, 0, 0, 0]);
+			return new Nori.Desktop.Live2D.TexturePixels(1, 1, [0, 0, 0, 0]);
 		}));
 		try
 		{
 			await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 			bool queuedDecodeCalled = false;
-			Task<TexturePixels> queued = ModelPreparation.DecodeTextureAsync([], queuedCancellation.Token, _ =>
+			Task<Nori.Desktop.Live2D.TexturePixels> queued = ModelPreparation.DecodeTextureAsync([], queuedCancellation.Token, _ =>
 			{
 				queuedDecodeCalled = true;
-				return new TexturePixels(1, 1, [0, 0, 0, 0]);
+				return new Nori.Desktop.Live2D.TexturePixels(1, 1, [0, 0, 0, 0]);
 			});
 			Assert.False(queued.IsCompleted);
 			queuedCancellation.Cancel();
@@ -220,63 +187,33 @@ public sealed class PreparedModelAssetsTests : IDisposable
 			await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
 			await Assert.ThrowsAsync<InvalidDataException>(() => ModelPreparation.DecodeTextureAsync([], CancellationToken.None,
 				_ => throw new InvalidDataException("解码失败")));
-			TexturePixels pixels = await ModelPreparation.DecodeTextureAsync([], CancellationToken.None,
-				_ => new TexturePixels(1, 1, [0, 0, 0, 0]));
+			Nori.Desktop.Live2D.TexturePixels pixels = await ModelPreparation.DecodeTextureAsync([], CancellationToken.None,
+				_ => new Nori.Desktop.Live2D.TexturePixels(1, 1, [0, 0, 0, 0]));
 			Assert.Equal(4, pixels.Data.Length);
 		}
 		finally { release.Set(); }
 	}
 
 	[Live2DAssetsFact]
-	public void 构造失败释放原生模型渲染器及已上传纹理()
+	public void 宿主构造失败回滚全部已创建GL资源()
 	{
-		byte[] moc = File.ReadAllBytes(FindFixture("arg-nori", "ARGNori.moc3"));
-		CubismFramework.RunSynchronized(() =>
+		PreparedModelData data = MemoryModel();
+		foreach (int failureStage in new[] { 0, 1, 2, 3 })
 		{
-			var allocator = new LAppAllocator();
-			Assert.True(CubismFramework.StartUp(allocator, new CubismOption {LogFunction = _ => { }, LoggingLevel = LogLevel.Off}));
-			try
+			var gl = new RecordingGlApi
 			{
-				foreach (int failureStage in new[] { 0, 1, 2, 3 })
-				{
-					using var app = new RejectingDecodeDelegate
-					{
-						FailRenderer = failureStage == 1,
-						FailTextureIndex = failureStage >= 2 ? 1 : -1,
-						FailRendererDispose = failureStage == 3,
-					};
-					var setting = new ModelSettingObj
-					{
-						FileReferences = new ModelSettingObj.FileReference
-						{
-							Moc = "内存.moc3",
-							Textures = ["一.png", "二.png"],
-							Motions = failureStage == 0
-								? new() { ["Idle"] = [new() {File = "损坏.motion3.json"}] }
-								: [],
-						},
-						Groups = [], HitAreas = [], Layout = [],
-					};
-					var assets = new LAppModelAssets("失败回滚", setting, moc, null, null,
-						new Dictionary<string, CubismMotionObj> { ["Idle_0"] = new() },
-						[new(0, "一.png", new(1, 1, [0, 0, 0, 0])), new(1, "二.png", new(1, 1, [0, 0, 0, 0]))]);
-					Exception error = Assert.ThrowsAny<Exception>(() => app.Live2dManager.LoadModel(assets));
-					if (failureStage >= 2)
-					{
-						Assert.Equal("纹理上传失败", error.Message);
-						Assert.True(Assert.Single(app.CreatedTextures).Disposed);
-						Assert.True(app.CreatedRenderer!.Disposed);
-					}
-					if (app.CreatedModel is { } created)
-					{
-						Assert.True(created.Native.IsDisposed);
-						Assert.True(created.Native.Memory.IsClosed);
-						Assert.True(created.Native.Memory.IsInvalid);
-					}
-				}
-			}
-			finally { CubismFramework.CleanUp(); }
-		});
+				CreateResources = failureStage != 0,
+				FailTextureUploadAt = failureStage == 1 ? 0 : failureStage == 3 ? 1 : -1,
+				FailShader = failureStage == 2 ? 0 : -1,
+			};
+			Assert.ThrowsAny<Exception>(() => new NativeModelHost(gl, data));
+			Assert.Equal(gl.CreatedTextures.Order(), gl.DeletedTextures.Order());
+			Assert.Equal(gl.CreatedBuffers.Order(), gl.DeletedBuffers.Order());
+			Assert.Equal(gl.CreatedVertexArrays.Order(), gl.DeletedVertexArrays.Order());
+			Assert.Equal(gl.CreatedFramebuffers.Order(), gl.DeletedFramebuffers.Order());
+			Assert.Equal(gl.CreatedPrograms.Order(), gl.DeletedPrograms.Order());
+			Assert.Equal(gl.CreatedShaders.Order(), gl.DeletedShaders.Order());
+		}
 	}
 
 	[Fact]
@@ -285,24 +222,19 @@ public sealed class PreparedModelAssetsTests : IDisposable
 	[Live2DAssetsFact]
 	public unsafe void 两份真实模型更新保留遮罩标记与参数形变()
 	{
-		CubismFramework.RunSynchronized(() =>
 		{
-			Assert.True(CubismFramework.StartUp(new LAppAllocator(), new CubismOption {LogFunction = _ => { }, LoggingLevel = LogLevel.Off}));
-			try
-			{
 				foreach ((string id, string name) in new[] { ("arg-nori", "ARGNori"), ("nori", "Nori") })
 				{
-					using var moc = new CubismMoc(File.ReadAllBytes(FindFixture(id, $"{name}.moc3")), shouldCheckMocConsistency: true);
-					CubismModel model = moc.Model;
-					Assert.True(model.GetParameterCount() > 0);
+					using var model = new NativeModel(File.ReadAllBytes(FindFixture(id, $"{name}.moc3")));
+					Assert.True(model.ParameterCount > 0);
 					Assert.Contains("ParamAngleX", model.ParameterIds);
 					Assert.True(model.IsUsingMasking());
-					int count = model.GetDrawableCount();
+					int count = model.DrawableCount;
 					Assert.True(count > 0);
 					float[]? previousVertices = null;
 					foreach (float angle in new[] { -20f, 20f, -20f })
 					{
-						model.SetParameterValue("ParamAngleX", angle);
+						model.SetParameterValue(model.GetParameterIndex("ParamAngleX"), angle);
 						model.Update();
 						var vertices = new List<float>();
 						var orders = new HashSet<int>();
@@ -315,7 +247,7 @@ public sealed class PreparedModelAssetsTests : IDisposable
 							visible |= model.GetDrawableDynamicFlagIsVisible(drawable);
 							int vertexCount = model.GetDrawableVertexCount(drawable);
 							var positions = new float[vertexCount * 2];
-							Marshal.Copy((nint)model.GetDrawableVertices(drawable), positions, 0, positions.Length);
+							Marshal.Copy((nint)model.GetDrawableVertexPositions(drawable), positions, 0, positions.Length);
 							Assert.All(positions, value => Assert.True(float.IsFinite(value)));
 							vertices.AddRange(positions);
 							for (int mask = 0; mask < model.GetDrawableMaskCounts()[drawable]; mask++)
@@ -332,9 +264,7 @@ public sealed class PreparedModelAssetsTests : IDisposable
 						previousVertices = vertices.ToArray();
 					}
 				}
-			}
-			finally { CubismFramework.CleanUp(); }
-		});
+		}
 	}
 
 	private static async Task<PreparedModel> PrepareWithHeadlessAsync(
@@ -385,57 +315,4 @@ public sealed class PreparedModelAssetsTests : IDisposable
 		throw new FileNotFoundException($"找不到只读 Live2D 测试资源: {modelId}/{fileName}");
 	}
 
-	private sealed class RejectingDecodeDelegate : LAppDelegate
-	{
-		public RejectingDecodeDelegate() => InitApp();
-
-		public bool DecodeCalled { get; private set; }
-		public bool FailRenderer { get; init; }
-		public bool FailRendererDispose { get; init; }
-		public int FailTextureIndex { get; init; } = -1;
-		public FakeRenderer? CreatedRenderer { get; private set; }
-		public CubismModel? CreatedModel { get; private set; }
-		public List<FakeTexture> CreatedTextures { get; } = [];
-
-		public override CubismRenderer CreateRenderer(CubismModel model)
-		{
-			CreatedModel = model;
-			if (FailRenderer) throw new InvalidOperationException("渲染器创建失败");
-			return CreatedRenderer = new FakeRenderer(model) {FailDispose = FailRendererDispose};
-		}
-
-		public override TextureInfo CreateTexture(LAppModel model, int index, int width, int height, nint data)
-		{
-			if (index == FailTextureIndex) throw new InvalidOperationException("纹理上传失败");
-			var texture = new FakeTexture {Id = CreatedTextures.Count + 1};
-			CreatedTextures.Add(texture);
-			return texture;
-		}
-
-		public override TexturePixels DecodeTexture(string fileName)
-		{
-			DecodeCalled = true;
-			throw new InvalidOperationException("测试不允许同步纹理解码");
-		}
-	}
-
-	private sealed class FakeTexture : TextureInfo
-	{
-		public bool Disposed { get; private set; }
-		public override void Dispose() => Disposed = true;
-	}
-
-	private sealed class FakeRenderer(CubismModel model) : CubismRenderer(model)
-	{
-		public bool Disposed { get; private set; }
-		public bool FailDispose { get; init; }
-		public override void Dispose()
-		{
-			Disposed = true;
-			if (FailDispose) throw new InvalidOperationException("渲染器释放失败");
-		}
-		protected override void DoDrawModel() { }
-		protected override void SaveProfile() { }
-		protected override void RestoreProfile() { }
-	}
 }

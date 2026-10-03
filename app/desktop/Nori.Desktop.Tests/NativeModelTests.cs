@@ -1,5 +1,4 @@
 using Nori.Live2D;
-using Live2DCSharpSDK.Framework.Model;
 
 namespace Nori.Desktop.Tests;
 
@@ -19,11 +18,6 @@ public sealed class NativeModelTests
 		if (size >= 4) "MOC3"u8.CopyTo(bytes);
 		Assert.Throws<InvalidDataException>(() => new NativeModel(bytes));
 	}
-
-	[Fact]
-	public void 自有数据层不引用旧SDK() => Assert.DoesNotContain(
-		typeof(NativeModel).Assembly.GetReferencedAssemblies(),
-		assembly => assembly.Name!.StartsWith("Live2DCSharpSDK", StringComparison.Ordinal));
 
 	[Live2DAssetsFact]
 	public unsafe void 无需旧框架即可创建两份模型且数组独立()
@@ -123,7 +117,7 @@ public sealed class NativeModelTests
 	}
 
 	[Live2DAssetsFact]
-	public void 原生一致性检查拒绝截断模型且旧入口无法跳过()
+	public void 原生一致性检查拒绝截断模型且失败后仍可创建和释放()
 	{
 		foreach (byte[] bytes in Models())
 		{
@@ -132,10 +126,13 @@ public sealed class NativeModelTests
 				byte[] truncated = bytes[..length];
 				InvalidDataException error = Assert.Throws<InvalidDataException>(() => new NativeModel(truncated));
 				Assert.Contains("一致性检查", error.Message, StringComparison.Ordinal);
-				Assert.Throws<InvalidDataException>(() => new CubismMoc(truncated, shouldCheckMocConsistency: false));
 			}
 			using var good = new NativeModel(bytes);
 			good.Update();
+			good.Dispose();
+			Assert.True(good.Memory.IsClosed);
+			Assert.True(good.Memory.IsInvalid);
+			Assert.Throws<ObjectDisposedException>(() => good.Update());
 		}
 	}
 

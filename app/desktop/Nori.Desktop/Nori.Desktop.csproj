@@ -38,7 +38,8 @@
 		<InternalsVisibleTo Include="Nori.Desktop.Tests" />
 		<ProjectReference Include="../Nori.Core/Nori.Core.csproj" />
 		<ProjectReference Include="../Nori.PluginRuntime/Nori.PluginRuntime.csproj" />
-		<ProjectReference Include="../Live2DCSharpSDK.OpenGL/Live2DCSharpSDK.OpenGL.csproj" />
+		<ProjectReference Include="../Nori.Live2D/Nori.Live2D.csproj" />
+
 	</ItemGroup>
 
 	<!-- PurismCore v1.1.0 / v6 ABI；保留现有 P/Invoke 文件名，无 RID 时按 SDK 宿主架构选择。 -->

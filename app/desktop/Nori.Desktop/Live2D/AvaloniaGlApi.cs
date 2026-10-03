@@ -1,28 +1,76 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using Avalonia.OpenGL;
-using Live2DCSharpSDK.OpenGL;
+using Nori.Desktop.Live2D.Gl;
 
 namespace Nori.Desktop.Live2D;
 
 /// <summary>
 /// Avalonia OpenGL 适配层
 ///
-/// 实现 Live2DCSharpSDK.OpenGL.OpenGLApi，将 SDK 的 OpenGL 调用转接到 Avalonia GlInterface 及动态加载的 OpenGL 函数。
+/// 实现宿主自有 OpenGLApi，将网格与离屏资源的 GL 调用转接到 Avalonia GlInterface 及动态加载的 OpenGL 函数。
 /// </summary>
-public sealed class AvaloniaGlApi(GlInterface gl) : OpenGLApi
+public sealed class AvaloniaGlApi(GlInterface gl) : OpenGLApi, IMeshShaderProfile
 {
+	private bool? _supportsFragmentHighp;
+	private float? _maxTextureAnisotropy;
+
+	public override int GetError() => gl.GetError();
+	public override float MaxTextureAnisotropy => _maxTextureAnisotropy ??= QueryMaxTextureAnisotropy();
+
+	private float QueryMaxTextureAnisotropy()
+	{
+		if (!gl.ContextInfo.Extensions.Contains("GL_EXT_texture_filter_anisotropic")
+			&& !gl.ContextInfo.Extensions.Contains("GL_ARB_texture_filter_anisotropic")) return 0;
+		float[] maximum = new float[1];
+		GetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, maximum);
+		ThrowIfError("查询纹理各向异性上限");
+		return float.IsFinite(maximum[0]) && maximum[0] >= 1 ? maximum[0] : 0;
+	}
+
 	public override bool AlwaysClear => true;
+	public bool IsOpenGLES => gl.ContextInfo.Version.Type == GlProfileType.OpenGLES;
+	public override bool IsES2 => IsOpenGLES && gl.ContextInfo.Version.Major < 3;
+
+	/// <summary>GLES 2 使用 ES 100，GLES 3 使用 ES 300；桌面 GL 按兼容性选择语言版本。</summary>
+	public int ShaderLanguageVersion
+	{
+		get
+		{
+			GlVersion version = gl.ContextInfo.Version;
+			if (IsOpenGLES) return version.Major >= 3 ? 300 : 100;
+			if (version.Major >= 3 && !version.IsCompatibilityProfile)
+				return version.Major == 3 && version.Minor < 2 ? 130 : 150;
+			return version.Major == 2 && version.Minor == 0 ? 110 : 120;
+		}
+	}
+
+	/// <summary>仅在当前上下文有效时查询一次；桌面 GL 与 GLES 3 保证浮点高精度。</summary>
+	public bool SupportsFragmentHighp => !IsES2 || (_supportsFragmentHighp ??= QueryFragmentHighp());
+
+	private unsafe bool QueryFragmentHighp()
+	{
+		var query = Marshal.GetDelegateForFunctionPointer<GlGetShaderPrecisionFormatFunc>(gl.GetProcAddress("glGetShaderPrecisionFormat"));
+		int* range = stackalloc int[2];
+		int precision = 0;
+		query(GL_FRAGMENT_SHADER, 0x8DF2 /* GL_HIGH_FLOAT */, range, &precision);
+		return precision > 0;
+	}
+	public override bool SupportsVertexArrayObjects => gl.IsBindVertexArrayAvailable && gl.IsGenVertexArraysAvailable && gl.IsDeleteVertexArraysAvailable;
 
 	public delegate void Func1(int a, int b);
 	public delegate void Func2(int a, int b, int c, int d);
-	public delegate void Func4(bool a, bool b, bool c, bool d);
+	public delegate void Func4([MarshalAs(UnmanagedType.U1)] bool a, [MarshalAs(UnmanagedType.U1)] bool b,
+		[MarshalAs(UnmanagedType.U1)] bool c, [MarshalAs(UnmanagedType.U1)] bool d);
 	public delegate void Func5(int a);
 	public delegate void Func6(int a, int b, int c, int d, int e);
 	public unsafe delegate void Func7(int a, bool* b);
 	public unsafe delegate void Func8(int a, int* b);
+	public unsafe delegate void GlGetFloatvFunc(int parameter, float* values);
 	public delegate void Func9(int a, int b, out int c);
+	[return: MarshalAs(UnmanagedType.U1)]
 	public delegate bool Func10(int a);
+	public unsafe delegate void GlGetShaderPrecisionFormatFunc(int shaderType, int precisionType, int* range, int* precision);
 	public delegate void Func11(int a, int b, float c);
 	public delegate void Func12(int a, float b, float c, float d, float e);
 	public delegate void GlReadPixelsFunc(int x, int y, int width, int height, int format, int type, nint pixels);
@@ -30,6 +78,8 @@ public sealed class AvaloniaGlApi(GlInterface gl) : OpenGLApi
 
 	public Func1 GLBlendFunc = Marshal.GetDelegateForFunctionPointer<Func1>(gl.GetProcAddress("glBlendFunc"));
 	public Func2 GLBlendFuncSeparate = Marshal.GetDelegateForFunctionPointer<Func2>(gl.GetProcAddress("glBlendFuncSeparate"));
+	public Func1 GLBlendEquationSeparate = Marshal.GetDelegateForFunctionPointer<Func1>(gl.GetProcAddress("glBlendEquationSeparate"));
+	public GlGetFloatvFunc GLGetFloatv = Marshal.GetDelegateForFunctionPointer<GlGetFloatvFunc>(gl.GetProcAddress("glGetFloatv"));
 	public Func4 GLColorMask = Marshal.GetDelegateForFunctionPointer<Func4>(gl.GetProcAddress("glColorMask"));
 	public Func1 GLDetachShader = Marshal.GetDelegateForFunctionPointer<Func1>(gl.GetProcAddress("glDetachShader"));
 	public Func5 GLDisable = Marshal.GetDelegateForFunctionPointer<Func5>(gl.GetProcAddress("glDisable"));
@@ -53,6 +103,7 @@ public sealed class AvaloniaGlApi(GlInterface gl) : OpenGLApi
 	public override void BindTexture(int bit, int index) => gl.BindTexture(bit, index);
 	public override void BlendFunc(int a, int b) => GLBlendFunc(a, b);
 	public override void BlendFuncSeparate(int a, int b, int c, int d) => GLBlendFuncSeparate(a, b, c, d);
+	public override void BlendEquationSeparate(int rgb, int alpha) => GLBlendEquationSeparate(rgb, alpha);
 	public override void Clear(int bit) => gl.Clear(bit);
 	public override void ClearColor(float r, float g, float b, float a) => gl.ClearColor(r, g, b, a);
 	public override void ColorMask(bool a, bool b, bool c, bool d) => GLColorMask(a, b, c, d);
@@ -80,6 +131,11 @@ public sealed class AvaloniaGlApi(GlInterface gl) : OpenGLApi
 	public override unsafe void GetBooleanv(int bit, bool[] data)
 	{
 		fixed (bool* ptr = data) GLGetBooleanv(bit, ptr);
+	}
+
+	public override unsafe void GetFloatv(int bit, float[] data)
+	{
+		fixed (float* ptr = data) GLGetFloatv(bit, ptr);
 	}
 
 	public override void GetIntegerv(int bit, out int data) => gl.GetIntegerv(bit, out data);
@@ -123,7 +179,7 @@ public sealed class AvaloniaGlApi(GlInterface gl) : OpenGLApi
 	public override void Uniform1i(int index, int data) => GLUniform1i(index, data);
 	public override void Uniform4f(int index, float a, float b, float c, float d) => GLUniform4f(index, a, b, c, d);
 
-	public override unsafe void UniformMatrix4fv(int index, int length, bool b, float[] data)
+	public override unsafe void UniformMatrix4fv(int index, int length, bool b, ReadOnlySpan<float> data)
 	{
 		fixed (float* ptr = data) gl.UniformMatrix4fv(index, length, b, ptr);
 	}

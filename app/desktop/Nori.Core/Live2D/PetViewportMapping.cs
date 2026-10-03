@@ -51,7 +51,7 @@ public readonly record struct PetViewportMapping
 
 	/// <summary>
 	/// 根据 PetRuntime.RenderFrame 的投影公式创建映射。
-	/// modelScale/modelTranslate 是 CubismModelMatrix 当前值，调用方应在 GL 线程读取。
+	/// modelScale/modelTranslate 是模型布局矩阵的当前值，调用方应在 GL 线程读取。
 	/// </summary>
 	public static PetViewportMapping Create(
 		double viewportWidth,

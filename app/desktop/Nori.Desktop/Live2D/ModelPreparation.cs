@@ -1,13 +1,9 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using Avalonia;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
-using Live2DCSharpSDK.App;
-using Live2DCSharpSDK.Framework;
-using Live2DCSharpSDK.Framework.Motion;
-using Live2DCSharpSDK.Framework.Physics;
+using Nori.Live2D;
 using Nori.Core.Live2D;
 using Nori.Core.Resources;
 using Nori.Desktop.Live2D.Behaviors;
@@ -22,7 +18,7 @@ public sealed record ExpressionRef(string Name, string File);
 /// <summary>
 /// 后台准备完成的不可变模型数据
 ///
-/// 包含已读取并解析的 SDK 资源与已解码纹理, 不创建任何 OpenGL 资源;
+/// 包含已读取并解析的模型资源与已解码纹理, 不创建任何 OpenGL 资源;
 /// 携带发起时的模型世代号, 渲染线程只在世代仍匹配时消费。
 /// </summary>
 public sealed record PreparedModel
@@ -48,8 +44,8 @@ public sealed record PreparedModel
 	/// <summary>解析好的表情组定义</summary>
 	public required IReadOnlyList<ExpressionGroupDefinition> ExpressionGroups { get; init; }
 
-	/// <summary>只等待 SDK 原生对象创建与 GL 上传的模型资源</summary>
-	public required LAppModelAssets Assets { get; init; }
+	/// <summary>只等待 原生对象创建与 GL 上传的模型资源</summary>
+	public required PreparedModelData Assets { get; init; }
 }
 
 /// <summary>一次模型准备的后台结果, 不在后台线程提交运行时状态。</summary>
@@ -124,7 +120,7 @@ internal sealed class ModelLoadOperation
 /// 模型资源后台准备器
 ///
 /// 读取全部模型文件、解析 JSON 并解码纹理。
-/// 全程不触碰 GL/SDK 运行时状态, 可在任意线程运行并支持取消。
+/// 全程不触碰 GL/原生 运行时状态, 可在任意线程运行并支持取消。
 /// </summary>
 public static class ModelPreparation
 {
@@ -164,48 +160,20 @@ public static class ModelPreparation
 		Model3ReferenceValidator.Validate(modelDir, modelJsonPath, cancellationToken);
 		byte[] modelJson = await File.ReadAllBytesAsync(modelJsonPath, cancellationToken);
 
-		List<MotionGroupInfo> motionGroups = [];
-		List<ExpressionRef> expressionRefs = [];
-		using (JsonDocument doc = JsonDocument.Parse(modelJson))
+		ModelDefinition setting;
+		try { setting = ModelDefinition.Parse(modelJson); }
+		catch (JsonException exception)
 		{
-			if (doc.RootElement.TryGetProperty("FileReferences", out JsonElement fileRefs))
-			{
-				if (fileRefs.TryGetProperty("Motions", out JsonElement motions) && motions.ValueKind == JsonValueKind.Object)
-				{
-					foreach (JsonProperty groupProp in motions.EnumerateObject())
-					{
-						List<string> names = [];
-						if (groupProp.Value.ValueKind == JsonValueKind.Array)
-						{
-							foreach (JsonElement item in groupProp.Value.EnumerateArray())
-							{
-								if (!item.TryGetProperty("File", out JsonElement fileProp)) continue;
-								string file = fileProp.GetString() ?? "";
-								string name = Path.GetFileNameWithoutExtension(file).Replace(".motion3", "");
-								if (!string.IsNullOrEmpty(name)) names.Add(name);
-							}
-						}
-						if (names.Count > 0)
-						{
-							motionGroups.Add(new MotionGroupInfo {Group = groupProp.Name, Names = names});
-						}
-					}
-				}
-
-				if (fileRefs.TryGetProperty("Expressions", out JsonElement expressions) && expressions.ValueKind == JsonValueKind.Array)
-				{
-					foreach (JsonElement item in expressions.EnumerateArray())
-					{
-						string name = item.TryGetProperty("Name", out JsonElement nameProp) ? nameProp.GetString() ?? "" : "";
-						string file = item.TryGetProperty("File", out JsonElement fileProp) ? fileProp.GetString() ?? "" : "";
-						if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(file))
-						{
-							expressionRefs.Add(new ExpressionRef(name, file));
-						}
-					}
-				}
-			}
+			throw new ResourceException($"model3.json 格式无效: {Path.GetFileName(modelJsonPath)}", exception);
 		}
+		List<MotionGroupInfo> motionGroups = setting.Motions
+			.Where(group => group.Value.Count > 0)
+			.Select(group => new MotionGroupInfo
+			{
+				Group = group.Key,
+				Names = group.Value.Select(item => Path.GetFileNameWithoutExtension(item.File).Replace(".motion3", "")).ToList(),
+			}).ToList();
+		List<ExpressionRef> expressionRefs = setting.Expressions.Select(item => new ExpressionRef(item.Name, item.File)).ToList();
 
 		cancellationToken.ThrowIfCancellationRequested();
 
@@ -246,9 +214,9 @@ public static class ModelPreparation
 			}
 		}
 
-		LAppModelAssets assets = await PrepareSdkAssetsAsync(
+		PreparedModelData assets = await PrepareModelDataAsync(
 			modelJsonPath,
-			modelJson,
+			setting,
 			cancellationToken);
 
 		cancellationToken.ThrowIfCancellationRequested();
@@ -265,37 +233,24 @@ public static class ModelPreparation
 		};
 	}
 
-	private static async Task<LAppModelAssets> PrepareSdkAssetsAsync(
+	private static async Task<PreparedModelData> PrepareModelDataAsync(
 		string modelJsonPath,
-		byte[] modelJson,
+		ModelDefinition setting,
 		CancellationToken cancellationToken)
 	{
-		ModelSettingObj setting;
-		try
-		{
-			setting = JsonSerializer.Deserialize(modelJson, ModelSettingObjContext.Default.ModelSettingObj)
-				?? throw new JsonException("model3.json 根节点为空");
-		}
-		catch (JsonException exception)
-		{
-			throw new ResourceException($"model3.json 格式无效: {Path.GetFileName(modelJsonPath)}", exception);
-		}
-
-		ModelSettingObj.FileReference references = setting.FileReferences
-			?? throw new ResourceException("model3.json 缺少有效的 FileReferences 对象");
+		ModelDefinition references = setting;
 		byte[] moc = await ReadReferenceBytesAsync(
 			modelJsonPath,
 			references.Moc,
 			cancellationToken);
 
-		CubismPhysicsObj? physics = null;
+		PhysicsDefinition? physics = null;
 		if (!string.IsNullOrWhiteSpace(references.Physics))
 		{
 			byte[] data = await ReadReferenceBytesAsync(modelJsonPath, references.Physics, cancellationToken);
 			try
 			{
-				physics = JsonSerializer.Deserialize(data, CubismPhysicsObjContext.Default.CubismPhysicsObj)
-					?? throw new JsonException("physics3.json 根节点为空");
+				physics = PhysicsDefinition.Parse(data);
 			}
 			catch (JsonException exception)
 			{
@@ -303,39 +258,34 @@ public static class ModelPreparation
 			}
 		}
 
-		JsonObject? pose = null;
+		PoseDefinition? pose = null;
 		if (!string.IsNullOrWhiteSpace(references.Pose))
 		{
 			byte[] data = await ReadReferenceBytesAsync(modelJsonPath, references.Pose, cancellationToken);
 			try
 			{
-				using MemoryStream stream = new(data, writable: false);
-				pose = JsonNode.Parse(stream)?.AsObject()
-					?? throw new JsonException("pose3.json 根节点无效");
+				pose = PoseDefinition.Parse(data);
 			}
-			catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+			catch (JsonException exception)
 			{
 				throw new ResourceException($"Live2D 姿势文件格式无效: {references.Pose}", exception);
 			}
 		}
 
-		Dictionary<string, CubismMotionObj> motions = new(StringComparer.Ordinal);
+		Dictionary<string, MotionClip> motions = new(StringComparer.Ordinal);
 		if (references.Motions is not null)
 		{
-			foreach ((string group, List<ModelSettingObj.FileReference.Motion> items) in references.Motions)
+			foreach ((string group, IReadOnlyList<ModelMotion> items) in references.Motions)
 			{
 				for (int index = 0; index < items.Count; index++)
 				{
 					cancellationToken.ThrowIfCancellationRequested();
-					ModelSettingObj.FileReference.Motion item = items[index]
+					ModelMotion item = items[index]
 						?? throw new ResourceException($"model3.json 的动作条目无效: {group}[{index}]");
 					byte[] data = await ReadReferenceBytesAsync(modelJsonPath, item.File, cancellationToken);
 					try
 					{
-						motions[$"{group}_{index}"] = JsonSerializer.Deserialize(
-							data,
-							CubismMotionObjContext.Default.CubismMotionObj)
-							?? throw new JsonException("motion3.json 根节点为空");
+						motions[$"{group}_{index}"] = MotionClip.Parse(data);
 					}
 					catch (JsonException exception)
 					{
@@ -345,7 +295,7 @@ public static class ModelPreparation
 			}
 		}
 
-		List<LAppTextureAsset> textures = [];
+		List<PreparedTexture> textures = [];
 		if (references.Textures is not null)
 		{
 			for (int index = 0; index < references.Textures.Count; index++)
@@ -354,19 +304,19 @@ public static class ModelPreparation
 				string reference = references.Textures[index];
 				byte[] encoded = await ReadReferenceBytesAsync(modelJsonPath, reference, cancellationToken);
 				TexturePixels pixels = await DecodeTextureAsync(encoded, cancellationToken);
-				textures.Add(new LAppTextureAsset(index, reference, pixels));
+				textures.Add(new PreparedTexture(index, reference, pixels));
 			}
 		}
 
 		cancellationToken.ThrowIfCancellationRequested();
-		return new LAppModelAssets(
+		return new PreparedModelData(
 			Path.GetFileName(modelJsonPath),
 			setting,
 			moc,
 			physics,
 			pose,
-			motions,
-			textures);
+			new System.Collections.ObjectModel.ReadOnlyDictionary<string, MotionClip>(motions),
+			textures.AsReadOnly());
 	}
 
 	private static async Task<byte[]> ReadReferenceBytesAsync(

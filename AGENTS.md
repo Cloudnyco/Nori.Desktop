@@ -12,7 +12,7 @@ Nori Desktop Pet is an AI desktop companion built with a **.NET 10 + Avalonia 12
 - **Root Entry & Slot Deployment (`Nori.AppLauncher`)**: The stable root binary `Nori` selects and launches an immutable deployment slot (`app-<version>-<revision>`) validated by `deployment.json`. The launcher does not own locks or update slots; all runtime state resides in `<PackageRoot>/data`.
 - **Window Architecture (`Nori.Desktop/Windows`)**:
   - User windows are native Avalonia: `first-run`, `init`, `main`, and `pet`, plus on-demand settings, memory, models, chat, and quick chat. Windows are borderless (`WindowDecorations.None`) and transparent. Closing a window hides it; `main` is persistent for the app lifetime.
-  - Native Desk Pet (`pet`): An Avalonia `PetWindow` running native OpenGL ES 2.0 via the remaining `Live2DCSharpSDK` animation/physics/GL layers, `Nori.Live2D` native model data layer, and PurismCore (MIT, Cubism v6 ABI). It renders directly to the desktop.
+  - Native Desk Pet (`pet`): An Avalonia `PetWindow` running native OpenGL ES 2.0 via `Nori.Desktop/Live2D/Gl` and native host/resource owners, `Nori.Live2D` resource definitions, model assembly, motion, physics, pose, breath, layout, pointer smoothing and mask planning layers, and PurismCore (MIT, Cubism v6 ABI). It renders directly to the desktop.
   - Native Settings: `SettingsWindow` hosts Avalonia settings pages; inspect this native path for settings UI work.
   - Audio: `NativeAudioFactory` opens WASAPI on Windows, AudioQueue on macOS, and ALSA device `default` on Linux. Legacy `audio_backend=webview` does not switch implementations.
 - **Native Live2D Desk Pet**:
@@ -61,13 +61,12 @@ Nori-Desktop-Pet/
 ├── app/desktop/                # Primary application workspace
 │   ├── Nori.slnx
 │   ├── Live2D/                 # PurismCore native runtime (MIT)
-│   ├── Nori.Live2D/            # Native model ownership, Purism ABI and data access (no old SDK dependency)
-│   ├── Live2DCSharpSDK.*/      # Remaining ported animation/physics/GL and thin model adapters
+│   ├── Nori.Live2D/            # Model/resource definitions, Purism ABI and animation (no old SDK dependency)
 │   ├── Nori.AppLauncher/       # Dependency-free root launcher
 │   ├── Nori.AppLauncher.Tests/
 │   ├── Nori.Core/              # Avalonia-independent logic
 │   ├── Nori.Core.Tests/
-│   ├── Nori.Desktop/           # Avalonia host (windows, tray, pet, bridge, audio)
+│   ├── Nori.Desktop/           # Avalonia host (windows, tray, pet, bridge, audio; Live2D/Gl owns GL)
 │   ├── Nori.Desktop.Tests/
 │   ├── Nori.PluginRuntime/
 │   ├── Nori.PluginRuntime.Tests/
@@ -239,7 +238,7 @@ The coding rules above are the source for formatting and bridge registration.
 - **`LibraryImport` vs `DllImport`**: `LibraryImport` requires `AllowUnsafeBlocks`; `Nori.Core` uses classic `DllImport` for P/Invokes project-wide.
 - **`objc_msgSend`**: Declare a separate `DllImport` per return type (`nint` / `void` / `CGPoint` / `CGRect`); arm64 reads the wrong registers otherwise. All AppKit calls must be on the UI thread.
 - **CA1416 and type patterns**: `PlatformServices.Current is MacPlatformServices mac` still needs an `OperatingSystem.IsMacOS() &&` guard or the analyzer errors (warnings are errors here).
-- **`Directory.Build.props`**: Owns `TargetFramework` / `Nullable` / `LangVersion` only; `TreatWarningsAsErrors` stays per-project (`Live2DCSharpSDK.*` is ported external code).
+- **`Directory.Build.props`**: Owns `TargetFramework` / `Nullable` / `LangVersion` only; `TreatWarningsAsErrors` stays per-project.
 - **`tsconfig.json` target**: ES2022.
 - **Playback state**: One native playback instance and one recorder live for the process lifetime inside `AppRuntime`.
 - **Microphone consent**: macOS needs `NSMicrophoneUsageDescription` in the bundled `Info.plist` (from `publish.sh`) or AudioQueue capture is rejected by the system. Linux playback and capture need `libasound.so.2`.

@@ -307,8 +307,8 @@ public sealed class PetWindow : Window
 		if (_closed) return;
 		var model = _runtime.CurrentModel;
 		// GetCanvasWidth() 返回的是 Unit (通常 2.0), 尺寸计算要的是像素画布
-		double rawW = model?.Model.GetCanvasWidthPixel() ?? PetSizing.DefaultPetWidth;
-		double rawH = model?.Model.GetCanvasHeightPixel() ?? PetSizing.DefaultPetHeight;
+		double rawW = model?.CanvasSize.X ?? PetSizing.DefaultPetWidth;
+		double rawH = model?.CanvasSize.Y ?? PetSizing.DefaultPetHeight;
 		if (rawW <= 0 || rawH <= 0)
 		{
 			rawW = PetSizing.DefaultPetWidth;

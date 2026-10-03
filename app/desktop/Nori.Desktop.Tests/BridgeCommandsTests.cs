@@ -30,8 +30,13 @@ namespace Nori.Desktop.Tests;
 public partial class BridgeCommandsTests : IDisposable
 {
 	/// <summary>无界面测试使用生产主题，但不启动桌面服务。</summary>
-	public static AppBuilder BuildAvaloniaApp() =>
-		AppBuilder.Configure<App>().UseHeadless(new AvaloniaHeadlessPlatformOptions());
+	public static AppBuilder BuildAvaloniaApp()
+	{
+		// 真 GL harness 必须走真实图片解码；headless drawing 只提供尺寸，不保证像素内容。
+		bool realDrawing = Environment.GetEnvironmentVariable("NORI_TEST_NATIVE_GL") == "1";
+		AppBuilder builder = AppBuilder.Configure<App>().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = !realDrawing });
+		return realDrawing ? builder.UseSkia() : builder;
+	}
 
 	[Theory]
 	[InlineData("en-US")]

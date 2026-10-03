@@ -1,4 +1,4 @@
-using Live2DCSharpSDK.Framework.Model;
+using Nori.Live2D;
 
 namespace Nori.Desktop.Live2D.Behaviors;
 
@@ -46,7 +46,7 @@ public sealed class ModelParameters
 	public float Breath { get; set; }
 
 	/// <summary>按当前 Cubism 模型解析固定行为和视线动画使用的索引。</summary>
-	public void BindModel(CubismModel model)
+	public void BindModel(NativeModel model)
 	{
 		AngleXIndex = model.GetParameterIndex("ParamAngleX");
 		AngleYIndex = model.GetParameterIndex("ParamAngleY");
