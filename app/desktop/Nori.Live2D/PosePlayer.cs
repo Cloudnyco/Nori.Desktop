@@ -40,7 +40,9 @@ public sealed class PosePlayer
 
 		foreach (BoundPart[] group in _groups)
 		{
-			int selected = Array.FindIndex(group, part => _model.GetParameterValue(part.Parameter) > 0.001f);
+			int selected = -1;
+			for (int i = 0; i < group.Length; i++)
+				if (_model.GetParameterValue(group[i].Parameter) > 0.001f) { selected = i; break; }
 			// 没有选中参数时恢复首项，避免整组消失。
 			float opacity = selected < 0 || _fadeInTime == 0 ? 1
 				: Math.Clamp(_model.GetPartOpacity(group[selected].Part) + deltaSeconds / _fadeInTime, 0, 1);
@@ -54,9 +56,10 @@ public sealed class PosePlayer
 			}
 		}
 		// 所有主部件计算完毕后同步，关联部件不参与组内选择。
-		foreach (BoundPart part in _groups.SelectMany(group => group))
-			foreach (var link in part.Links)
-				_model.SetPartOpacity(link.Part, _model.GetPartOpacity(part.Part));
+		foreach (BoundPart[] group in _groups)
+			foreach (BoundPart part in group)
+				foreach (var link in part.Links)
+					_model.SetPartOpacity(link.Part, _model.GetPartOpacity(part.Part));
 	}
 
 	internal static float BackgroundOpacityLimit(float foreground)

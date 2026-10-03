@@ -5,6 +5,10 @@ namespace Nori.Live2D;
 /// <summary>模型独占的遮罩组与每帧布局；不持有原生指针或 GL 资源。</summary>
 public sealed class MaskPlan
 {
+	private readonly MaskGroup[] _groups;
+	private readonly MaskGroup?[] _drawables;
+	private readonly MaskGroup[] _activeGroups;
+
 	public IReadOnlyList<MaskGroup> Groups { get; }
 	public IReadOnlyList<MaskGroup?> Drawables { get; }
 
@@ -22,11 +26,15 @@ public sealed class MaskPlan
 				throw new ArgumentException("遮罩绘制对象索引越界", nameof(masks));
 			MaskGroup? group = groups.Find(item => item.Masks.SequenceEqual(indices));
 			if (group is null) groups.Add(group = new MaskGroup(indices));
-			group.ClippedDrawables.Add(drawable);
+			group.AddClippedDrawable(drawable);
 			drawables[drawable] = group;
 		}
-		Groups = groups.AsReadOnly();
-		Drawables = Array.AsReadOnly(drawables);
+		_groups = groups.ToArray();
+		_drawables = drawables;
+		_activeGroups = new MaskGroup[_groups.Length];
+		foreach (MaskGroup group in _groups) group.FreezeClippedDrawables();
+		Groups = Array.AsReadOnly(_groups);
+		Drawables = Array.AsReadOnly(_drawables);
 	}
 
 	private static unsafe int[][] ReadMasks(NativeModel model)
@@ -44,13 +52,16 @@ public sealed class MaskPlan
 		if (!float.IsFinite(textureSize.X) || !float.IsFinite(textureSize.Y) || textureSize.X <= 0 || textureSize.Y <= 0)
 			throw new ArgumentOutOfRangeException(nameof(textureSize), "遮罩纹理尺寸必须是有限正数");
 		ArgumentOutOfRangeException.ThrowIfLessThan(bufferCount, 1);
-		foreach (MaskGroup group in Groups)
+		for (int groupIndex = 0; groupIndex < _groups.Length; groupIndex++)
 		{
+			MaskGroup group = _groups[groupIndex];
 			Vector2 min = new(float.PositiveInfinity), max = new(float.NegativeInfinity);
-			foreach (int drawable in group.ClippedDrawables)
+			for (int clippedIndex = 0; clippedIndex < group.ClippedDrawables.Length; clippedIndex++)
 			{
+				int drawable = group.ClippedDrawables[clippedIndex];
 				Vector2* vertices = model.GetDrawableVertexPositions(drawable);
-				for (int i = 0; i < model.GetDrawableVertexCount(drawable); i++)
+				int vertexCount = model.GetDrawableVertexCount(drawable);
+				for (int i = 0; i < vertexCount; i++)
 				{
 					min = Vector2.Min(min, vertices[i]);
 					max = Vector2.Max(max, vertices[i]);
@@ -61,12 +72,14 @@ public sealed class MaskPlan
 			group.Bounds = group.Active ? new(min.X, min.Y, size.X, size.Y) : Vector4.Zero;
 		}
 		GC.KeepAlive(model);
-		MaskGroup[] active = Groups.Where(group => group.Active).ToArray();
-		for (int i = 0; i < active.Length; i++)
+		int activeCount = 0;
+		for (int i = 0; i < _groups.Length; i++)
+			if (_groups[i].Active) _activeGroups[activeCount++] = _groups[i];
+		for (int i = 0; i < activeCount; i++)
 		{
-			MaskGroup group = active[i];
+			MaskGroup group = _activeGroups[i];
 			(group.BufferIndex, group.Channel, group.Tile) = highPrecision ? (0, 0, new Vector4(0, 0, 1, 1))
-				: Place(i, active.Length, bufferCount);
+				: Place(i, activeCount, bufferCount);
 			(group.MaskMatrix, group.DrawMatrix) = Transform(group.Bounds, group.Tile, textureSize, model.PixelsPerUnit, highPrecision);
 		}
 	}
@@ -112,7 +125,10 @@ public sealed class MaskPlan
 public sealed class MaskGroup
 {
 	internal MaskGroup(int[] masks) => Masks = Array.AsReadOnly(masks);
-	internal List<int> ClippedDrawables { get; } = [];
+	private readonly List<int> _clippedDrawableBuilder = [];
+	internal int[] ClippedDrawables { get; private set; } = [];
+	internal void AddClippedDrawable(int drawable) => _clippedDrawableBuilder.Add(drawable);
+	internal void FreezeClippedDrawables() => ClippedDrawables = _clippedDrawableBuilder.ToArray();
 	public IReadOnlyList<int> Masks { get; }
 	public bool Active { get; internal set; }
 	public Vector4 Bounds { get; internal set; }

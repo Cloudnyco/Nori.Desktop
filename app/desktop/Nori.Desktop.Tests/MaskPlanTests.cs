@@ -3,6 +3,7 @@ using Nori.Live2D;
 
 namespace Nori.Desktop.Tests;
 
+[Collection("Native settings")]
 public sealed class MaskPlanTests
 {
 	[Fact]
@@ -74,6 +75,18 @@ public sealed class MaskPlanTests
 		var (_, draw) = MaskPlan.Transform(new(2, 4, 1, 20), new(0, 0, 1, 1), new(1000), 100, true);
 		AssertVector(new(0, 0), Vector2.Transform(new(2, 3), draw));
 		AssertVector(new(0.1f, 1), Vector2.Transform(new(3, 25), draw));
+	}
+
+	[Live2DAssetsFact]
+	public void 真实模型遮罩布局稳态每帧零分配()
+	{
+		using NativeModel model = new(File.ReadAllBytes(PreparedModelAssetsTests.FindFixture("arg-nori", "ARGNori.moc3")));
+		var plan = new MaskPlan(model);
+		for (int i = 0; i < 8; i++) plan.Update(model, new(2048), 2, false);
+		long before = GC.GetAllocatedBytesForCurrentThread();
+		for (int i = 0; i < 100; i++) plan.Update(model, new(2048), 2, false);
+		long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+		Assert.Equal(0, allocated);
 	}
 
 	[Live2DAssetsFact]

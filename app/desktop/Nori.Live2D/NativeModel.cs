@@ -22,6 +22,29 @@ public sealed unsafe class NativeModel : IDisposable
 	private readonly float[] _savedParameters;
 	private readonly Vector2 _canvasSize;
 	private readonly float _pixelsPerUnit;
+	private int _parameterCount;
+	private int _partCount;
+	private int _drawableCount;
+	private float* _parameterValues;
+	private float* _parameterMinimumValues;
+	private float* _parameterMaximumValues;
+	private float* _parameterDefaultValues;
+	private float* _partOpacities;
+	private byte* _drawableConstantFlags;
+	private byte* _drawableDynamicFlags;
+	private int* _drawableTextureIndices;
+	private int* _drawableRenderOrders;
+	private float* _drawableOpacities;
+	private int* _drawableMaskCounts;
+	private int** _drawableMasks;
+	private int* _drawableVertexCounts;
+	private Vector2** _drawableVertexPositions;
+	private Vector2** _drawableVertexUvs;
+	private int* _drawableIndexCounts;
+	private ushort** _drawableIndices;
+	private Vector4* _drawableMultiplyColors;
+	private Vector4* _drawableScreenColors;
+	private long _updateCount;
 	private float _opacity = 1;
 
 	public NativeModel(ReadOnlySpan<byte> mocBytes)
@@ -37,7 +60,8 @@ public sealed unsafe class NativeModel : IDisposable
 				!float.IsFinite(_canvasSize.X) || _canvasSize.X <= 0 ||
 				!float.IsFinite(_canvasSize.Y) || _canvasSize.Y <= 0)
 				throw new InvalidDataException("Live2D 模型画布尺寸无效。");
-			_savedParameters = new float[_parameterIds.Count];
+			BindNativeArrays();
+			_savedParameters = new float[_parameterCount];
 			SaveParameters();
 		}
 		catch
@@ -52,9 +76,11 @@ public sealed unsafe class NativeModel : IDisposable
 	public IReadOnlyList<string> ParameterIds { get { CheckDisposed(); return _parameterIds; } }
 	public IReadOnlyList<string> PartIds { get { CheckDisposed(); return _partIds; } }
 	public IReadOnlyList<string> DrawableIds { get { CheckDisposed(); return _drawableIds; } }
-	public int ParameterCount => ParameterIds.Count;
-	public int PartCount => PartIds.Count;
-	public int DrawableCount => DrawableIds.Count;
+	public int ParameterCount { get { CheckDisposed(); return _parameterCount; } }
+	public int PartCount { get { CheckDisposed(); return _partCount; } }
+	public int DrawableCount { get { CheckDisposed(); return _drawableCount; } }
+	/// <summary>成功完成 <see cref="Update"/> 的次数；渲染器据此判断顶点是否需要重新上传。</summary>
+	public long UpdateCount { get { CheckDisposed(); return _updateCount; } }
 	public Vector2 CanvasSize { get { CheckDisposed(); return _canvasSize; } }
 	public float PixelsPerUnit { get { CheckDisposed(); return _pixelsPerUnit; } }
 	public float Opacity
@@ -70,6 +96,8 @@ public sealed unsafe class NativeModel : IDisposable
 		CheckDisposed();
 		NativeMethods.ResetDrawableDynamicFlags(_memory);
 		NativeMethods.UpdateModel(_memory);
+		BindNativeArrays();
+		_updateCount++;
 	}
 
 	// 动作与姿势可能引用模型未定义的 ID，保存独立虚拟值，绝不拿虚拟索引访问原生数组。
@@ -84,25 +112,25 @@ public sealed unsafe class NativeModel : IDisposable
 	public float GetParameterValue(int index)
 	{
 		CheckIndex(index, ParameterCount + _virtualParameters.Count);
-		return index < ParameterCount ? Read(GetParameterValues(), index) : _virtualParameters[index - ParameterCount];
+		return index < _parameterCount ? Read(_parameterValues, index) : _virtualParameters[index - _parameterCount];
 	}
 
 	public float GetParameterDefaultValue(int index)
 	{
 		CheckIndex(index, ParameterCount + _virtualParameters.Count);
-		return index < ParameterCount ? Read(GetParameterDefaultValues(), index) : 0;
+		return index < _parameterCount ? Read(_parameterDefaultValues, index) : 0;
 	}
 
 	public void SetParameterValue(int index, float value, float weight = 1)
 	{
 		float current = GetParameterValue(index);
-		if (index < ParameterCount)
+		if (index < _parameterCount)
 		{
-			value = Math.Clamp(value, Read(GetParameterMinimumValues(), index), Read(GetParameterMaximumValues(), index));
-			GetParameterValues()[index] = current * (1 - weight) + value * weight;
+			value = Math.Clamp(value, Read(_parameterMinimumValues, index), Read(_parameterMaximumValues, index));
+			_parameterValues[index] = current * (1 - weight) + value * weight;
 			GC.KeepAlive(this);
 		}
-		else _virtualParameters[index - ParameterCount] = current * (1 - weight) + value * weight;
+		else _virtualParameters[index - _parameterCount] = current * (1 - weight) + value * weight;
 	}
 
 	public void AddParameterValue(int index, float value, float weight = 1) =>
@@ -113,67 +141,67 @@ public sealed unsafe class NativeModel : IDisposable
 	public float GetPartOpacity(int index)
 	{
 		CheckIndex(index, PartCount + _virtualParts.Count);
-		return index < PartCount ? Read(NativeMethods.GetPartOpacities(_memory), index) : _virtualParts[index - PartCount];
+		return index < _partCount ? Read(_partOpacities, index) : _virtualParts[index - _partCount];
 	}
 
 	public void SetPartOpacity(int index, float value)
 	{
 		CheckIndex(index, PartCount + _virtualParts.Count);
-		if (index < PartCount)
+		if (index < _partCount)
 		{
-			NativeMethods.GetPartOpacities(_memory)[index] = value;
+			_partOpacities[index] = value;
 			GC.KeepAlive(this);
 		}
-		else _virtualParts[index - PartCount] = value;
+		else _virtualParts[index - _partCount] = value;
 	}
 
 	/// <summary>仅快照模型实际参数；虚拟参数作为动作/姿势的独立状态保留。</summary>
 	public void SaveParameters()
 	{
-		new ReadOnlySpan<float>(GetParameterValues(), ParameterCount).CopyTo(_savedParameters);
+		new ReadOnlySpan<float>(GetParameterValues(), _parameterCount).CopyTo(_savedParameters);
 		GC.KeepAlive(this);
 	}
 
 	public void LoadParameters()
 	{
-		_savedParameters.CopyTo(new Span<float>(GetParameterValues(), ParameterCount));
+		_savedParameters.CopyTo(new Span<float>(GetParameterValues(), _parameterCount));
 		GC.KeepAlive(this);
 	}
 
-	public float* GetParameterValues() { CheckDisposed(); return NativeMethods.GetParameterValues(_memory); }
-	public float* GetParameterMinimumValues() { CheckDisposed(); return NativeMethods.GetParameterMinimumValues(_memory); }
-	public float* GetParameterMaximumValues() { CheckDisposed(); return NativeMethods.GetParameterMaximumValues(_memory); }
-	public float* GetParameterDefaultValues() { CheckDisposed(); return NativeMethods.GetParameterDefaultValues(_memory); }
-	public int* GetDrawableRenderOrders() { CheckDisposed(); return NativeMethods.GetRenderOrders(_memory); }
-	public int* GetDrawableMaskCounts() { CheckDisposed(); return NativeMethods.GetDrawableMaskCounts(_memory); }
-	public int** GetDrawableMasks() { CheckDisposed(); return NativeMethods.GetDrawableMasks(_memory); }
+	public float* GetParameterValues() { CheckDisposed(); GC.KeepAlive(this); return _parameterValues; }
+	public float* GetParameterMinimumValues() { CheckDisposed(); GC.KeepAlive(this); return _parameterMinimumValues; }
+	public float* GetParameterMaximumValues() { CheckDisposed(); GC.KeepAlive(this); return _parameterMaximumValues; }
+	public float* GetParameterDefaultValues() { CheckDisposed(); GC.KeepAlive(this); return _parameterDefaultValues; }
+	public int* GetDrawableRenderOrders() { CheckDisposed(); GC.KeepAlive(this); return _drawableRenderOrders; }
+	public int* GetDrawableMaskCounts() { CheckDisposed(); GC.KeepAlive(this); return _drawableMaskCounts; }
+	public int** GetDrawableMasks() { CheckDisposed(); GC.KeepAlive(this); return _drawableMasks; }
 
-	public int GetDrawableTextureIndex(int index) { CheckDrawable(index); return Read(NativeMethods.GetDrawableTextureIndices(_memory), index); }
-	public int GetDrawableVertexCount(int index) { CheckDrawable(index); return Read(NativeMethods.GetDrawableVertexCounts(_memory), index); }
-	public int GetDrawableVertexIndexCount(int index) { CheckDrawable(index); return Read(NativeMethods.GetDrawableIndexCounts(_memory), index); }
-	public float GetDrawableOpacity(int index) { CheckDrawable(index); return Read(NativeMethods.GetDrawableOpacities(_memory), index); }
-	public Vector4 GetMultiplyColor(int index) { CheckDrawable(index); return Read(NativeMethods.GetDrawableMultiplyColors(_memory), index); }
-	public Vector4 GetScreenColor(int index) { CheckDrawable(index); return Read(NativeMethods.GetDrawableScreenColors(_memory), index); }
-	public byte GetDrawableConstantFlags(int index) { CheckDrawable(index); return Read(NativeMethods.GetDrawableConstantFlags(_memory), index); }
-	public byte GetDrawableDynamicFlags(int index) { CheckDrawable(index); return Read(NativeMethods.GetDrawableDynamicFlags(_memory), index); }
+	public int GetDrawableTextureIndex(int index) { CheckDrawable(index); return Read(_drawableTextureIndices, index); }
+	public int GetDrawableVertexCount(int index) { CheckDrawable(index); return Read(_drawableVertexCounts, index); }
+	public int GetDrawableVertexIndexCount(int index) { CheckDrawable(index); return Read(_drawableIndexCounts, index); }
+	public float GetDrawableOpacity(int index) { CheckDrawable(index); return Read(_drawableOpacities, index); }
+	public Vector4 GetMultiplyColor(int index) { CheckDrawable(index); return Read(_drawableMultiplyColors, index); }
+	public Vector4 GetScreenColor(int index) { CheckDrawable(index); return Read(_drawableScreenColors, index); }
+	public byte GetDrawableConstantFlags(int index) { CheckDrawable(index); return Read(_drawableConstantFlags, index); }
+	public byte GetDrawableDynamicFlags(int index) { CheckDrawable(index); return Read(_drawableDynamicFlags, index); }
 	public Vector2* GetDrawableVertexPositions(int index)
 	{
 		CheckDrawable(index);
-		Vector2* result = NativeMethods.GetDrawableVertexPositions(_memory)[index];
+		Vector2* result = _drawableVertexPositions[index];
 		GC.KeepAlive(this);
 		return result;
 	}
 	public Vector2* GetDrawableVertexUvs(int index)
 	{
 		CheckDrawable(index);
-		Vector2* result = NativeMethods.GetDrawableVertexUvs(_memory)[index];
+		Vector2* result = _drawableVertexUvs[index];
 		GC.KeepAlive(this);
 		return result;
 	}
 	public ushort* GetDrawableVertexIndices(int index)
 	{
 		CheckDrawable(index);
-		ushort* result = NativeMethods.GetDrawableIndices(_memory)[index];
+		ushort* result = _drawableIndices[index];
 		GC.KeepAlive(this);
 		return result;
 	}
@@ -186,11 +214,57 @@ public sealed unsafe class NativeModel : IDisposable
 	public bool GetDrawableDynamicFlagVertexPositionsDidChange(int index) => (GetDrawableDynamicFlags(index) & 32) != 0;
 	public bool IsUsingMasking()
 	{
-		int* counts = GetDrawableMaskCounts();
+		CheckDisposed();
+		int* counts = _drawableMaskCounts;
 		bool found = false;
-		for (int i = 0; i < DrawableCount; i++) found |= counts[i] > 0;
+		for (int i = 0; i < _drawableCount; i++) found |= counts[i] > 0;
 		GC.KeepAlive(this);
 		return found;
+	}
+
+	private void BindNativeArrays()
+	{
+		_parameterCount = NativeMethods.GetParameterCount(_memory);
+		_partCount = NativeMethods.GetPartCount(_memory);
+		_drawableCount = NativeMethods.GetDrawableCount(_memory);
+		if (_parameterCount < 0 || _partCount < 0 || _drawableCount < 0)
+			throw new InvalidDataException("Live2D 模型数组长度无效。");
+		_parameterValues = NativeMethods.GetParameterValues(_memory);
+		_parameterMinimumValues = NativeMethods.GetParameterMinimumValues(_memory);
+		_parameterMaximumValues = NativeMethods.GetParameterMaximumValues(_memory);
+		_parameterDefaultValues = NativeMethods.GetParameterDefaultValues(_memory);
+		_partOpacities = NativeMethods.GetPartOpacities(_memory);
+		_drawableConstantFlags = NativeMethods.GetDrawableConstantFlags(_memory);
+		_drawableDynamicFlags = NativeMethods.GetDrawableDynamicFlags(_memory);
+		_drawableTextureIndices = NativeMethods.GetDrawableTextureIndices(_memory);
+		_drawableRenderOrders = NativeMethods.GetRenderOrders(_memory);
+		_drawableOpacities = NativeMethods.GetDrawableOpacities(_memory);
+		_drawableMaskCounts = NativeMethods.GetDrawableMaskCounts(_memory);
+		_drawableMasks = NativeMethods.GetDrawableMasks(_memory);
+		_drawableVertexCounts = NativeMethods.GetDrawableVertexCounts(_memory);
+		_drawableVertexPositions = NativeMethods.GetDrawableVertexPositions(_memory);
+		_drawableVertexUvs = NativeMethods.GetDrawableVertexUvs(_memory);
+		_drawableIndexCounts = NativeMethods.GetDrawableIndexCounts(_memory);
+		_drawableIndices = NativeMethods.GetDrawableIndices(_memory);
+		_drawableMultiplyColors = NativeMethods.GetDrawableMultiplyColors(_memory);
+		_drawableScreenColors = NativeMethods.GetDrawableScreenColors(_memory);
+		if ((_parameterCount > 0 && (_parameterValues == null || _parameterMinimumValues == null || _parameterMaximumValues == null || _parameterDefaultValues == null)) ||
+			(_partCount > 0 && _partOpacities == null) ||
+			(_drawableCount > 0 && (_drawableConstantFlags == null || _drawableDynamicFlags == null || _drawableTextureIndices == null ||
+				_drawableRenderOrders == null || _drawableOpacities == null || _drawableMaskCounts == null || _drawableMasks == null ||
+				_drawableVertexCounts == null || _drawableVertexPositions == null || _drawableVertexUvs == null || _drawableIndexCounts == null ||
+				_drawableIndices == null || _drawableMultiplyColors == null || _drawableScreenColors == null)))
+			throw new InvalidDataException("Live2D 模型数组指针无效。");
+		for (int i = 0; i < _drawableCount; i++)
+		{
+			if (_drawableMaskCounts[i] < 0 || _drawableVertexCounts[i] < 0 || _drawableIndexCounts[i] < 0)
+				throw new InvalidDataException("Live2D 绘制对象数组长度无效。");
+			if ((_drawableMaskCounts[i] > 0 && _drawableMasks[i] == null) ||
+				(_drawableVertexCounts[i] > 0 && (_drawableVertexPositions[i] == null || _drawableVertexUvs[i] == null)) ||
+				(_drawableIndexCounts[i] > 0 && _drawableIndices[i] == null))
+				throw new InvalidDataException("Live2D 绘制对象数组指针无效。");
+		}
+		GC.KeepAlive(this);
 	}
 
 	private void CheckDisposed() => ObjectDisposedException.ThrowIf(IsDisposed, this);

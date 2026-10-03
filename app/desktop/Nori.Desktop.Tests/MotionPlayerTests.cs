@@ -4,6 +4,7 @@ using Nori.Live2D;
 
 namespace Nori.Desktop.Tests;
 
+[Collection("Native settings")]
 public sealed class MotionPlayerTests
 {
 	private static MotionClip Clip(string curves, string extra = "", string meta = "") => MotionClip.Parse(Encoding.UTF8.GetBytes(
@@ -152,6 +153,24 @@ public sealed class MotionPlayerTests
 		player.Update(0);
 		player.Update(2);
 		Assert.False(player.IsFinished);
+	}
+
+	[Live2DAssetsFact]
+	public void 真实Idle动作更新稳态每帧零分配()
+	{
+		string modelPath = PreparedModelAssetsTests.FindFixture("nori", "Nori.model3.json");
+		string root = Path.GetDirectoryName(modelPath)!;
+		ModelDefinition definition = ModelDefinition.Parse(File.ReadAllBytes(modelPath));
+		string motionPath = Path.Combine(root, definition.Motions["Idle"][0].File);
+		MotionClip clip = MotionClip.Parse(File.ReadAllBytes(motionPath));
+		using NativeModel model = new(File.ReadAllBytes(Path.Combine(root, "Nori.moc3")));
+		var player = new MotionPlayer(model, definition.EyeBlinkIds, definition.LipSyncIds);
+		player.Start(clip, MotionPriority.Force, loop: true);
+		for (int i = 0; i < 8; i++) player.Update(1 / 60f);
+		long before = GC.GetAllocatedBytesForCurrentThread();
+		for (int i = 0; i < 100; i++) player.Update(1 / 60f);
+		long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+		Assert.Equal(0, allocated);
 	}
 
 	[Live2DAssetsFact]

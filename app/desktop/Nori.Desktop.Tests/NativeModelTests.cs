@@ -1,3 +1,4 @@
+using System.Numerics;
 using Nori.Live2D;
 
 namespace Nori.Desktop.Tests;
@@ -114,6 +115,96 @@ public sealed class NativeModelTests
 		Assert.Throws<ObjectDisposedException>(() => model.SaveParameters());
 		Assert.Throws<ObjectDisposedException>(() => model.LoadParameters());
 		Assert.Throws<ObjectDisposedException>(() => model.Opacity);
+	}
+
+	[Live2DAssetsFact]
+	public unsafe void 缓存指针更新后与原生接口一致且计数只统计成功更新()
+	{
+		using NativeModel model = new(File.ReadAllBytes(PreparedModelAssetsTests.FindFixture("arg-nori", "ARGNori.moc3")));
+		Assert.Equal(0, model.UpdateCount);
+		for (int frame = 0; frame < 4; frame++)
+		{
+			Assert.Equal((nint)NativeMethods.GetParameterValues(model.Memory), (nint)model.GetParameterValues());
+			Assert.Equal((nint)NativeMethods.GetParameterMinimumValues(model.Memory), (nint)model.GetParameterMinimumValues());
+			Assert.Equal((nint)NativeMethods.GetParameterMaximumValues(model.Memory), (nint)model.GetParameterMaximumValues());
+			Assert.Equal((nint)NativeMethods.GetParameterDefaultValues(model.Memory), (nint)model.GetParameterDefaultValues());
+			Assert.Equal((nint)NativeMethods.GetRenderOrders(model.Memory), (nint)model.GetDrawableRenderOrders());
+			Assert.Equal((nint)NativeMethods.GetDrawableMaskCounts(model.Memory), (nint)model.GetDrawableMaskCounts());
+			Assert.Equal((nint)NativeMethods.GetDrawableMasks(model.Memory), (nint)model.GetDrawableMasks());
+			Assert.Equal(model.ParameterCount, NativeMethods.GetParameterCount(model.Memory));
+			Assert.Equal(model.PartCount, NativeMethods.GetPartCount(model.Memory));
+			Assert.Equal(model.DrawableCount, NativeMethods.GetDrawableCount(model.Memory));
+			for (int i = 0; i < model.ParameterCount; i++)
+			{
+				Assert.Equal(NativeMethods.GetParameterValues(model.Memory)[i], model.GetParameterValue(i));
+				Assert.Equal(NativeMethods.GetParameterMinimumValues(model.Memory)[i], model.GetParameterMinimumValues()[i]);
+				Assert.Equal(NativeMethods.GetParameterMaximumValues(model.Memory)[i], model.GetParameterMaximumValues()[i]);
+				Assert.Equal(NativeMethods.GetParameterDefaultValues(model.Memory)[i], model.GetParameterDefaultValue(i));
+			}
+			for (int i = 0; i < model.PartCount; i++)
+				Assert.Equal(NativeMethods.GetPartOpacities(model.Memory)[i], model.GetPartOpacity(i));
+			for (int i = 0; i < model.DrawableCount; i++)
+			{
+				Assert.Equal(NativeMethods.GetDrawableTextureIndices(model.Memory)[i], model.GetDrawableTextureIndex(i));
+				Assert.Equal(NativeMethods.GetDrawableVertexCounts(model.Memory)[i], model.GetDrawableVertexCount(i));
+				Assert.Equal(NativeMethods.GetDrawableIndexCounts(model.Memory)[i], model.GetDrawableVertexIndexCount(i));
+				Assert.Equal(NativeMethods.GetDrawableOpacities(model.Memory)[i], model.GetDrawableOpacity(i));
+				Assert.Equal(NativeMethods.GetDrawableMultiplyColors(model.Memory)[i], model.GetMultiplyColor(i));
+				Assert.Equal(NativeMethods.GetDrawableScreenColors(model.Memory)[i], model.GetScreenColor(i));
+				Assert.Equal(NativeMethods.GetDrawableConstantFlags(model.Memory)[i], model.GetDrawableConstantFlags(i));
+				Assert.Equal(NativeMethods.GetDrawableDynamicFlags(model.Memory)[i], model.GetDrawableDynamicFlags(i));
+				Assert.Equal((nint)NativeMethods.GetDrawableVertexPositions(model.Memory)[i], (nint)model.GetDrawableVertexPositions(i));
+				Assert.Equal((nint)NativeMethods.GetDrawableVertexUvs(model.Memory)[i], (nint)model.GetDrawableVertexUvs(i));
+				Assert.Equal((nint)NativeMethods.GetDrawableIndices(model.Memory)[i], (nint)model.GetDrawableVertexIndices(i));
+			}
+
+			if (frame < 3)
+			{
+				model.SetParameterValue(0, model.GetParameterValue(0) + 0.01f);
+				model.Update();
+				Assert.Equal(frame + 1, model.UpdateCount);
+			}
+		}
+		model.Dispose();
+		Assert.Throws<ObjectDisposedException>(() => model.UpdateCount);
+	}
+
+	[Live2DAssetsFact]
+	public unsafe void 两个真实模型更新后静态绘制数据不变且索引合法()
+	{
+		foreach ((string id, string moc) in new[] { ("arg-nori", "ARGNori.moc3"), ("nori", "Nori.moc3") })
+		{
+			using NativeModel model = new(File.ReadAllBytes(PreparedModelAssetsTests.FindFixture(id, moc)));
+			int count = model.DrawableCount;
+			int[] vertexCounts = new int[count], indexCounts = new int[count], textures = new int[count];
+			byte[] flags = new byte[count];
+			Vector2[][] uvs = new Vector2[count][];
+			ushort[][] indices = new ushort[count][];
+			for (int drawable = 0; drawable < count; drawable++)
+			{
+				vertexCounts[drawable] = model.GetDrawableVertexCount(drawable);
+				indexCounts[drawable] = model.GetDrawableVertexIndexCount(drawable);
+				textures[drawable] = model.GetDrawableTextureIndex(drawable);
+				flags[drawable] = model.GetDrawableConstantFlags(drawable);
+				uvs[drawable] = new ReadOnlySpan<Vector2>(model.GetDrawableVertexUvs(drawable), vertexCounts[drawable]).ToArray();
+				indices[drawable] = new ReadOnlySpan<ushort>(model.GetDrawableVertexIndices(drawable), indexCounts[drawable]).ToArray();
+				Assert.All(indices[drawable], index => Assert.True(index < vertexCounts[drawable]));
+			}
+			for (int frame = 0; frame < 120; frame++)
+			{
+				model.SetParameterValue(frame % model.ParameterCount, (frame % 31) - 15);
+				model.Update();
+			}
+			for (int drawable = 0; drawable < count; drawable++)
+			{
+				Assert.Equal(vertexCounts[drawable], model.GetDrawableVertexCount(drawable));
+				Assert.Equal(indexCounts[drawable], model.GetDrawableVertexIndexCount(drawable));
+				Assert.Equal(textures[drawable], model.GetDrawableTextureIndex(drawable));
+				Assert.Equal(flags[drawable], model.GetDrawableConstantFlags(drawable));
+				Assert.Equal(uvs[drawable], new ReadOnlySpan<Vector2>(model.GetDrawableVertexUvs(drawable), vertexCounts[drawable]).ToArray());
+				Assert.Equal(indices[drawable], new ReadOnlySpan<ushort>(model.GetDrawableVertexIndices(drawable), indexCounts[drawable]).ToArray());
+			}
+		}
 	}
 
 	[Live2DAssetsFact]

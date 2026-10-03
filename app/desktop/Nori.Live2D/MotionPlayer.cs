@@ -33,7 +33,7 @@ public sealed class MotionPlayer
 	private readonly NativeModel _model;
 	private readonly HashSet<int> _eyes;
 	private readonly HashSet<int> _lips;
-	private readonly Dictionary<MotionClip, BoundCurve[]> _bindings = [];
+	private readonly Dictionary<MotionClip, BoundClip> _bindings = [];
 	private readonly List<MotionPlayback> _playing = [];
 
 	public MotionPlayer(NativeModel model, IEnumerable<string> eyeBlinkIds, IEnumerable<string> lipSyncIds)
@@ -57,12 +57,37 @@ public sealed class MotionPlayer
 		if (priority != MotionPriority.Force && priority <= current) return null;
 		if (!_bindings.ContainsKey(clip))
 		{
-			_bindings.Add(clip, clip.Curves.Select(curve => new BoundCurve(curve, curve.Target switch
+			var coveredParameters = new HashSet<int>();
+			BoundCurve[] curves = new BoundCurve[clip.Curves.Count];
+			for (int i = 0; i < curves.Length; i++)
 			{
-				"Parameter" => _model.GetParameterIndex(curve.Id),
-				"PartOpacity" => _model.GetPartIndex(curve.Id),
-				_ => -1,
-			})).ToArray());
+				MotionCurve curve = clip.Curves[i];
+				CurveTarget target = curve.Target switch
+				{
+					"Model" => CurveTarget.Model,
+					"Parameter" => CurveTarget.Parameter,
+					"PartOpacity" => CurveTarget.PartOpacity,
+					_ => CurveTarget.Other,
+				};
+				CurveEffect effect = target == CurveTarget.Model ? curve.Id switch
+				{
+					"EyeBlink" => CurveEffect.EyeBlink,
+					"LipSync" => CurveEffect.LipSync,
+					"Opacity" => CurveEffect.Opacity,
+					_ => CurveEffect.Other,
+				} : CurveEffect.Other;
+				int index = target switch
+				{
+					CurveTarget.Parameter => _model.GetParameterIndex(curve.Id),
+					CurveTarget.PartOpacity => _model.GetPartIndex(curve.Id),
+					_ => -1,
+				};
+				bool isEye = target == CurveTarget.Parameter && _eyes.Contains(index);
+				bool isLip = target == CurveTarget.Parameter && _lips.Contains(index);
+				if (target == CurveTarget.Parameter) coveredParameters.Add(index);
+				curves[i] = new BoundCurve(curve, index, target, effect, isEye, isLip);
+			}
+			_bindings.Add(clip, new BoundClip(curves, Untracked(_eyes, coveredParameters), Untracked(_lips, coveredParameters)));
 		}
 		foreach (MotionPlayback previous in _playing) previous.InterruptedAt ??= previous.Elapsed;
 		var playback = new MotionPlayback(clip, priority, incomingFade, outgoingFade, loop, finished);
@@ -101,7 +126,7 @@ public sealed class MotionPlayer
 					foreach (MotionEvent item in playback.Clip.Events)
 					{
 						double at = cycle * (double)playback.Clip.Duration + item.Time;
-						if (at > before && at <= elapsed) (callbacks ??= []).Add(() => handler(item.Value));
+						if (at > before && at <= elapsed) QueueEvent(ref callbacks, handler, item.Value);
 					}
 				}
 			}
@@ -111,54 +136,62 @@ public sealed class MotionPlayer
 				if (playback.InterruptedAt is null && playback.Finished is { } finished) (callbacks ??= []).Add(finished);
 			}
 		}
-		_playing.RemoveAll(playback => playback.IsFinished);
+		for (int i = _playing.Count - 1; i >= 0; i--)
+			if (_playing[i].IsFinished) _playing.RemoveAt(i);
 		// 先完成本帧的队列变更，再让宿主回调启动或停止动作。
 		if (callbacks is not null) foreach (Action callback in callbacks) callback();
 	}
 
+	private static void QueueEvent(ref List<Action>? callbacks, Action<string> handler, string value) =>
+		(callbacks ??= []).Add(() => handler(value));
+
 	private void Apply(MotionPlayback playback, float time, double end)
 	{
-		BoundCurve[] curves = _bindings[playback.Clip];
+		BoundClip binding = _bindings[playback.Clip];
+		BoundCurve[] curves = binding.Curves;
 		float? blink = null, lip = null;
 		foreach (BoundCurve bound in curves)
 		{
-			MotionCurve curve = bound.Curve;
-			if (curve.Target != "Model") continue;
-			float value = curve.Evaluate(time);
-			switch (curve.Id)
+			if (bound.Target != CurveTarget.Model) continue;
+			float value = bound.Curve.Evaluate(time);
+			switch (bound.Effect)
 			{
-				case "EyeBlink": blink = value; break;
-				case "LipSync": lip = value; break;
-				case "Opacity": _model.Opacity = value; break;
+				case CurveEffect.EyeBlink: blink = value; break;
+				case CurveEffect.LipSync: lip = value; break;
+				case CurveEffect.Opacity: _model.Opacity = value; break;
 			}
 		}
 		foreach (BoundCurve bound in curves)
 		{
 			MotionCurve curve = bound.Curve;
-			if (curve.Target == "Model") continue;
+			if (bound.Target == CurveTarget.Model) continue;
 			float weight = Weight(playback, end, curve.FadeIn, curve.FadeOut);
 			float value = curve.Evaluate(time);
-			if (curve.Target == "PartOpacity")
+			if (bound.Target == CurveTarget.PartOpacity)
 				_model.SetPartOpacity(bound.Index, float.Lerp(_model.GetPartOpacity(bound.Index), value, weight));
 			else
 			{
-				if (blink is { } eyeValue && _eyes.Contains(bound.Index)) value *= eyeValue;
-				if (lip is { } lipValue && _lips.Contains(bound.Index)) value += lipValue;
+				if (blink is { } eyeValue && bound.IsEye) value *= eyeValue;
+				if (lip is { } lipValue && bound.IsLip) value += lipValue;
 				_model.SetParameterValue(bound.Index, value, weight);
 			}
 		}
 		float effectWeight = Weight(playback, end, -1, -1);
-		if (blink is { } eyeEffect) ApplyUntrackedEffect(_eyes, eyeEffect, effectWeight, curves);
-		if (lip is { } lipEffect) ApplyUntrackedEffect(_lips, lipEffect, effectWeight, curves);
+		if (blink is { } eyeEffect) ApplyUntrackedEffect(binding.UntrackedEyes, eyeEffect, effectWeight);
+		if (lip is { } lipEffect) ApplyUntrackedEffect(binding.UntrackedLips, lipEffect, effectWeight);
 	}
 
-	private void ApplyUntrackedEffect(HashSet<int> ids, float value, float weight, BoundCurve[] curves)
+	private static int[] Untracked(HashSet<int> ids, HashSet<int> covered)
 	{
+		var result = new List<int>();
 		foreach (int index in ids)
-		{
-			if (!Array.Exists(curves, curve => curve.Curve.Target == "Parameter" && curve.Index == index))
-				_model.SetParameterValue(index, value, weight);
-		}
+			if (!covered.Contains(index)) result.Add(index);
+		return result.ToArray();
+	}
+
+	private void ApplyUntrackedEffect(int[] indices, float value, float weight)
+	{
+		foreach (int index in indices) _model.SetParameterValue(index, value, weight);
 	}
 
 	internal static float Ease(double progress) => (float)((1 - Math.Cos(Math.Clamp(progress, 0, 1) * Math.PI)) * 0.5);
@@ -172,5 +205,8 @@ public sealed class MotionPlayer
 		return incoming * outgoing;
 	}
 
-	private readonly record struct BoundCurve(MotionCurve Curve, int Index);
+	private enum CurveTarget { Other, Model, Parameter, PartOpacity }
+	private enum CurveEffect { Other, EyeBlink, LipSync, Opacity }
+	private sealed record BoundClip(BoundCurve[] Curves, int[] UntrackedEyes, int[] UntrackedLips);
+	private readonly record struct BoundCurve(MotionCurve Curve, int Index, CurveTarget Target, CurveEffect Effect, bool IsEye, bool IsLip);
 }

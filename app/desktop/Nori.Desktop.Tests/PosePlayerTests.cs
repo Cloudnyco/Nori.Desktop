@@ -4,6 +4,7 @@ using Nori.Live2D;
 
 namespace Nori.Desktop.Tests;
 
+[Collection("Native settings")]
 public sealed class PosePlayerTests
 {
 	private const string Json = """
@@ -98,6 +99,18 @@ public sealed class PosePlayerTests
 		foreach (float invalid in new[] { -1, float.NaN, float.PositiveInfinity })
 			Assert.Throws<ArgumentOutOfRangeException>(() => player.Update(invalid));
 		first.Update();
+	}
+
+	[Live2DAssetsFact]
+	public void 真实模型姿势更新稳态每帧零分配()
+	{
+		using NativeModel model = Model();
+		var player = new PosePlayer(model, Definition());
+		for (int i = 0; i < 8; i++) player.Update(1 / 60f);
+		long before = GC.GetAllocatedBytesForCurrentThread();
+		for (int i = 0; i < 100; i++) player.Update(1 / 60f);
+		long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+		Assert.Equal(0, allocated);
 	}
 
 	[Live2DAssetsFact]
