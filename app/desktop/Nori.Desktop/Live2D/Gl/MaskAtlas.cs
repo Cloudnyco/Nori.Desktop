@@ -27,8 +27,9 @@ public sealed class MaskAtlas(OpenGLApi gl, NativeModel model, int bufferCount)
 		try
 		{
 			gl.Viewport(0, 0, (int)ClippingMaskBufferSize.X, (int)ClippingMaskBufferSize.Y);
-			foreach (MaskGroup group in Plan.Groups)
+			for (int i = 0; i < Plan.Groups.Count; i++)
 			{
+				MaskGroup group = Plan.Groups[i];
 				if (!group.Active || (single is not null && !ReferenceEquals(single, group))) continue;
 				int next = group.BufferIndex;
 				if (next != surface)
@@ -46,8 +47,9 @@ public sealed class MaskAtlas(OpenGLApi gl, NativeModel model, int bufferCount)
 					gl.Clear(gl.GL_COLOR_BUFFER_BIT);
 					_cleared[group.BufferIndex] = true;
 				}
-				foreach (int drawable in group.Masks)
+				for (int j = 0; j < group.Masks.Count; j++)
 				{
+					int drawable = group.Masks[j];
 					// 原生模型缓冲区始终有效；静止顶点也必须写入本帧新清空的遮罩。
 					renderer.ClippingContextBufferForMask = group;
 					renderer.DrawMesh(drawable);

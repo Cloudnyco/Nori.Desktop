@@ -6,7 +6,7 @@
 
 - `NativeMethods` / `NativeRuntime`：固定 PurismCore v1.1.0 v6 ABI 的 P/Invoke、版本与日志回调。
 - `ModelMemory`：使用 .NET `NativeMemory.AlignedAlloc`，分别满足 MOC 64 字节、模型 16 字节对齐；`SafeHandle` 成对拥有两块内存，先释放模型再释放 MOC。导入时始终执行原生一致性检查，不再允许旧可选参数跳过。
-- `NativeModel`：参数/部件/绘制对象 ID、参数加权及范围、参数快照、虚拟 ID、画布、顶点/UV/索引、遮罩与变化标记。每实例独占数据，更新顺序固定为 reset → update。
+- `NativeModel`：参数/部件/绘制对象 ID、参数加权及范围、参数快照、虚拟 ID、画布、顶点/UV/索引、遮罩与变化标记。每实例独占数据，更新顺序固定为 reset → update。全部原生数组指针与计数在构造及每次 `Update()` 后统一获取并校验，访问器不再逐次跨 SafeHandle P/Invoke；`UpdateCount` 记录成功更新次数，供渲染器判断顶点是否需要重新上传。
 
 同一实例由调用方串行读写与释放，沿用现有宿主同步边界；没有新增全局模型状态或后端选择配置。借出的裸指针不能跨越 Dispose，借用期间调用方必须保持模型存活；安全的索引方法在访问原生内存前检查范围和释放状态。
 
@@ -59,6 +59,8 @@
 - `Nori.Desktop/Live2D/Gl/MeshProgram` 使用一个自有 GLSL ES 1.00 程序处理普通网格、蒙版生成及普通/反向蒙版；支持非预乘/预乘输入、乘色、屏幕色、模型颜色/不透明度，以及普通/加算/乘算混合。蒙版生成时解绑采样单元上的旧蒙版，避免附件反馈回路。
 - 编译/链接失败抛出中文异常并删除已创建的着色器和程序；程序不跨模型/上下文共享。旧 `CubismShader_OpenGLES2`、`CubismShaderSet`、`ShaderNames` 三文件删除，不再维护旧着色器排列。
 - `Nori.Desktop/Live2D/NativeGlRenderer` 独占网格缓冲、顶点数组和绘制顺序；`GlStateScope` 保存恢复宿主状态，`NativeGlSurface` 管理离屏目标，`NativeTextureOwner` 管理模型独占纹理。实际宠物与预览均走这些自有实现，无旧渲染基类或程序集依赖。
+- 网格提交：每个渲染器只有三个缓冲。UV 与索引在构造时作为 STATIC 数据各上传一次；索引按 ushort 分段重定位（段跨度不超过 65535，超出容量的单个网格独占一段并保留原索引），属性指针只在段切换时重设。全部顶点位置在 `UpdateCount` 变化后的首次 `Draw` 中复制到复用暂存区并以一次 DYNAMIC 上传，遮罩与主绘制共用，无更新的重复绘制不重传。
+- 状态缓存：`PreDraw` 建立每个 pass 的基线（VAO、程序、混合方程、颜色写入、正面方向、纹理单元 0），`DrawMesh` 只提交变化的剔除、两个纹理单元、混合函数与 uniform；`BeginMask`/`EndMask`/`Draw` 结束会使缓存失效，未知状态下直接调用 `DrawMesh` 仍显式设置完整状态。uniform 位置在链接后一次取得、采样单元只设置一次，uniform 值属于独占程序对象，跨 pass/帧只在变化时写入。阴影三遍合成共用一次宿主状态保存/恢复。
 
 ## 来源和许可边界
 
@@ -97,7 +99,9 @@ NORI_TEST_LIVE2D_ASSETS=1 NORI_TEST_NATIVE_GL=1 dotnet test Nori.Desktop.Tests -
 
 遮罩阶段：Windows Release 桌面测试 658 项通过、0 跳过；8 个新增用例覆盖共享分组、1–100 组/1–3 纹理的分区不重叠、常用布局、普通/高精度取样和两模型状态隔离。8 组真实 GL 场景通过，16 张首末帧 PNG 与数学阶段逐字节相同。
 
-当前最终边界证据（Windows）：`Nori.Desktop.Tests` Release 在 `NORI_TEST_NATIVE_GL=1`、`NORI_TEST_LIVE2D_ASSETS=1` 下 770 项通过、0 跳过。仓库内 `NativeGlHarnessTests` 覆盖 Windows ANGLE GLES2/GLES3 各自的双上下文（不共享资源）、`arg-nori`/`nori`、720×480 和 1920×1080、场景纹理合成及双实例隔离释放；释放一个实例后，另一个仍可绘制且回读像素不变。此处为 Windows 证据，不声称跨驱动逐位等价。
+当前最终边界证据（Windows）：`Nori.Desktop.Tests` Release 在 `NORI_TEST_NATIVE_GL=1`、`NORI_TEST_LIVE2D_ASSETS=1` 下 792 项通过、0 跳过（性能阶段新增缓冲所有权、分段重定位、状态缓存失效、提交次数、原生数组一致性与稳态零分配用例）。仓库内 `NativeGlHarnessTests` 覆盖 Windows ANGLE GLES2/GLES3 各自的双上下文（不共享资源）、`arg-nori`/`nori`、720×480 和 1920×1080、场景纹理合成及双实例隔离释放；释放一个实例后，另一个仍可绘制且回读像素不变。此处为 Windows 证据，不声称跨驱动逐位等价。
+
+性能阶段：`MaskPlan`、`MotionPlayer`、`PosePlayer` 稳态更新改为零分配（曲线目标、效果通道与未跟踪的眼/嘴参数在首次绑定时预计算），遮罩包围框不再在循环条件中逐顶点读取原生计数。Windows（Ryzen 5 1600X、RX 580、ANGLE ES3/D3D11，Release）同一探针、两模型、1920×1080 与 720×480、2048 遮罩下各跑三轮取中位数：每帧更新+提交+`glFinish` 总耗时约 2.36–2.55 ms → 1.06–1.16 ms，其中绘制提交 CPU 约 1.47–1.51 ms → 0.44–0.47 ms，GPU 等待约 0.64–0.68 ms → 0.37–0.39 ms，托管分配约 2.0–2.2 KB/帧 → 1.0 KB/帧（剩余主要来自 `GlStateScope`）。两模型 × ES2/ES3 × 两分辨率的第 1/30/90 帧及一组高精度遮罩共 27 份 RGBA 回读与改动前逐字节一致。该计时不含 Avalonia 合成、呈现与命中采样，也不代表其他驱动或平台。
 
 相关边界测试还覆盖动作 `Meta` 全局 fade 与 model3 继承/覆盖、模型/绘制对象/Tint 的 opacity 组合、纹理上传校验与失败回滚、各向异性能力检查与上限裁剪、FBO resize 失败保留旧目标，以及最终纹理合成后的 GL 状态恢复。
 

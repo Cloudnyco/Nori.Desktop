@@ -55,12 +55,25 @@ internal sealed unsafe class RecordingGlApi : OpenGLApi
 	public List<int> CreatedFramebuffers { get; } = [];
 	public List<int> DeletedFramebuffers { get; } = [];
 	public int DrawCalls { get; private set; }
+	public bool CaptureBufferContents { get; set; }
+	public List<BufferUpload> BufferUploads { get; } = [];
+	public List<AttributePointer> AttributePointers { get; } = [];
+	public List<ElementDraw> ElementDraws { get; } = [];
+	public List<(int Program, string Name, int Location)> UniformQueries { get; } = [];
+	public List<(int Location, int Value)> IntegerUniforms { get; } = [];
+	public int VectorUniformCalls { get; private set; }
+	public int MatrixUniformCalls { get; private set; }
+	private readonly Dictionary<(int Program, string Name), int> _uniformLocations = [];
+	internal readonly record struct BufferUpload(int Target, int Size, int Usage, int Buffer, byte[] Data);
+	internal readonly record struct AttributePointer(int Vao, int Attribute, int Buffer, int Stride, nint Offset);
+	internal readonly record struct ElementDraw(int Vao, int Program, int Texture, int MaskTexture,
+		int SrcRgb, int DstRgb, int SrcAlpha, int DstAlpha, bool Culling, int FrontFace, int Count, nint Offset);
 	public override bool AlwaysClear => false;
 	public override void Viewport(int x, int y, int w, int h) => new[] { x, y, w, h }.CopyTo(_viewport, 0);
 	public override void ClearColor(float r, float g, float b, float a) => new[] { r, g, b, a }.CopyTo(_clearColor, 0);
 	public override void Clear(int bit) {  }
-	public override void Enable(int bit) => _enabled.Add(bit);
-	public override void Disable(int bit) => _enabled.Remove(bit);
+	public override void Enable(int bit) { StateCalls.Add($"enable:{bit}"); _enabled.Add(bit); }
+	public override void Disable(int bit) { StateCalls.Add($"disable:{bit}"); _enabled.Remove(bit); }
 	public override void EnableVertexAttribArray(int index) => _attributes[(_integers[GL_VERTEX_ARRAY_BINDING], index)] = true;
 	public override void DisableVertexAttribArray(int index) => _attributes[(_integers[GL_VERTEX_ARRAY_BINDING], index)] = false;
 	public override void GetIntegerv(int bit, out int data)
@@ -82,7 +95,7 @@ internal sealed unsafe class RecordingGlApi : OpenGLApi
 		if (bit != GL_COLOR_CLEAR_VALUE) throw new InvalidOperationException("未模拟的 GL 浮点查询");
 		_clearColor.CopyTo(data, 0);
 	}
-	public override void ActiveTexture(int bit) => _integers[GL_ACTIVE_TEXTURE] = bit;
+	public override void ActiveTexture(int bit) { StateCalls.Add($"active:{bit}"); _integers[GL_ACTIVE_TEXTURE] = bit; }
 	public override void GetVertexAttribiv(int index, int bit, out int data)
 	{
 		if (bit != GL_VERTEX_ATTRIB_ARRAY_ENABLED) throw new InvalidOperationException("未模拟的顶点属性查询");
@@ -95,8 +108,8 @@ internal sealed unsafe class RecordingGlApi : OpenGLApi
 		if (bit != GL_COLOR_WRITEMASK) throw new InvalidOperationException("未模拟的 GL 布尔查询");
 		_colorMask.CopyTo(data, 0);
 	}
-	public override void UseProgram(int index) => _integers[GL_CURRENT_PROGRAM] = index;
-	public override void FrontFace(int data) => _integers[GL_FRONT_FACE] = data;
+	public override void UseProgram(int index) { StateCalls.Add($"program:{index}"); _integers[GL_CURRENT_PROGRAM] = index; }
+	public override void FrontFace(int data) { StateCalls.Add($"front:{data}"); _integers[GL_FRONT_FACE] = data; }
 	public override void ColorMask(bool a, bool b, bool c, bool d) => new[] { a, b, c, d }.CopyTo(_colorMask, 0);
 	public override void BindBuffer(int bit, int index)
 	{
@@ -108,10 +121,12 @@ internal sealed unsafe class RecordingGlApi : OpenGLApi
 	public override void BindTexture(int bit, int index)
 	{
 		if (bit != GL_TEXTURE_2D) throw new InvalidOperationException("未模拟的纹理绑定");
+		StateCalls.Add($"texture:{_integers[GL_ACTIVE_TEXTURE]}:{index}");
 		_textures[_integers[GL_ACTIVE_TEXTURE]] = index;
 	}
 	public override void BlendFuncSeparate(int a, int b, int c, int d)
 	{
+		StateCalls.Add($"blend:{a}:{b}:{c}:{d}");
 		_integers[GL_BLEND_SRC_RGB] = a;
 		_integers[GL_BLEND_DST_RGB] = b;
 		_integers[GL_BLEND_SRC_ALPHA] = c;
@@ -123,12 +138,19 @@ internal sealed unsafe class RecordingGlApi : OpenGLApi
 		_integers[GL_BLEND_EQUATION_ALPHA] = alpha;
 	}
 	public override void DeleteProgram(int index) { DeletedPrograms.Add(index); }
-	public override int GetAttribLocation(int index, string attr) { return 0; }
-	public override int GetUniformLocation(int index, string uni) { return 0; }
-	public override void Uniform1i(int index, int data) {  }
-	public override void VertexAttribPointer(int index, int length, int type, bool b, int size, nint arr) {  }
-	public override void Uniform4f(int index, float a, float b, float c, float d) {  }
-	public override void UniformMatrix4fv(int index, int length, bool b, ReadOnlySpan<float> data) {  }
+	public override int GetAttribLocation(int index, string attr) => attr == "position" ? 0 : 1;
+	public override int GetUniformLocation(int index, string uni)
+	{
+		if (!_uniformLocations.TryGetValue((index, uni), out int location))
+			_uniformLocations.Add((index, uni), location = ++_next);
+		UniformQueries.Add((index, uni, location));
+		return location;
+	}
+	public override void Uniform1i(int index, int data) => IntegerUniforms.Add((index, data));
+	public override void VertexAttribPointer(int index, int length, int type, bool b, int size, nint arr) =>
+		AttributePointers.Add(new(_integers[GL_VERTEX_ARRAY_BINDING], index, _integers[GL_ARRAY_BUFFER_BINDING], size, arr));
+	public override void Uniform4f(int index, float a, float b, float c, float d) { VectorUniformCalls++; }
+	public override void UniformMatrix4fv(int index, int length, bool b, ReadOnlySpan<float> data) { MatrixUniformCalls++; }
 	public override int CreateProgram() { CreatedPrograms.Add(++_next); return _next; }
 	public override void AttachShader(int a, int b) {  }
 	public override void DeleteShader(int index) { DeletedShaders.Add(index); }
@@ -141,7 +163,14 @@ internal sealed unsafe class RecordingGlApi : OpenGLApi
 	public override void LinkProgram(int index) {  }
 	public override void GetProgramiv(int index, int type, int* length) { *length = FailLink ? 0 : 1; }
 	public override void GetProgramInfoLog(int index, out string log) { log = "注入的 GPU 故障"; }
-	public override void DrawElements(int type, int count, int type1, nint arry) { DrawCalls++; }
+	public override void DrawElements(int type, int count, int type1, nint arry)
+	{
+		DrawCalls++;
+		ElementDraws.Add(new(_integers[GL_VERTEX_ARRAY_BINDING], _integers[GL_CURRENT_PROGRAM],
+			_textures.GetValueOrDefault(GL_TEXTURE0), _textures.GetValueOrDefault(GL_TEXTURE1),
+			_integers[GL_BLEND_SRC_RGB], _integers[GL_BLEND_DST_RGB], _integers[GL_BLEND_SRC_ALPHA], _integers[GL_BLEND_DST_ALPHA],
+			_enabled.Contains(GL_CULL_FACE), _integers[GL_FRONT_FACE], count, arry));
+	}
 	public override void TexParameterf(int type, int type1, float value) {  }
 	public override void BindFramebuffer(int type, int data)
 	{
@@ -159,7 +188,10 @@ internal sealed unsafe class RecordingGlApi : OpenGLApi
 	public override void GenerateMipmap(int a) {  }
 	public override int GenBuffer() { if (!CreateResources) return 0; CreatedBuffers.Add(++_next); return _next; }
 	public override void DeleteBuffer(int buffer) { DeletedBuffers.Add(buffer); }
-	public override void BufferData(int type, int v1, nint v2, int type1) {  }
+	public override void BufferData(int type, int v1, nint v2, int type1) =>
+		BufferUploads.Add(new(type, v1, type1, type == GL_ARRAY_BUFFER ? _integers[GL_ARRAY_BUFFER_BINDING]
+			: _elements.GetValueOrDefault(_integers[GL_VERTEX_ARRAY_BINDING]),
+			CaptureBufferContents ? new ReadOnlySpan<byte>((void*)v2, v1).ToArray() : []));
 	public override int GenVertexArray() { if (!CreateResources) return 0; CreatedVertexArrays.Add(++_next); return _next; }
 	public override void DeleteVertexArray(int vertexArray) { DeletedVertexArrays.Add(vertexArray); }
 	public override void BindVertexArray(int vertexArray)

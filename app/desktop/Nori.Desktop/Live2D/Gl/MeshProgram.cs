@@ -33,8 +33,12 @@ public interface IModelMeshTarget
 public sealed class MeshProgram(OpenGLApi gl) : IDisposable
 {
 	private int _program;
-	private readonly Dictionary<string, int> _uniforms = [];
-	private int _position, _uv;
+	private int _position, _uv, _image, _maskImage, _mode, _premultiplied;
+	private int _projection, _maskTransform, _channel, _tile, _tint, _multiplyColor, _screenColor;
+	// Uniform 属于本实例独占的程序对象，可跨宿主状态恢复复用。
+	private int? _modeValue, _premultipliedValue;
+	private Matrix4x4? _projectionValue, _maskTransformValue;
+	private Vector4? _channelValue, _tileValue, _tintValue, _multiplyColorValue, _screenColorValue;
 
 	private const string VertexSource = """
 		ATTRIBUTE vec2 position;
@@ -104,58 +108,76 @@ public sealed class MeshProgram(OpenGLApi gl) : IDisposable
 		return (vertex, fragment);
 	}
 
-	public void Apply(IModelMeshTarget renderer, NativeModel model, int drawable)
+	internal void Bind()
 	{
 		EnsureProgram();
 		gl.UseProgram(_program);
+	}
+
+	internal void InitializeVertices(int vertices, int uvs)
+	{
 		gl.EnableVertexAttribArray(_position);
 		gl.EnableVertexAttribArray(_uv);
-		gl.VertexAttribPointer(_position, 2, gl.GL_FLOAT, false, 16, 0);
-		gl.VertexAttribPointer(_uv, 2, gl.GL_FLOAT, false, 16, 8);
-		gl.ActiveTexture(gl.GL_TEXTURE0);
-		gl.BindTexture(gl.GL_TEXTURE_2D, renderer.GetBindedTextureId(model.GetDrawableTextureIndex(drawable)));
-		gl.Uniform1i(Uniform("image"), 0);
-		// 即使本次不用蒙版，两个采样器也明确绑定不同单元。
-		gl.Uniform1i(Uniform("maskImage"), 1);
+		BindVertexSegment(vertices, uvs, 0);
+	}
+
+	internal void BindVertexSegment(int vertices, int uvs, int segmentBase)
+	{
+		nint offset = checked(segmentBase * 8);
+		gl.BindBuffer(gl.GL_ARRAY_BUFFER, vertices);
+		gl.VertexAttribPointer(_position, 2, gl.GL_FLOAT, false, 8, offset);
+		gl.BindBuffer(gl.GL_ARRAY_BUFFER, uvs);
+		gl.VertexAttribPointer(_uv, 2, gl.GL_FLOAT, false, 8, offset);
+	}
+
+	public void Apply(IModelMeshTarget renderer, NativeModel model, int drawable, bool invertedMask)
+	{
 		MaskGroup? mask = renderer.ClippingContextBufferForMask;
 		bool generating = mask is not null;
 		mask ??= renderer.ClippingContextBufferForDraw;
-		gl.Uniform1i(Uniform("mode"), generating ? 1 : mask is null ? 0 : model.GetDrawableInvertedMask(drawable) ? 3 : 2);
-		gl.Uniform1i(Uniform("premultiplied"), renderer.IsPremultipliedAlpha ? 1 : 0);
-		gl.UniformMatrix4fv(Uniform("projection"), 1, false, generating ? mask!.MaskMatrix : renderer.Projection);
-		gl.UniformMatrix4fv(Uniform("maskTransform"), 1, false, mask is null ? Matrix4x4.Identity : generating ? mask.MaskMatrix : mask.DrawMatrix);
+		Set(_mode, generating ? 1 : mask is null ? 0 : invertedMask ? 3 : 2, ref _modeValue);
+		Set(_premultiplied, renderer.IsPremultipliedAlpha ? 1 : 0, ref _premultipliedValue);
+		Set(_projection, generating ? mask!.MaskMatrix : renderer.Projection, ref _projectionValue);
+		Set(_maskTransform, mask is null ? Matrix4x4.Identity : generating ? mask.MaskMatrix : mask.DrawMatrix, ref _maskTransformValue);
 		if (mask is not null)
 		{
-			Set("channel", mask.Channel switch { 0 => Vector4.UnitX, 1 => Vector4.UnitY, 2 => Vector4.UnitZ, _ => Vector4.UnitW });
+			Set(_channel, mask.Channel switch { 0 => Vector4.UnitX, 1 => Vector4.UnitY, 2 => Vector4.UnitZ, _ => Vector4.UnitW }, ref _channelValue);
 			Vector4 tile = mask.Tile;
-			Set("tile", new(tile.X * 2 - 1, tile.Y * 2 - 1, (tile.X + tile.Z) * 2 - 1, (tile.Y + tile.W) * 2 - 1));
+			Set(_tile, new(tile.X * 2 - 1, tile.Y * 2 - 1, (tile.X + tile.Z) * 2 - 1, (tile.Y + tile.W) * 2 - 1), ref _tileValue);
 		}
-		// 生成蒙版时解绑上一张蒙版纹理，避免采样器与当前附件构成反馈回路。
-		gl.ActiveTexture(gl.GL_TEXTURE1);
-		gl.BindTexture(gl.GL_TEXTURE_2D, mask is not null && !generating ? renderer.MaskTexture(mask.BufferIndex) : 0);
 		var color = renderer.ModelColor;
-		Set("tint", new(color.X, color.Y, color.Z, color.W * model.Opacity * model.GetDrawableOpacity(drawable)));
-		Set("multiplyColor", model.GetMultiplyColor(drawable));
-		Set("screenColor", model.GetScreenColor(drawable));
-		if (generating)
-			gl.BlendFuncSeparate(gl.GL_ZERO, gl.GL_ONE_MINUS_SRC_COLOR, gl.GL_ZERO, gl.GL_ONE_MINUS_SRC_ALPHA);
-		else
-		{
-			int blend = model.GetDrawableBlendMode(drawable);
-			gl.BlendFuncSeparate(blend == 2 ? gl.GL_DST_COLOR : gl.GL_ONE,
-				blend == 1 ? gl.GL_ONE : gl.GL_ONE_MINUS_SRC_ALPHA,
-				blend == 0 ? gl.GL_ONE : gl.GL_ZERO, blend == 0 ? gl.GL_ONE_MINUS_SRC_ALPHA : gl.GL_ONE);
-		}
+		Set(_tint, new(color.X, color.Y, color.Z, color.W * model.Opacity * model.GetDrawableOpacity(drawable)), ref _tintValue);
+		Set(_multiplyColor, model.GetMultiplyColor(drawable), ref _multiplyColorValue);
+		Set(_screenColor, model.GetScreenColor(drawable), ref _screenColorValue);
 	}
 
-	private int Uniform(string name)
+	private void Set(int location, int value, ref int? previous)
 	{
-		if (!_uniforms.TryGetValue(name, out int location))
-			_uniforms.Add(name, location = gl.GetUniformLocation(_program, name));
-		return location;
+		if (previous == value) return;
+		gl.Uniform1i(location, value);
+		previous = value;
 	}
 
-	private void Set(string name, Vector4 value) => gl.Uniform4f(Uniform(name), value.X, value.Y, value.Z, value.W);
+	private void Set(int location, Vector4 value, ref Vector4? previous)
+	{
+		if (previous == value) return;
+		gl.Uniform4f(location, value.X, value.Y, value.Z, value.W);
+		previous = value;
+	}
+
+	private void Set(int location, Matrix4x4 value, ref Matrix4x4? previous)
+	{
+		if (previous == value) return;
+		gl.UniformMatrix4fv(location, 1, false, value);
+		previous = value;
+	}
+
+	private void ResetUniforms()
+	{
+		_modeValue = _premultipliedValue = null;
+		_projectionValue = _maskTransformValue = null;
+		_channelValue = _tileValue = _tintValue = _multiplyColorValue = _screenColorValue = null;
+	}
 
 	public unsafe void EnsureProgram()
 	{
@@ -179,6 +201,27 @@ public sealed class MeshProgram(OpenGLApi gl) : IDisposable
 			}
 			_position = gl.GetAttribLocation(program, "position");
 			_uv = gl.GetAttribLocation(program, "uv");
+			_image = gl.GetUniformLocation(program, "image");
+			_maskImage = gl.GetUniformLocation(program, "maskImage");
+			_mode = gl.GetUniformLocation(program, "mode");
+			_premultiplied = gl.GetUniformLocation(program, "premultiplied");
+			_projection = gl.GetUniformLocation(program, "projection");
+			_maskTransform = gl.GetUniformLocation(program, "maskTransform");
+			_channel = gl.GetUniformLocation(program, "channel");
+			_tile = gl.GetUniformLocation(program, "tile");
+			_tint = gl.GetUniformLocation(program, "tint");
+			_multiplyColor = gl.GetUniformLocation(program, "multiplyColor");
+			_screenColor = gl.GetUniformLocation(program, "screenColor");
+			gl.GetIntegerv(gl.GL_CURRENT_PROGRAM, out int previous);
+			try
+			{
+				gl.UseProgram(program);
+				// 采样器固定使用不同单元；初始化不改变宿主的当前程序。
+				gl.Uniform1i(_image, 0);
+				gl.Uniform1i(_maskImage, 1);
+			}
+			finally { gl.UseProgram(previous); }
+			ResetUniforms();
 			gl.DetachShader(program, vertex);
 			gl.DetachShader(program, fragment);
 			_program = program;
@@ -215,6 +258,6 @@ public sealed class MeshProgram(OpenGLApi gl) : IDisposable
 	{
 		if (_program != 0) gl.DeleteProgram(_program);
 		_program = 0;
-		_uniforms.Clear();
+		ResetUniforms();
 	}
 }

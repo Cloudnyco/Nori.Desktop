@@ -116,6 +116,7 @@ public sealed class GlRuntimeBoundaryTests
 
 		Assert.Null(renderer.ClippingContextBufferForDraw);
 		Assert.Null(renderer.ClippingContextBufferForMask);
+		Assert.Empty(gl.StateCalls);
 		Assert.Equal(0, Read(gl, gl.GL_CURRENT_PROGRAM));
 		Assert.Equal(0, Read(gl, gl.GL_VERTEX_ARRAY_BINDING));
 	}
@@ -148,6 +149,7 @@ public sealed class GlRuntimeBoundaryTests
 		((MeshProgram)GetField(renderer, "_program")).EnsureProgram();
 		SetField(renderer, "_vertices", 18);
 		SetField(renderer, "_indices", 19);
+		SetField(renderer, "_uvs", 20);
 		var surface = SurfaceWithHandle(gl, 51);
 		SetField(surface, "<ColorBuffer>k__BackingField", 41);
 		SetField(renderer, "_targets", new[] { surface });
@@ -158,6 +160,8 @@ public sealed class GlRuntimeBoundaryTests
 		Assert.Equal(0, GetField(renderer, "_vao"));
 		Assert.Equal(0, GetField(renderer, "_vertices"));
 		Assert.Equal(0, GetField(renderer, "_indices"));
+		Assert.Equal(0, GetField(renderer, "_uvs"));
+		Assert.Equal(new[] { 18, 19, 20 }, gl.DeletedBuffers.Order());
 		Assert.False(surface.IsValid());
 		Assert.Equal(0, surface.ColorBuffer);
 		Assert.Single(gl.DeletedPrograms);

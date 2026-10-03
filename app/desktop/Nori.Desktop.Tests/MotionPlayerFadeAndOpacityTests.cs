@@ -70,7 +70,7 @@ public sealed class MotionPlayerFadeAndOpacityTests
 		string source = File.ReadAllText(Path.Combine(directory.FullName, "Nori.Desktop", "Live2D", "Gl", "MeshProgram.cs"));
 		// 源码契约直接锁定提交的 alpha 与着色器乘法，不需要 GPU 或外部模型。
 		Assert.Contains("var color = renderer.ModelColor;", source);
-		Assert.Contains("Set(\"tint\", new(color.X, color.Y, color.Z, color.W * model.Opacity * model.GetDrawableOpacity(drawable)));", source);
+		Assert.Contains("Set(_tint, new(color.X, color.Y, color.Z, color.W * model.Opacity * model.GetDrawableOpacity(drawable)), ref _tintValue);", source);
 		Assert.Contains("pixel *= vec4(tint.rgb * tint.a, tint.a);", source);
 	}
 }
