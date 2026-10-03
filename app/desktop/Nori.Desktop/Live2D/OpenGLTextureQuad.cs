@@ -64,6 +64,19 @@ internal sealed class OpenGLTextureQuad : IDisposable
 
 	private static readonly ushort[] Indices = [0, 1, 2, 0, 2, 3];
 
+	private const float ShadowAlpha = 0.08f;
+
+	// 多个微小偏移比依赖扩展模糊更容易在 GLES2 / 三个平台保持一致。
+	private static readonly QuadPass[] ShadowPasses =
+	[
+		new(0.012f, -0.014f, 0, 0, 0, ShadowAlpha),
+		new(-0.006f, -0.010f, 0, 0, 0, ShadowAlpha),
+		new(0.018f, -0.004f, 0, 0, 0, ShadowAlpha),
+	];
+
+	/// <summary>一次四边形绘制的偏移与色调。</summary>
+	private readonly record struct QuadPass(float OffsetX, float OffsetY, float TintR, float TintG, float TintB, float TintA);
+
 	private readonly OpenGLApi _gl;
 	private int _program;
 	private int _hitMaskProgram;
@@ -93,6 +106,7 @@ internal sealed class OpenGLTextureQuad : IDisposable
 	/// <summary>把纹理画到当前帧缓冲；纹理颜色默认已经是预乘 alpha。</summary>
 	public bool Draw(int texture, float tintR, float tintG, float tintB, float tintA, float offsetX = 0, float offsetY = 0)
 	{
+		var pass = new QuadPass(offsetX, offsetY, tintR, tintG, tintB, tintA);
 		return DrawTexture(
 			_program,
 			_positionLocation,
@@ -101,12 +115,7 @@ internal sealed class OpenGLTextureQuad : IDisposable
 			_offsetScaleLocation,
 			_tintLocation,
 			texture,
-			tintR,
-			tintG,
-			tintB,
-			tintA,
-			offsetX,
-			offsetY,
+			new ReadOnlySpan<QuadPass>(in pass),
 			useBlend: true);
 	}
 
@@ -115,6 +124,7 @@ internal sealed class OpenGLTextureQuad : IDisposable
 	/// </summary>
 	public bool DrawHitMask(int texture)
 	{
+		var pass = new QuadPass(0, 0, 1, 1, 1, 1);
 		return DrawTexture(
 			_hitMaskProgram,
 			_hitMaskPositionLocation,
@@ -123,12 +133,7 @@ internal sealed class OpenGLTextureQuad : IDisposable
 			_hitMaskOffsetScaleLocation,
 			-1,
 			texture,
-			1,
-			1,
-			1,
-			1,
-			0,
-			0,
+			new ReadOnlySpan<QuadPass>(in pass),
 			useBlend: false);
 	}
 
@@ -140,12 +145,7 @@ internal sealed class OpenGLTextureQuad : IDisposable
 		int offsetScaleLocation,
 		int tintLocation,
 		int texture,
-		float tintR,
-		float tintG,
-		float tintB,
-		float tintA,
-		float offsetX,
-		float offsetY,
+		ReadOnlySpan<QuadPass> passes,
 		bool useBlend)
 	{
 		if (!IsAvailable || program == 0 || texture == 0) return false;
@@ -180,9 +180,13 @@ internal sealed class OpenGLTextureQuad : IDisposable
 		_gl.ActiveTexture(_gl.GL_TEXTURE0);
 		_gl.BindTexture(_gl.GL_TEXTURE_2D, texture);
 		_gl.Uniform1i(textureLocation, 0);
-		_gl.Uniform4f(offsetScaleLocation, offsetX, offsetY, 1.0f, 1.0f);
-		if (tintLocation >= 0) _gl.Uniform4f(tintLocation, tintR, tintG, tintB, tintA);
-		_gl.DrawElements(_gl.GL_TRIANGLES, Indices.Length, _gl.GL_UNSIGNED_SHORT, 0);
+		// 同一作用域内连续绘制：各遍之间状态完全相同，只更新偏移与色调。
+		foreach (QuadPass pass in passes)
+		{
+			_gl.Uniform4f(offsetScaleLocation, pass.OffsetX, pass.OffsetY, 1.0f, 1.0f);
+			if (tintLocation >= 0) _gl.Uniform4f(tintLocation, pass.TintR, pass.TintG, pass.TintB, pass.TintA);
+			_gl.DrawElements(_gl.GL_TRIANGLES, Indices.Length, _gl.GL_UNSIGNED_SHORT, 0);
+		}
 
 		return true;
 	}
@@ -192,11 +196,17 @@ internal sealed class OpenGLTextureQuad : IDisposable
 	{
 		if (!IsAvailable || texture == 0) return false;
 
-		// 多个微小偏移比依赖扩展模糊更容易在 GLES2 / 三个平台保持一致。
-		const float alpha = 0.08f;
-		return Draw(texture, 0, 0, 0, alpha, 0.012f, -0.014f)
-			&& Draw(texture, 0, 0, 0, alpha, -0.006f, -0.010f)
-			&& Draw(texture, 0, 0, 0, alpha, 0.018f, -0.004f);
+		// 三遍共用一次状态保存/恢复，避免每遍重复查询和恢复整套宿主 GL 状态。
+		return DrawTexture(
+			_program,
+			_positionLocation,
+			_texCoordLocation,
+			_textureLocation,
+			_offsetScaleLocation,
+			_tintLocation,
+			texture,
+			ShadowPasses,
+			useBlend: true);
 	}
 
 	public void Dispose()
