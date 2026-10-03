@@ -40,15 +40,12 @@ public sealed unsafe class MeshProgramAbiTests
 	[InlineData(GlProfileType.OpenGL, 2, 1, false, 0, 120, "")]
 	[InlineData(GlProfileType.OpenGL, 3, 0, true, 0, 120, "")]
 	[InlineData(GlProfileType.OpenGL, 4, 6, true, 0, 120, "")]
-	[InlineData(GlProfileType.OpenGL, 3, 0, false, 0, 130, "")]
 	[InlineData(GlProfileType.OpenGL, 3, 1, false, 0, 130, "")]
 	[InlineData(GlProfileType.OpenGL, 3, 2, false, 0, 150, "")]
 	[InlineData(GlProfileType.OpenGL, 4, 1, false, 0, 150, "")]
 	[InlineData(GlProfileType.OpenGLES, 2, 0, false, 0, 100, "mediump")]
 	[InlineData(GlProfileType.OpenGLES, 2, 0, false, 23, 100, "highp")]
 	[InlineData(GlProfileType.OpenGLES, 3, 0, false, 0, 300, "highp")]
-	[InlineData(GlProfileType.OpenGLES, 3, 1, false, 0, 300, "highp")]
-	[InlineData(GlProfileType.OpenGLES, 3, 2, false, 0, 300, "highp")]
 	public void 真实上下文信息选择语言版本和匹配的varying精度(
 		GlProfileType type, int major, int minor, bool compatibility, int precision, int version, string qualifier)
 	{

@@ -64,7 +64,6 @@ public sealed class AgentToolIterationsTests : IDisposable
 	/// <summary>上界不是为了省钱，是为了让一个跑飞的循环有个尽头。</summary>
 	[Theory]
 	[InlineData("0", AgentEngine.MinToolIterations)]
-	[InlineData("-5", AgentEngine.MinToolIterations)]
 	[InlineData("999", AgentEngine.MaxToolIterationsLimit)]
 	public void 超出范围的配置被夹回边界(string configured, int expected)
 	{

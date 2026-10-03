@@ -18,6 +18,7 @@ public sealed class BridgeCommandRouterTests
 	[InlineData("plugin_list", BridgeCommandDomain.Plugins)]
 	[InlineData("get_diagnostic_info", BridgeCommandDomain.Diagnostics)]
 	[InlineData("chat_start", BridgeCommandDomain.Application)]
+	[InlineData("future_command", BridgeCommandDomain.Other)]
 	public void 命令按稳定领域分类(string command, BridgeCommandDomain expected)
 	{
 		Assert.Equal(expected, BridgeCommandRouter.Classify(command));
@@ -39,11 +40,5 @@ public sealed class BridgeCommandRouterTests
 
 		Assert.Contains("\"reason\":\"测试原因\"", json, StringComparison.Ordinal);
 		Assert.DoesNotContain("\"message\"", json, StringComparison.Ordinal);
-	}
-
-	[Fact]
-	public void 未知命令保留Other兜底()
-	{
-		Assert.Equal(BridgeCommandDomain.Other, BridgeCommandRouter.Classify("future_command"));
 	}
 }

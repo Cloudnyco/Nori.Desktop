@@ -16,9 +16,7 @@ public class ResourceNameTests
 	[InlineData("a/b", false)]
 	[InlineData("a\\b", false)]
 	[InlineData("C:", false)]
+	[InlineData("a\u0001b", false)]
 	public void 名称校验(string name, bool expected) =>
 		Assert.Equal(expected, ResourceName.IsValid(name));
-
-	[Fact]
-	public void 控制字符被拒绝() => Assert.False(ResourceName.IsValid("a\u0001b"));
 }

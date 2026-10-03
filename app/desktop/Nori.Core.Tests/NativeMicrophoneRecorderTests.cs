@@ -110,6 +110,10 @@ public sealed class NativeMicrophoneRecorderTests
 		return samples;
 	}
 
+	/// <summary>
+	/// 体积是这一步的重点：48 kHz 立体声直传的话，30 秒就是 5.6 MB。
+	/// 降到 16 kHz 单声道之后应当只有约九分之一。
+	/// </summary>
 	[Fact]
 	public async Task 录完产出十六千单声道的WAV()
 	{
@@ -126,26 +130,10 @@ public sealed class NativeMicrophoneRecorderTests
 		PcmAudio decoded = WaveDecoder.Decode(recorded.Bytes);
 		Assert.Equal(NativeMicrophoneRecorder.TargetSampleRate, decoded.SampleRate);
 		Assert.Equal(1, decoded.Channels);
-		Assert.True(microphone.Opened);
-		Assert.True(microphone.DisposedOnce);
-	}
-
-	/// <summary>
-	/// 体积是这一步的重点：48 kHz 立体声直传的话，30 秒就是 5.6 MB。
-	/// 降到 16 kHz 单声道之后应当只有约九分之一。
-	/// </summary>
-	[Fact]
-	public async Task 上传体积按十六千单声道算()
-	{
-		FakeMicrophone microphone = new(new AudioFormat(48000, 2), Tone(48000, 2));   // 1 秒
-		using NativeMicrophoneRecorder recorder = new(() => microphone);
-
-		await recorder.StartAsync();
-		await microphone.Drained.Task.WaitAsync(Timeout);
-		RecordedAudio recorded = await recorder.StopAsync();
-
 		// 样本耗尽信号保证完整收集一秒，输出长度应当精确匹配。
 		Assert.Equal(32044, recorded.Bytes.Length);
+		Assert.True(microphone.Opened);
+		Assert.True(microphone.DisposedOnce);
 	}
 
 	[Fact]

@@ -68,6 +68,23 @@ public class BackendRuntimeModuleTests : IDisposable
 		Execute = (_, _) => execute(),
 	};
 
+	private ToolRegistry CreateBuiltinRegistry()
+	{
+		ToolRegistry registry = new();
+		BuiltinTools.RegisterAll(registry, new BuiltinToolDeps
+		{
+			Memory = new MemoryService(new MemoryStore(_database), new EmbeddingStub(), _config),
+			Emotion = new EmotionManager(_config),
+			Proactive = new ProactiveScheduler(new ReminderStore(_database), _config,
+				_logger, () => null),
+			SystemInfo = new StubSystemInfo(),
+			Fetcher = new StubFetcher(),
+			Http = new HttpClient(),
+			Config = _config,
+		});
+		return registry;
+	}
+
 	[Fact]
 	public async Task safe工具直接执行无需授权()
 	{
@@ -299,18 +316,7 @@ public class BackendRuntimeModuleTests : IDisposable
 	[InlineData("searchWeb", "tag", "string", false)]
 	public void 内置工具的参数契约不变(string tool, string parameter, string type, bool required)
 	{
-		ToolRegistry registry = new();
-		BuiltinTools.RegisterAll(registry, new BuiltinToolDeps
-		{
-			Memory = new MemoryService(new MemoryStore(_database), new EmbeddingStub(), _config),
-			Emotion = new EmotionManager(_config),
-			Proactive = new ProactiveScheduler(new ReminderStore(_database), _config,
-				_logger, () => null),
-			SystemInfo = new StubSystemInfo(),
-			Fetcher = new StubFetcher(),
-			Http = new HttpClient(),
-			Config = _config,
-		});
+		ToolRegistry registry = CreateBuiltinRegistry();
 
 		System.Text.Json.Nodes.JsonObject schema = registry.Get(tool)!.Parameters.AsObject();
 		Assert.Equal(type, schema["properties"]![parameter]!["type"]!.GetValue<string>());
@@ -322,18 +328,7 @@ public class BackendRuntimeModuleTests : IDisposable
 	[Fact]
 	public void 内置工具全部注册且别名生效()
 	{
-		ToolRegistry registry = new();
-		BuiltinTools.RegisterAll(registry, new BuiltinToolDeps
-		{
-			Memory = new MemoryService(new MemoryStore(_database), new EmbeddingStub(), _config),
-			Emotion = new EmotionManager(_config),
-			Proactive = new ProactiveScheduler(new ReminderStore(_database), _config,
-				_logger, () => null),
-			SystemInfo = new StubSystemInfo(),
-			Fetcher = new StubFetcher(),
-			Http = new HttpClient(),
-			Config = _config,
-		});
+		ToolRegistry registry = CreateBuiltinRegistry();
 
 		foreach (string name in new[]
 		         {
@@ -355,18 +350,7 @@ public class BackendRuntimeModuleTests : IDisposable
 	[Fact]
 	public async Task calculate工具执行安全求值()
 	{
-		ToolRegistry registry = new();
-		BuiltinTools.RegisterAll(registry, new BuiltinToolDeps
-		{
-			Memory = new MemoryService(new MemoryStore(_database), new EmbeddingStub(), _config),
-			Emotion = new EmotionManager(_config),
-			Proactive = new ProactiveScheduler(new ReminderStore(_database), _config,
-				_logger, () => null),
-			SystemInfo = new StubSystemInfo(),
-			Fetcher = new StubFetcher(),
-			Http = new HttpClient(),
-			Config = _config,
-		});
+		ToolRegistry registry = CreateBuiltinRegistry();
 
 		ToolResult result = await registry.ExecuteAsync("calculate",
 			JsonNode.Parse("{\"expression\": \"128 * 64\"}"));
@@ -426,28 +410,6 @@ public class BackendRuntimeModuleTests : IDisposable
 
 		string builtinJson = skills.Export("code-reviewer");
 		Assert.Throws<InvalidOperationException>(() => skills.ImportJson(builtinJson));
-	}
-
-	[Fact]
-	public void SKILL_md解析()
-	{
-		string content = """
-			---
-			name: My Skill
-			description: 测试技能说明
-			version: 2.0.0
-			tags: a, b
-			---
-			指令正文第一段。
-			""";
-
-		SkillService skills = new(_config, new HttpClient());
-		IReadOnlyList<SkillRecord> marketplace = SkillPresets.All;
-
-		// 通过反射调用私有方法不优雅; 直接走公开解析入口的等价校验:
-		// InstallFromUrl 需要网络, 这里仅验证市场数据完整性与 frontmatter 解析器行为由集成覆盖。
-		Assert.Equal(8, marketplace.Count);
-		Assert.Contains("---", content, StringComparison.Ordinal);
 	}
 
 	// ---- 情绪管理器 ----

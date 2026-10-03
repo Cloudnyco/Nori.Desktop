@@ -18,15 +18,10 @@ public sealed class NativeWindowChromeTests
 	[InlineData(400, 599, WindowEdge.South)]
 	[InlineData(1, 300, WindowEdge.West)]
 	[InlineData(799, 300, WindowEdge.East)]
-	public void BorderlessWindowsKeepAllEightResizeDirections(double x, double y, WindowEdge expected)
+	[InlineData(100, 20, null)]
+	[InlineData(-1, 20, null)]
+	public void BorderlessWindowsKeepAllEightResizeDirections(double x, double y, WindowEdge? expected)
 		=> Assert.Equal(expected, NativeWindowChrome.ResizeEdge(new Point(x, y), new Size(800, 600)));
-
-	[Fact]
-	public void ContentAndOutsidePointsNeverStartResize()
-	{
-		Assert.Null(NativeWindowChrome.ResizeEdge(new Point(100, 20), new Size(800, 600)));
-		Assert.Null(NativeWindowChrome.ResizeEdge(new Point(-1, 20), new Size(800, 600)));
-	}
 }
 
 public partial class BridgeCommandsTests

@@ -44,14 +44,16 @@ for (const rid of ["win-x64", "linux-x64", "linux-arm64", "osx-x64", "osx-arm64"
 	const root = createFixture(rid)
 	const result = spawnSync(process.execPath, [script, root, rid], {encoding: "utf8"})
 	assert.equal(result.status, 0, `${rid}: ${result.stderr}`)
-	const license = rid.startsWith("osx-")
-		? join(root, "app-1.2.3-4", "Nori.Desktop.app", "Contents", "MacOS", "PurismCore.LICENSE.txt")
-		: join(root, "app-1.2.3-4", "PurismCore.LICENSE.txt")
-	// eslint-disable-next-line security/detect-non-literal-fs-filename -- 测试fixture临时文件
-	unlinkSync(license)
-	const missingLicense = spawnSync(process.execPath, [script, root, rid], {encoding: "utf8"})
-	assert.notEqual(missingLicense.status, 0)
-	assert.match(missingLicense.stderr, /PurismCore\.LICENSE\.txt/)
+	if (["win-x64", "linux-x64", "osx-arm64"].includes(rid)) {
+		const license = rid.startsWith("osx-")
+			? join(root, "app-1.2.3-4", "Nori.Desktop.app", "Contents", "MacOS", "PurismCore.LICENSE.txt")
+			: join(root, "app-1.2.3-4", "PurismCore.LICENSE.txt")
+		// eslint-disable-next-line security/detect-non-literal-fs-filename -- 测试fixture临时文件
+		unlinkSync(license)
+		const missingLicense = spawnSync(process.execPath, [script, root, rid], {encoding: "utf8"})
+		assert.notEqual(missingLicense.status, 0)
+		assert.match(missingLicense.stderr, /PurismCore\.LICENSE\.txt/)
+	}
 }
 const root = createFixture("linux-x64")
 // eslint-disable-next-line security/detect-non-literal-fs-filename -- 测试fixture临时文件

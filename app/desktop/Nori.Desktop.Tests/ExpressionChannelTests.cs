@@ -1,9 +1,7 @@
-using Avalonia.Controls;
 using Avalonia.Media;
 using Nori.Core.Emotion;
 using Nori.Core.Expression;
 using Nori.Desktop.Expression;
-using Nori.Desktop.Live2D;
 
 namespace Nori.Desktop.Tests;
 
@@ -100,14 +98,6 @@ public sealed class ExpressionChannelTests
 		Assert.NotEqual(
 			TrayIconChannel.Gradient(Palette(EmotionTypes.Happy)),
 			TrayIconChannel.Gradient(Palette(EmotionTypes.Sad)));
-	}
-
-	[Fact]
-	public void 同一情绪同一强度取相同的渐变色()
-	{
-		Assert.Equal(
-			TrayIconChannel.Gradient(Palette(EmotionTypes.Fond, 0.6)),
-			TrayIconChannel.Gradient(Palette(EmotionTypes.Fond, 0.6)));
 	}
 
 	/// <summary>强度趋零时向中性收敛，图标也跟着 —— 这条穿透了映射层与通道层。</summary>

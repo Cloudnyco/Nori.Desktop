@@ -99,16 +99,6 @@ public class ConfigStoreTests : IDisposable
 	}
 
 	[Fact]
-	public void 快捷聊天开关支持持久化并按默认开启()
-	{
-		Assert.True(_config.GetQuickChatEnabled());
-		_config.Set(ConfigStore.KeyQuickChatEnabled, new ConfigValue.Boolean(false));
-		Assert.False(_config.GetQuickChatEnabled());
-		_config.Set(ConfigStore.KeyQuickChatEnabled, new ConfigValue.Text("true"));
-		Assert.True(_config.GetQuickChatEnabled());
-	}
-
-	[Fact]
 	public void 对话自动朗读默认关闭且重复初始化不覆盖用户开启()
 	{
 		// 初始化后就位为 false (与前端快照缺省一致, 避免"看着开了实际静音")
@@ -257,67 +247,40 @@ public class ConfigStoreTests : IDisposable
 	[Fact]
 	public void v1迁移会回填并删除旧语言键()
 	{
-		string path = Path.Combine(Path.GetTempPath(), $"nori-language-migration-{Guid.NewGuid():N}.db");
-		try
+		using TempDatabase temp = new("nori-language-migration");
+		using NoriDatabase database = NoriDatabase.Open(temp.Path);
+		database.Locked(connection =>
 		{
-			using NoriDatabase database = NoriDatabase.Open(path);
-			database.Locked(connection =>
-			{
-				using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
-				command.CommandText = "INSERT INTO config (key, value) VALUES ('config_schema_version', '1'), ('app_language', 'en-US')";
-				command.ExecuteNonQuery();
-			});
+			using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
+			command.CommandText = "INSERT INTO config (key, value) VALUES ('config_schema_version', '1'), ('app_language', 'en-US')";
+			command.ExecuteNonQuery();
+		});
 
-			ConfigStore config = new(database);
-			config.EnsureSchemaVersion();
+		ConfigStore config = new(database);
+		config.EnsureSchemaVersion();
 
-			Assert.Equal("en-US", config.GetStringOr(ConfigStore.KeyLanguage, ""));
-			Assert.False(config.Exists(ConfigStore.LegacyKeyLanguage));
-			Assert.Equal(ConfigStore.ConfigSchemaVersion, Assert.IsType<ConfigValue.Integer>(config.Get(ConfigStore.KeyConfigSchemaVersion)).Value);
-		}
-		finally
-		{
-			TryDeleteDatabase(path);
-		}
+		Assert.Equal("en-US", config.GetStringOr(ConfigStore.KeyLanguage, ""));
+		Assert.False(config.Exists(ConfigStore.LegacyKeyLanguage));
+		Assert.Equal(ConfigStore.ConfigSchemaVersion, Assert.IsType<ConfigValue.Integer>(config.Get(ConfigStore.KeyConfigSchemaVersion)).Value);
 	}
 
 	[Fact]
 	public void v1迁移保留已存在的规范语言键()
 	{
-		string path = Path.Combine(Path.GetTempPath(), $"nori-language-precedence-{Guid.NewGuid():N}.db");
-		try
+		using TempDatabase temp = new("nori-language-precedence");
+		using NoriDatabase database = NoriDatabase.Open(temp.Path);
+		database.Locked(connection =>
 		{
-			using NoriDatabase database = NoriDatabase.Open(path);
-			database.Locked(connection =>
-			{
-				using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
-				command.CommandText = "INSERT INTO config (key, value) VALUES ('config_schema_version', '1'), ('language', 'zh-CN'), ('app_language', 'en-US')";
-				command.ExecuteNonQuery();
-			});
+			using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
+			command.CommandText = "INSERT INTO config (key, value) VALUES ('config_schema_version', '1'), ('language', 'zh-CN'), ('app_language', 'en-US')";
+			command.ExecuteNonQuery();
+		});
 
-			ConfigStore config = new(database);
-			config.EnsureSchemaVersion();
+		ConfigStore config = new(database);
+		config.EnsureSchemaVersion();
 
-			Assert.Equal("zh-CN", config.GetStringOr(ConfigStore.KeyLanguage, ""));
-			Assert.False(config.Exists(ConfigStore.LegacyKeyLanguage));
-		}
-		finally
-		{
-			TryDeleteDatabase(path);
-		}
-	}
-
-	private static void TryDeleteDatabase(string path)
-	{
-		try
-		{
-			File.Delete(path);
-			File.Delete($"{path}-wal");
-			File.Delete($"{path}-shm");
-		}
-		catch (IOException)
-		{
-		}
+		Assert.Equal("zh-CN", config.GetStringOr(ConfigStore.KeyLanguage, ""));
+		Assert.False(config.Exists(ConfigStore.LegacyKeyLanguage));
 	}
 
 	[Fact]
@@ -361,7 +324,7 @@ public class ConfigStoreTests : IDisposable
 	[Fact]
 	public void nsec1读取后惰性迁移到nsec2()
 	{
-		string legacy = ProtectLegacyNsec1(Enumerable.Range(0, SecretKeyStore.KeySize).Select(index => (byte)index).ToArray(), "legacy-secret");
+		string legacy = LegacySecretFormats.ProtectNsec1(Enumerable.Range(0, SecretKeyStore.KeySize).Select(index => (byte)index).ToArray(), "legacy-secret");
 		_database.Locked(connection =>
 		{
 			using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
@@ -372,24 +335,6 @@ public class ConfigStoreTests : IDisposable
 
 		Assert.Equal("legacy-secret", _config.GetStringOr("llm_api_key", ""));
 		Assert.StartsWith(SecretProtector.Prefix, _config.RawValue("llm_api_key"), StringComparison.Ordinal);
-	}
-
-	/// <summary>测试本地的 nsec1 造数: base64(nonce|cipher|tag), 无 AAD, 与已发布格式一致。</summary>
-	private static string ProtectLegacyNsec1(byte[] key, string plainText)
-	{
-		const int nonceSize = 12;
-		const int tagSize = 16;
-		byte[] nonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(nonceSize);
-		byte[] plain = System.Text.Encoding.UTF8.GetBytes(plainText);
-		byte[] cipher = new byte[plain.Length];
-		byte[] tag = new byte[tagSize];
-		using System.Security.Cryptography.AesGcm aes = new(key, tagSize);
-		aes.Encrypt(nonce, plain, cipher, tag);
-		byte[] payload = new byte[nonceSize + cipher.Length + tagSize];
-		nonce.CopyTo(payload.AsSpan(0, nonceSize));
-		cipher.CopyTo(payload.AsSpan(nonceSize, cipher.Length));
-		tag.CopyTo(payload.AsSpan(nonceSize + cipher.Length, tagSize));
-		return SecretProtector.LegacyNsec1Prefix + Convert.ToBase64String(payload);
 	}
 
 	[Fact]
@@ -416,57 +361,28 @@ public class ConfigStoreTests : IDisposable
 		Assert.DoesNotContain("must-not-leak", failing.RawValue("llm_api_key"), StringComparison.Ordinal);
 	}
 
-	[Fact]
-	public void 旧布尔遥测迁移为三态同意()
+	[Theory]
+	[InlineData("1", TelemetryConsent.Unset)]
+	[InlineData("0", TelemetryConsent.Denied)]
+	public void 旧布尔遥测迁移为三态同意(string legacyValue, TelemetryConsent expected)
 	{
-		string path = Path.Combine(Path.GetTempPath(), $"nori-telemetry-migration-{Guid.NewGuid():N}.db");
-		try
+		using TempDatabase temp = new("nori-telemetry-migration");
+		using NoriDatabase database = NoriDatabase.Open(temp.Path);
+		database.Locked(connection =>
 		{
-			using NoriDatabase database = NoriDatabase.Open(path);
-			database.Locked(connection =>
-			{
-				using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
-				command.CommandText = "INSERT INTO config (key, value) VALUES ('config_schema_version', '2'), ('telemetry_enabled', '1')";
-				command.ExecuteNonQuery();
-			});
+			using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
+			command.CommandText = "INSERT INTO config (key, value) VALUES ('config_schema_version', '2'), ('telemetry_enabled', $value)";
+			command.Parameters.AddWithValue("$value", legacyValue);
+			command.ExecuteNonQuery();
+		});
 
-			ConfigStore config = new(database);
-			config.EnsureSchemaVersion();
+		ConfigStore config = new(database);
+		config.EnsureSchemaVersion();
 
-			Assert.Equal(TelemetryConsent.Unset, config.GetTelemetryConsent());
-			Assert.False(config.Exists(ConfigStore.KeyTelemetryEnabled));
-			config.SetTelemetryConsent(TelemetryConsent.Granted);
-			Assert.Equal(TelemetryConsent.Granted, config.GetTelemetryConsent());
-		}
-		finally
-		{
-			TryDeleteDatabase(path);
-		}
-	}
-
-	[Fact]
-	public void 旧布尔遥测false迁移为denied()
-	{
-		string path = Path.Combine(Path.GetTempPath(), $"nori-telemetry-denied-{Guid.NewGuid():N}.db");
-		try
-		{
-			using NoriDatabase database = NoriDatabase.Open(path);
-			database.Locked(connection =>
-			{
-				using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
-				command.CommandText = "INSERT INTO config (key, value) VALUES ('config_schema_version', '2'), ('telemetry_enabled', '0')";
-				command.ExecuteNonQuery();
-			});
-
-			ConfigStore config = new(database);
-			config.EnsureSchemaVersion();
-
-			Assert.Equal(TelemetryConsent.Denied, config.GetTelemetryConsent());
-		}
-		finally
-		{
-			TryDeleteDatabase(path);
-		}
+		Assert.Equal(expected, config.GetTelemetryConsent());
+		Assert.False(config.Exists(ConfigStore.KeyTelemetryEnabled));
+		config.SetTelemetryConsent(TelemetryConsent.Granted);
+		Assert.Equal(TelemetryConsent.Granted, config.GetTelemetryConsent());
 	}
 
 	[Fact]

@@ -404,20 +404,6 @@ public sealed class PetGlControl : OpenGlControlBase
 		}
 	}
 
-	/// <summary>
-	/// 把当前模型外接边界转成单个可点击矩形 (客户端逻辑像素)
-	///
-	/// Windows 走 WM_NCHITTEST 查询同一矩形; Linux X11 把矩形交给输入形状,
-	/// macOS 则按光标是否位于矩形内切换整窗穿透。
-	/// </summary>
-	public List<(int X, int Y, int Width, int Height)> BuildHitRegions(double clientWidth, double clientHeight)
-	{
-		lock (_maskLock)
-		{
-			return PetHitMask.BuildHitRegions(_maskBounds, clientWidth, clientHeight);
-		}
-	}
-
 	internal PetHitMask.Bounds MaskBounds
 	{
 		get

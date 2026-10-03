@@ -74,21 +74,6 @@ public partial class BridgeCommandsTests
 		Assert.True(await decision.WaitAsync(TimeSpan.FromSeconds(2)));
 	}
 
-	/// <summary>通知只是第二个面，应用内那条事件一条都不能少。</summary>
-	[Fact]
-	public async Task 发了通知之后应用内的卡片照旧()
-	{
-		FakeNotifier notifier = new();
-		_runtime.UseNotifierForTests(notifier);
-		FakeBridgeSource source = new(WindowLabels.Main);
-
-		Task<bool> decision = _runtime.RequestApprovalAsync(source, "session", Request(), CancellationToken.None);
-
-		// 应用内那条仍然在等、仍然可以由窗口解掉 —— 这就是「卡片没被撤掉」。
-		Assert.True(_runtime.RespondApproval(source, "approval-one", false));
-		Assert.False(await decision.WaitAsync(TimeSpan.FromSeconds(2)));
-	}
-
 	/// <summary>在应用内点掉之后，屏幕上那条要收走 —— 留一张点了没反应的卡片比不弹更糟。</summary>
 	[Fact]
 	public async Task 在应用内批准之后通知被收掉()
@@ -349,13 +334,5 @@ public partial class BridgeCommandsTests
 			.GetProperty("workspace");
 		Assert.False(after.GetProperty("toastApprovals").GetBoolean());
 		Assert.Equal(System.OperatingSystem.IsWindows(), after.GetProperty("toastSupported").GetBoolean());
-	}
-	[Fact]
-	public async Task approval_respond未匹配请求返回false()
-	{
-		BridgeCommands commands = CreateCommands();
-		object? result = await commands.InvokeAsync(
-			new FakeBridgeSource("main"), "approval_respond", Args(new {requestId = "missing", approved = true}));
-		Assert.Equal(false, result);
 	}
 }

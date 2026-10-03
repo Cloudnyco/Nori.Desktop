@@ -192,16 +192,19 @@ public sealed class FirstRunWizardTests
 		Assert.False(AiDraftDefaults.IsFilled(new AiDraft()));
 	}
 
+	/// <summary>只有空白的那几项按没填算，不能把一串空格写进配置。</summary>
 	[Theory]
-	[InlineData("sk-live", "", "")]
-	[InlineData("", "gpt-x", "")]
-	[InlineData("", "", "https://example.test/v1")]
-	public void 任意一项填了就要保存(string apiKey, string model, string baseUrl)
+	[InlineData("sk-live", "", "", true)]
+	[InlineData("", "gpt-x", "", true)]
+	[InlineData("", "", "https://example.test/v1", true)]
+	[InlineData("   ", "\t", "  ", false)]
+	public void 任意一项填了就要保存(string apiKey, string model, string baseUrl, bool expectedFilled)
 	{
 		AiDraft draft = new() {ApiKey = apiKey, Model = model, BaseUrl = baseUrl};
 
-		Assert.True(AiDraftDefaults.IsFilled(draft));
-		Assert.NotNull(AiDraftDefaults.BuildPatch(draft));
+		Assert.Equal(expectedFilled, AiDraftDefaults.IsFilled(draft));
+		if (expectedFilled) Assert.NotNull(AiDraftDefaults.BuildPatch(draft));
+		else Assert.Null(AiDraftDefaults.BuildPatch(draft));
 	}
 
 	/// <summary>
@@ -227,13 +230,6 @@ public sealed class FirstRunWizardTests
 			new AiDraft {BaseUrl = "  https://proxy.test/v1  ", ApiKey = "sk-x"}));
 
 		Assert.Equal("https://proxy.test/v1", patch.BaseUrl);
-	}
-
-	/// <summary>只有空白的那几项按没填算，不能把一串空格写进配置。</summary>
-	[Fact]
-	public void 纯空白不算填过()
-	{
-		Assert.False(AiDraftDefaults.IsFilled(new AiDraft {ApiKey = "   ", Model = "\t", BaseUrl = "  "}));
 	}
 
 	[Fact]

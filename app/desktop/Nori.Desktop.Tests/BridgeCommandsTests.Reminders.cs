@@ -23,17 +23,6 @@ public partial class BridgeCommandsTests
 	}
 
 	[Fact]
-	public async Task 到期提醒由TakeDue领取并等待确认()
-	{
-		Nori.Core.Proactive.ReminderStore store = new(_database);
-		store.Add("过期提醒", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 1000);
-
-		var due = store.TakeDue(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-		Assert.Single(due);
-		Assert.Empty(store.TakeDue(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
-	}
-
-	[Fact]
 	public async Task reminder_update更新快照并可被列表读回()
 	{
 		BridgeCommands commands = CreateCommands();

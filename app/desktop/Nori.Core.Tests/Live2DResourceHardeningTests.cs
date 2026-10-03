@@ -132,18 +132,12 @@ public sealed class Model3ReferenceValidatorTests : IDisposable
 	[InlineData("Nori.model3.json", "nori")]
 	[InlineData("arg-nori/model.model3.json", "arg-nori")]
 	[InlineData("nori/model.model3.json", "nori")]
-	public void 只解析两个固定模型ID(string path, string expected)
+	[InlineData("Other.model3.json", null)]
+	[InlineData("other/model.model3.json", null)]
+	[InlineData("ARGNori_web/model.model3.json", null)]
+	public void 只解析两个固定模型ID(string path, string? expected)
 	{
 		Assert.Equal(expected, SupportedModelIds.ResolveFromModelPath(path));
-	}
-
-	[Theory]
-	[InlineData("Other.model3.json")]
-	[InlineData("other/model.model3.json")]
-	[InlineData("ARGNori_web/model.model3.json")]
-	public void 任意模型名称不会被动态转换(string path)
-	{
-		Assert.Null(SupportedModelIds.ResolveFromModelPath(path));
 	}
 
 	private void WriteFile(string relativePath, string content)

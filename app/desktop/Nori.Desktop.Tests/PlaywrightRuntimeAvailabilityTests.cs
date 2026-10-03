@@ -6,19 +6,18 @@ public sealed class PlaywrightRuntimeAvailabilityTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), $"nori-playwright-runtime-{Guid.NewGuid():N}");
 
-	[Fact]
-	public void 缺少driver目录时报告未安装()
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public void 按driver目录是否存在报告可用性(bool installed)
 	{
 		Directory.CreateDirectory(_root);
-		Assert.False(PlaywrightRuntimeAvailability.IsAvailable(_root));
-	}
-
-	[Fact]
-	public void package和node同时存在时报告可用()
-	{
-		Directory.CreateDirectory(Path.Combine(_root, ".playwright", "package"));
-		Directory.CreateDirectory(Path.Combine(_root, ".playwright", "node"));
-		Assert.True(PlaywrightRuntimeAvailability.IsAvailable(_root));
+		if (installed)
+		{
+			Directory.CreateDirectory(Path.Combine(_root, ".playwright", "package"));
+			Directory.CreateDirectory(Path.Combine(_root, ".playwright", "node"));
+		}
+		Assert.Equal(installed, PlaywrightRuntimeAvailability.IsAvailable(_root));
 	}
 
 	public void Dispose()

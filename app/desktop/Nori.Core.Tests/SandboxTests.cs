@@ -27,22 +27,15 @@ public sealed class SandboxTests : IDisposable
 
 	// ---- 命令行拆分 ----
 
+	/// <summary>命令行按首个空格拆分；可执行文件路径常含空格，首段必须支持引号。</summary>
 	[Theory]
 	[InlineData("dotnet build", "dotnet", "build")]
 	[InlineData("dotnet", "dotnet", "")]
 	[InlineData("  dotnet   build -v q  ", "dotnet", "build -v q")]
-	public void 命令行按首个空格拆分(string input, string file, string arguments)
+	[InlineData("\"C:\\Program Files\\dotnet\\dotnet.exe\" build -v q", "C:\\Program Files\\dotnet\\dotnet.exe", "build -v q")]
+	public void 命令行按输入形式拆出程序与参数(string input, string file, string arguments)
 	{
 		Assert.Equal((file, arguments), CommandLine.Split(input));
-	}
-
-	/// <summary>可执行文件路径常含空格，首段必须支持引号。</summary>
-	[Fact]
-	public void 带引号的可执行文件路径被正确拆出()
-	{
-		Assert.Equal(
-			(@"C:\Program Files\dotnet\dotnet.exe", "build -v q"),
-			CommandLine.Split(@"""C:\Program Files\dotnet\dotnet.exe"" build -v q"));
 	}
 
 	// ---- 输出解码 ----
@@ -101,12 +94,11 @@ public sealed class SandboxTests : IDisposable
 	// ---- 无隔离执行 ----
 
 	[Fact]
-	public async Task 无隔离执行如实报告自己没有隔离()
+	public void 无隔离执行如实报告自己没有隔离()
 	{
 		UnsandboxedLauncher launcher = new();
 
 		Assert.Equal(SandboxIsolation.None, launcher.Isolation);
-		await Task.CompletedTask;
 	}
 
 	[Fact]

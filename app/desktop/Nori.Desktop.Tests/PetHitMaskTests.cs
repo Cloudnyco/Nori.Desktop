@@ -96,10 +96,8 @@ public sealed class PetHitMaskTests
 		Assert.False(PetHitMask.IsPointOnModel(bounds, 2.5, 3.5, PetHitMask.Width, PetHitMask.Height));
 		Assert.False(PetHitMask.IsPointOnModel(bounds, 8.5, 3.5, PetHitMask.Width, PetHitMask.Height));
 
-		List<(int X, int Y, int Width, int Height)> regions = PetHitMask.BuildHitRegions(bounds, 192, 256);
-
-		Assert.Single(regions);
-		Assert.Equal((6, 4, 10, 8), regions[0]);
+		Assert.True(PetHitMask.TryGetHitRegion(bounds, 192, 256, out (int X, int Y, int Width, int Height) region));
+		Assert.Equal((6, 4, 10, 8), region);
 	}
 
 	[Fact]
@@ -107,9 +105,9 @@ public sealed class PetHitMaskTests
 	{
 		PetHitMask.Bounds bounds = new(3, 2, 7, 5, HasBounds: true);
 
-		List<(int X, int Y, int Width, int Height)> regions = PetHitMask.BuildHitRegions(bounds, 101.5, 203.25);
-
-		Assert.Equal((3, 3, 6, 7), Assert.Single(regions));
+		Assert.True(PetHitMask.TryGetHitRegion(bounds, 101.5, 203.25, out (int X, int Y, int Width, int Height) region));
+		Assert.Equal((3, 3, 6, 7), region);
+		Assert.False(PetHitMask.TryGetHitRegion(bounds, 0, 100, out _));
 	}
 
 	[Fact]
@@ -134,8 +132,9 @@ public sealed class PetHitMaskTests
 		Assert.True(noVisiblePixels.IsEmpty);
 		Assert.False(PetHitMask.IsPointOnModel(noVisiblePixels, 1, 1, 100, 100));
 		Assert.False(PetHitMask.IsPointOnModel(default, 1, 1, 100, 100));
-		Assert.Empty(PetHitMask.BuildHitRegions(noVisiblePixels, 100, 100));
-		Assert.Empty(PetHitMask.BuildHitRegions(noVisiblePixels, 0, 100));
+		Assert.False(PetHitMask.TryGetHitRegion(noVisiblePixels, 100, 100, out _));
+		Assert.False(PetHitMask.TryGetHitRegion(noVisiblePixels, 0, 100, out _));
+		Assert.False(PetHitMask.TryGetHitRegion(PetHitMask.Bounds.Empty, 100, 100, out _));
 		Assert.True(PetHitMask.BuildFromSourcePixels([], 0, 0).IsEmpty);
 		Assert.True(PetHitMask.BuildFromSourcePixels(new byte[3], 1, 1).IsEmpty);
 		Assert.True(PetHitMask.BuildFromReducedPixels(new byte[3], 1, 1).IsEmpty);
@@ -156,17 +155,6 @@ public sealed class PetHitMaskTests
 		long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
 		Assert.Equal(0L, allocated);
-	}
-
-	[Fact]
-	public void TryGetHitRegionMatchesBuildHitRegions()
-	{
-		PetHitMask.Bounds bounds = new(3, 2, 7, 5, HasBounds: true);
-		List<(int X, int Y, int Width, int Height)> regions = PetHitMask.BuildHitRegions(bounds, 101.5, 203.25);
-		Assert.True(PetHitMask.TryGetHitRegion(bounds, 101.5, 203.25, out (int X, int Y, int Width, int Height) region));
-		Assert.Equal(Assert.Single(regions), region);
-		Assert.False(PetHitMask.TryGetHitRegion(PetHitMask.Bounds.Empty, 100, 100, out _));
-		Assert.False(PetHitMask.TryGetHitRegion(bounds, 0, 100, out _));
 	}
 
 	[Fact]

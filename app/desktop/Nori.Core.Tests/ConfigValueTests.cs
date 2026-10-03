@@ -74,6 +74,8 @@ public class ConfigValueTests
 	[Theory]
 	// 序列化回前端时是裸值 (对应 serde untagged), 不是 {"Text": "..."} 这种包装
 	[InlineData("arg-nori", "\"arg-nori\"")]
+	[InlineData("1", "true")]
+	[InlineData("42", "42")]
 	public void 序列化成裸值(string stored, string expectedJson) =>
 		Assert.Equal(expectedJson, JsonSerializer.Serialize(ConfigValue.FromStorage(stored)));
 
@@ -86,13 +88,6 @@ public class ConfigValueTests
 		Assert.Equal("42", JsonSerializer.Serialize(boxedInt));
 		object boxedBool = ConfigValue.FromStorage("1");
 		Assert.Equal("true", JsonSerializer.Serialize(boxedBool));
-	}
-
-	[Fact]
-	public void 序列化布尔与整数为裸值()
-	{
-		Assert.Equal("true", JsonSerializer.Serialize(ConfigValue.FromStorage("1")));
-		Assert.Equal("42", JsonSerializer.Serialize(ConfigValue.FromStorage("42")));
 	}
 
 	[Fact]

@@ -9,6 +9,15 @@ public partial class BridgeCommandsTests
 	// ---- 来源授权 ----
 
 	[Fact]
+	public async Task approval_respond未匹配请求返回false()
+	{
+		BridgeCommands commands = CreateCommands();
+		object? result = await commands.InvokeAsync(
+			new FakeBridgeSource("main"), "approval_respond", Args(new {requestId = "missing", approved = true}));
+		Assert.Equal(false, result);
+	}
+
+	[Fact]
 	public async Task 业务命令拒绝非main窗口()
 	{
 		BridgeCommands commands = CreateCommands();

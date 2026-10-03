@@ -33,18 +33,12 @@ public sealed class PromptWorkspaceTests
 		Assert.Contains("绝对路径", prompt, StringComparison.Ordinal);
 	}
 
-	[Fact]
-	public void 没有工作目录时整段不注入()
+	[Theory]
+	[InlineData("")]
+	[InlineData("   ")]
+	public void 空或空白工作目录不注入提示词(string root)
 	{
-		string prompt = Build("");
-
-		Assert.DoesNotContain("当前工作目录", prompt, StringComparison.Ordinal);
-	}
-
-	[Fact]
-	public void 只有空白的配置值同样不注入()
-	{
-		Assert.DoesNotContain("当前工作目录", Build("   "), StringComparison.Ordinal);
+		Assert.DoesNotContain("当前工作目录", Build(root), StringComparison.Ordinal);
 	}
 
 	// ---- 注入判据 ----

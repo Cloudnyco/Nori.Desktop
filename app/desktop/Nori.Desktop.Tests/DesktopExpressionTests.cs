@@ -146,15 +146,6 @@ public sealed class DesktopExpressionTests : IDisposable
 	// ---- 强调色 ----
 
 	[Fact]
-	public async Task 强调色是全局档默认不开()
-	{
-		AccentColorChannel channel = new(new FakeAppearance(), _backup);
-
-		Assert.Equal(Intrusiveness.Global, channel.Level);
-		await Task.CompletedTask;
-	}
-
-	[Fact]
 	public async Task 改强调色之前先备份原值()
 	{
 		FakeAppearance appearance = new() {Accent = 0xFFD4C677};

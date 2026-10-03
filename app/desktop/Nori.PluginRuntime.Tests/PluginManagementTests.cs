@@ -314,32 +314,15 @@ public sealed class PluginManagementTests
 		using (FileStream file = File.Create(package))
 		using (ZipArchive archive = new(file, ZipArchiveMode.Create))
 		{
-			WriteEntry(archive, "manifest.json", manifest);
-			ZipArchiveEntry assemblyEntry = archive.CreateEntry("lib/Nori.PluginRuntime.TestPlugin.dll");
-			using (Stream target = assemblyEntry.Open())
-			using (FileStream source = File.OpenRead(assembly)) source.CopyTo(target);
-			WriteEntry(archive, "web/index.html", "<!doctype html><title>plugin</title>");
-			WriteEntry(archive, "README.md", "test");
+			PluginTestPackages.WriteEntry(archive, "manifest.json", manifest);
+			PluginTestPackages.WriteAssemblyEntry(archive, "lib/Nori.PluginRuntime.TestPlugin.dll", assembly);
+			PluginTestPackages.WriteEntry(archive, "web/index.html", "<!doctype html><title>plugin</title>");
+			PluginTestPackages.WriteEntry(archive, "README.md", "test");
 		}
 		return package;
 	}
 
-	private static void WriteEntry(ZipArchive archive, string name, string content)
-	{
-		using StreamWriter writer = new(archive.CreateEntry(name).Open());
-		writer.Write(content);
-	}
+	private static string CreateTemp() => PluginTestPackages.CreateTemp("nori-plugin-management-tests");
 
-	private static string CreateTemp()
-	{
-		string path = Path.Combine(Path.GetTempPath(), "nori-plugin-management-tests", Guid.NewGuid().ToString("N"));
-		Directory.CreateDirectory(path);
-		return path;
-	}
-
-	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "测试夹具销毁只能尽力清理，不能让清理异常覆盖测试结果。")]
-	private static void DeleteDirectory(string path)
-	{
-		try { if (Directory.Exists(path)) Directory.Delete(path, true); } catch { }
-	}
+	private static void DeleteDirectory(string path) => PluginTestPackages.DeleteDirectory(path);
 }

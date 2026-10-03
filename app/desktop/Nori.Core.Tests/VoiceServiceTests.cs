@@ -22,6 +22,17 @@ public class VoiceServiceTests : IDisposable
 		_config.Set("tts_base_url", new ConfigValue.Text("http://127.0.0.1:9880/v1"));
 	}
 
+	[Theory]
+	[InlineData("gemini", typeof(GeminiTtsProvider))]
+	[InlineData("minimax", typeof(MiniMaxTtsProvider))]
+	[InlineData("indextts", typeof(IndexTtsProvider))]
+	public void 按名称创建对应语音提供商(string name, Type expected)
+	{
+		using HttpClient client = new(new AudioHandler());
+		using VoiceService service = new(client, _config, null, () => null);
+		Assert.IsType(expected, service.CreateProvider(name));
+	}
+
 	[Fact]
 	public async Task 句子流水线先播放已完成段并最终结束()
 	{

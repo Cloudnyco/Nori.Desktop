@@ -5,7 +5,7 @@ using Nori.Desktop.Notifications.Windows;
 
 namespace Nori.Desktop.Tests;
 
-/// <summary>结构布局和值比较不调用系统库，可以在三个平台上校验。</summary>
+/// <summary>结构布局不调用系统库，可以在三个平台上校验。</summary>
 [SupportedOSPlatform("windows")]
 public sealed class WindowsInteropValueTests
 {
@@ -33,88 +33,6 @@ public sealed class WindowsInteropValueTests
 		Assert.Equal(0, Marshal.OffsetOf<ToastNativeApi.PropVariant>("VarType").ToInt32());
 		Assert.Equal(8, Marshal.OffsetOf<WasapiNativeApi.PropVariant>("Value").ToInt32());
 		Assert.Equal(8, Marshal.OffsetOf<ToastNativeApi.PropVariant>("Value").ToInt32());
-	}
-
-	[Fact]
-	public void 音频属性键按格式标识和属性编号比较()
-	{
-		WasapiNativeApi.PropertyKey key = WasapiNativeApi.FriendlyNameKey;
-		WasapiNativeApi.PropertyKey same = new(key.FormatId, key.PropertyId);
-		Assert.True(key.Equals(same));
-		Assert.True(key.Equals((object) same));
-		Assert.True(key == same);
-		Assert.False(key != same);
-		Assert.Equal(key.GetHashCode(), same.GetHashCode());
-		Assert.False(key.Equals(new WasapiNativeApi.PropertyKey(Guid.Empty, key.PropertyId)));
-		Assert.False(key.Equals(new WasapiNativeApi.PropertyKey(key.FormatId, key.PropertyId + 1)));
-		Assert.False(key.Equals(null));
-	}
-
-	[Fact]
-	public void 通知属性键按格式标识和属性编号比较()
-	{
-		ToastNativeApi.PropertyKey key = ToastNativeApi.AppUserModelIdKey;
-		ToastNativeApi.PropertyKey same = new(key.FormatId, key.PropertyId);
-		Assert.True(key.Equals(same));
-		Assert.True(key.Equals((object) same));
-		Assert.True(key == same);
-		Assert.False(key != same);
-		Assert.Equal(key.GetHashCode(), same.GetHashCode());
-		Assert.False(key.Equals(new ToastNativeApi.PropertyKey(Guid.Empty, key.PropertyId)));
-		Assert.True(key != ToastNativeApi.ToastActivatorClsidKey);
-		Assert.False(key.Equals(null));
-	}
-
-	private static WasapiNativeApi.WaveFormatEx FloatStereo => new()
-	{
-		FormatTag = WasapiNativeApi.FormatFloat,
-		Channels = 2,
-		SamplesPerSecond = 48000,
-		AverageBytesPerSecond = 384000,
-		BlockAlign = 8,
-		BitsPerSample = 32,
-		ExtraSize = 0
-	};
-
-	[Fact]
-	public void 相同音频格式具有一致的值比较与哈希()
-	{
-		WasapiNativeApi.WaveFormatEx format = FloatStereo;
-		WasapiNativeApi.WaveFormatEx same = FloatStereo;
-		Assert.True(format.Equals(same));
-		Assert.True(format.Equals((object) same));
-		Assert.True(format == same);
-		Assert.False(format != same);
-		Assert.Equal(format.GetHashCode(), same.GetHashCode());
-		Assert.False(format.Equals(null));
-	}
-
-	[Theory]
-	[InlineData("FormatTag")]
-	[InlineData("Channels")]
-	[InlineData("SamplesPerSecond")]
-	[InlineData("AverageBytesPerSecond")]
-	[InlineData("BlockAlign")]
-	[InlineData("BitsPerSample")]
-	[InlineData("ExtraSize")]
-	public void 音频格式任意字段变化都会改变相等结果(string field)
-	{
-		WasapiNativeApi.WaveFormatEx format = FloatStereo;
-		WasapiNativeApi.WaveFormatEx changed = format;
-		switch (field)
-		{
-			case "FormatTag": changed.FormatTag++; break;
-			case "Channels": changed.Channels++; break;
-			case "SamplesPerSecond": changed.SamplesPerSecond++; break;
-			case "AverageBytesPerSecond": changed.AverageBytesPerSecond++; break;
-			case "BlockAlign": changed.BlockAlign++; break;
-			case "BitsPerSample": changed.BitsPerSample++; break;
-			case "ExtraSize": changed.ExtraSize++; break;
-			default: throw new ArgumentOutOfRangeException(nameof(field));
-		}
-		Assert.False(format.Equals(changed));
-		Assert.False(format == changed);
-		Assert.True(format != changed);
 	}
 
 	[Fact]

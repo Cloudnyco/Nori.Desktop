@@ -133,24 +133,20 @@ public partial class BridgeCommandsTests
 		Assert.False(workspace.GetProperty("available").GetBoolean());
 	}
 
-	[Fact]
-	public async Task 设置窗口可以执行这两条命令()
+	/// <summary>
+	/// 原生设置页经 SettingsService 白名单调用，工作目录、任务与表达通道命令必须在白名单里，
+	/// 否则界面上的按钮点了会报「不允许执行」。
+	/// </summary>
+	[Theory]
+	[InlineData("settings_update_workspace")]
+	[InlineData("settings_pick_workspace")]
+	[InlineData("settings_update_tasks")]
+	[InlineData("settings_update_expression")]
+	public void 原生设置白名单包含领域命令(string command)
 	{
-		// 原生设置页经 SettingsService 白名单调用，命令必须在白名单里，否则界面上
-		// 的按钮点了会报「不允许执行」。
-		Assert.Contains("settings_update_workspace", SettingsService.Commands);
-		Assert.Contains("settings_pick_workspace", SettingsService.Commands);
-		Assert.Contains("settings_update_tasks", SettingsService.Commands);
-		await Task.CompletedTask;
+		Assert.Contains(command, SettingsService.Commands);
 	}
 	// ---- 情绪表达 ----
-
-	[Fact]
-	public async Task 设置窗口可以开关表达通道()
-	{
-		Assert.Contains("settings_update_expression", SettingsService.Commands);
-		await Task.CompletedTask;
-	}
 
 	/// <summary>
 	/// 通道键必须带前缀。

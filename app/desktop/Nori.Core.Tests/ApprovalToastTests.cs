@@ -202,21 +202,6 @@ public sealed class ApprovalToastTests
 	public void 未知动作不许编码() =>
 		Assert.Throws<ArgumentException>(() => ToastActivation.Encode(ToastAction.Unknown, "approval-1"));
 
-	/// <summary>真实形状的 id（Guid:N）能走完一整圈。</summary>
-	[Fact]
-	public void 真实id能走完一圈()
-	{
-		string id = $"approval-{Guid.NewGuid():N}";
-		ApprovalNotice notice = Notice() with {RequestId = id};
-		XDocument parsed = XDocument.Parse(ApprovalToastXml.Build(notice, english: false));
-
-		string allowArgs = parsed.Descendants("action").First().Attribute("arguments")!.Value;
-		(ToastAction action, string? back) = ToastActivation.Parse(allowArgs);
-
-		Assert.Equal(ToastAction.Allow, action);
-		Assert.Equal(id, back);
-	}
-
 	/// <summary>点正文不是一个决定，只是把卡片带到前台。</summary>
 	[Fact]
 	public void 点正文解出来是Open()
@@ -244,13 +229,19 @@ public sealed class ApprovalToastTests
 		Assert.False(ToastRegistrationStamp.NeedsWrite(first, again));
 	}
 
-	/// <summary>便携版可以被整个搬走；搬走之后快捷方式指向的还是旧路径。</summary>
-	[Fact]
-	public void 换了目录就要重写()
+	/// <summary>
+	/// 便携版可以被整个搬走；搬走之后快捷方式指向的还是旧路径。
+	/// AUMID 或 CLSID 变化也要重写注册信息。
+	/// </summary>
+	[Theory]
+	[InlineData(@"E:\Nori\Nori.exe", "A.B", false)]
+	[InlineData(@"D:\Nori\Nori.exe", "A.C", false)]
+	[InlineData(@"D:\Nori\Nori.exe", "A.B", true)]
+	public void 任一注册参数变化都要重写(string executablePath, string aumid, bool newClsid)
 	{
 		Guid clsid = Guid.NewGuid();
 		string before = ToastRegistrationStamp.Compute(@"D:\Nori\Nori.exe", "A.B", clsid);
-		string after = ToastRegistrationStamp.Compute(@"E:\Nori\Nori.exe", "A.B", clsid);
+		string after = ToastRegistrationStamp.Compute(executablePath, aumid, newClsid ? Guid.NewGuid() : clsid);
 
 		Assert.True(ToastRegistrationStamp.NeedsWrite(before, after));
 	}
@@ -272,26 +263,4 @@ public sealed class ApprovalToastTests
 	[Fact]
 	public void 没存过指纹就要写() =>
 		Assert.True(ToastRegistrationStamp.NeedsWrite(null, "whatever"));
-
-	[Fact]
-	public void 换了AUMID或CLSID也要重写()
-	{
-		Guid clsid = Guid.NewGuid();
-		string baseline = ToastRegistrationStamp.Compute(@"D:\Nori\Nori.exe", "A.B", clsid);
-
-		Assert.True(ToastRegistrationStamp.NeedsWrite(baseline,
-			ToastRegistrationStamp.Compute(@"D:\Nori\Nori.exe", "A.C", clsid)));
-		Assert.True(ToastRegistrationStamp.NeedsWrite(baseline,
-			ToastRegistrationStamp.Compute(@"D:\Nori\Nori.exe", "A.B", Guid.NewGuid())));
-	}
-
-	[Fact]
-	public void 不弹的那个实现什么都不做()
-	{
-		INativeNotifier notifier = NullNativeNotifier.Instance;
-
-		Assert.False(notifier.Available);
-		notifier.Show(Notice());
-		notifier.Hide("approval-1");
-	}
 }

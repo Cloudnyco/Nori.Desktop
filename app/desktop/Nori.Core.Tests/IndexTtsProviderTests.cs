@@ -192,6 +192,7 @@ public class IndexTtsProviderTests : IDisposable
 	public static TheoryData<string, string?, string?, int?, string?, double?> EmotionMappingCases => new()
 	{
 		{ "happy", null, null, 3, "happy", 0.3 },
+		{ "happy", "0", null, 3, "happy", 0d },
 		{ "neutral", null, null, null, null, null },
 		{ "sad", "0.5", null, 3, "sad", 0.5 },
 		{ "happy", null, "angry", 3, "happy", 0.3 },
@@ -458,23 +459,6 @@ public class IndexTtsProviderTests : IDisposable
 	}
 
 	[Fact]
-	public async Task 情绪强度零值按零发送()
-	{
-		_config.Set("indextts_emo_alpha", new ConfigValue.Text("0"));
-		HttpTestHandler handler = new(_ => WavResponse());
-		using HttpClient client = new(handler);
-		IndexTtsProvider provider = new(client, _config);
-
-		await provider.SynthesizeAsync(
-			"测试",
-			new TtsSynthesizeOptions {Voice = "uspeech:test", EmotionText = "happy"},
-			CancellationToken.None);
-
-		JsonNode body = JsonNode.Parse(handler.LastBody!)!;
-		Assert.Equal(0d, body["emo_weight"]?.GetValue<double>());
-	}
-
-	[Fact]
 	public async Task 情绪强度变化会生成新的合成缓存身份()
 	{
 		int synthCount = 0;
@@ -493,14 +477,6 @@ public class IndexTtsProviderTests : IDisposable
 		await service.SynthesizeAsync("同一句话", options, CancellationToken.None);
 
 		Assert.Equal(2, synthCount);
-	}
-
-	[Fact]
-	public void VoiceService能够创建IndexTtsProvider()
-	{
-		using HttpClient client = new(new HttpTestHandler(_ => WavResponse()));
-		using VoiceService service = new(client, _config, null, () => null);
-		Assert.IsType<IndexTtsProvider>(service.CreateProvider("indextts"));
 	}
 
 	[Fact]

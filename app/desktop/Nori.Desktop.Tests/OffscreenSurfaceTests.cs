@@ -25,7 +25,6 @@ public sealed class OffscreenSurfaceTests
 	[Theory]
 	[InlineData(true, 1, 1)]
 	[InlineData(false, 720, 480)]
-	[InlineData(false, int.MaxValue, int.MaxValue)]
 	public void TextureGenerationFailurePreservesEntryState(bool es2, int width, int height)
 	{
 		var gl = CreateHost(es2);

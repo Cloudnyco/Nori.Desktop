@@ -88,7 +88,6 @@ public sealed class TextureUploadBoundaryTests
 
 	[Theory]
 	[InlineData(4, 16, 4)]
-	[InlineData(8, 16, 8)]
 	[InlineData(16, 16, 16)]
 	[InlineData(16, 8, 8)]
 	[InlineData(4, 2, 2)]

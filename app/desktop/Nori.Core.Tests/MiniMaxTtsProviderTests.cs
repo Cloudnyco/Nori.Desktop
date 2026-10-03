@@ -109,15 +109,6 @@ public class MiniMaxTtsProviderTests : IDisposable
 		Assert.Equal(1008, error.ProviderStatusCode);
 	}
 
-	[Fact]
-	public void VoiceService能够创建MiniMaxProvider()
-	{
-		using HttpClient client = new(new HttpTestHandler(_ => SuccessResponse("01")));
-		using VoiceService service = new(client, _config, null, () => null);
-
-		Assert.IsType<MiniMaxTtsProvider>(service.CreateProvider("minimax"));
-	}
-
 	public void Dispose()
 	{
 		_database.Dispose();

@@ -3,22 +3,17 @@ using System.Net;
 using System.Text;
 using Nori.Core.Chat;
 using Nori.Core.Embedding;
+using Nori.Core.Tests.TestSupport;
 
 namespace Nori.Core.Tests;
 
 [SuppressMessage("Security", "S2068", Justification = "伪凭据用于验证连接错误脱敏。")]
 public sealed class ProviderConnectionTests
 {
-	private sealed class MockHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
-	{
-		protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-			Task.FromResult(handler(request));
-	}
-
 	[Fact]
 	public async Task LLM探测使用固定请求并返回结构化成功结果()
 	{
-		using MockHandler handler = new(request =>
+		using HttpTestHandler handler = new(request =>
 		{
 			Assert.Equal(HttpMethod.Post, request.Method);
 			Assert.Equal("https://example.test/v1/chat/completions", request.RequestUri?.ToString());
@@ -42,7 +37,7 @@ public sealed class ProviderConnectionTests
 	[Fact]
 	public async Task LLM探测失败时不回传密钥或凭据()
 	{
-		using MockHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
+		using HttpTestHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
 		{
 			Content = new StringContent("{\"error\":{\"message\":\"api_key=secret-key\"}}", Encoding.UTF8, "application/json"),
 		});
@@ -63,7 +58,7 @@ public sealed class ProviderConnectionTests
 	[InlineData(HttpStatusCode.TooManyRequests, "rate_limited", "rate-secret")]
 	public async Task LLM探测按HTTP状态分类且不泄露密钥(HttpStatusCode status, string category, string secret)
 	{
-		using MockHandler handler = new(_ => new HttpResponseMessage(status)
+		using HttpTestHandler handler = new(_ => new HttpResponseMessage(status)
 		{
 			Content = new StringContent($"{{\"error\":{{\"message\":\"{secret}\"}}}}", Encoding.UTF8, "application/json"),
 		});
@@ -82,7 +77,7 @@ public sealed class ProviderConnectionTests
 	[Fact]
 	public async Task LLM探测错误不会回传URL响应正文或本机路径()
 	{
-		using MockHandler handler = new(_ => throw new HttpRequestException(
+		using HttpTestHandler handler = new(_ => throw new HttpRequestException(
 			"请求 https://user:password@example.test/v1 失败: response-body=private text C:\\Users\\Nori\\secret.log"));
 		using HttpClient http = new(handler);
 		OpenAiEmbeddingAdapter embedding = new(http);
@@ -100,7 +95,7 @@ public sealed class ProviderConnectionTests
 	[Fact]
 	public async Task LLM探测超时归类为超时()
 	{
-		using MockHandler handler = new(_ => throw new TaskCanceledException("request timeout"));
+		using HttpTestHandler handler = new(_ => throw new TaskCanceledException("request timeout"));
 		using HttpClient http = new(handler);
 		OpenAiEmbeddingAdapter embedding = new(http);
 		ProviderConnectionTester tester = new(http, embedding);
@@ -118,7 +113,7 @@ public sealed class ProviderConnectionTests
 	[Fact]
 	public async Task LLM探测成功响应格式错误时归类为协议错误()
 	{
-		using MockHandler handler = new(_ => JsonResponse("{\"choices\":[]}"));
+		using HttpTestHandler handler = new(_ => JsonResponse("{\"choices\":[]}"));
 		using HttpClient http = new(handler);
 		OpenAiEmbeddingAdapter embedding = new(http);
 		ProviderConnectionTester tester = new(http, embedding);
@@ -135,7 +130,7 @@ public sealed class ProviderConnectionTests
 	[Fact]
 	public async Task Embedding探测允许无密钥的OpenAI兼容服务()
 	{
-		using MockHandler handler = new(_ =>
+		using HttpTestHandler handler = new(_ =>
 			JsonResponse("{\"data\":[{\"embedding\":[0.1,0.2],\"index\":0}]}"));
 		using HttpClient http = new(handler);
 		OpenAiEmbeddingAdapter embedding = new(http);
@@ -151,7 +146,7 @@ public sealed class ProviderConnectionTests
 	[Fact]
 	public async Task Embedding探测要求返回非空向量且不写入配置()
 	{
-		using MockHandler handler = new(request =>
+		using HttpTestHandler handler = new(request =>
 		{
 			Assert.Equal(HttpMethod.Post, request.Method);
 			Assert.EndsWith("/embeddings", request.RequestUri?.AbsolutePath, StringComparison.Ordinal);

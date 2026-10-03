@@ -1,4 +1,5 @@
 using Nori.Core.Security;
+using Nori.Core.Tests.TestSupport;
 
 namespace Nori.Core.Tests;
 
@@ -43,29 +44,11 @@ public class SecretProtectorTests
 	[Fact]
 	public void nsec1仍可读取()
 	{
-		string cipher = ProtectLegacyNsec1(Key(0x2B), "legacy");
+		string cipher = LegacySecretFormats.ProtectNsec1(Key(0x2B), "legacy");
 
 		Assert.StartsWith(SecretProtector.LegacyNsec1Prefix, cipher, StringComparison.Ordinal);
 		Assert.True(SecretProtector.TryUnprotect(Key(0x2B), "any_key", cipher, out string plain));
 		Assert.Equal("legacy", plain);
-	}
-
-	/// <summary>测试本地的 nsec1 造数: base64(nonce|cipher|tag), 无 AAD, 与已发布格式一致。</summary>
-	private static string ProtectLegacyNsec1(byte[] key, string plainText)
-	{
-		const int nonceSize = 12;
-		const int tagSize = 16;
-		byte[] nonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(nonceSize);
-		byte[] plain = System.Text.Encoding.UTF8.GetBytes(plainText);
-		byte[] cipher = new byte[plain.Length];
-		byte[] tag = new byte[tagSize];
-		using System.Security.Cryptography.AesGcm aes = new(key, tagSize);
-		aes.Encrypt(nonce, plain, cipher, tag);
-		byte[] payload = new byte[nonceSize + cipher.Length + tagSize];
-		nonce.CopyTo(payload.AsSpan(0, nonceSize));
-		cipher.CopyTo(payload.AsSpan(nonceSize, cipher.Length));
-		tag.CopyTo(payload.AsSpan(nonceSize + cipher.Length, tagSize));
-		return SecretProtector.LegacyNsec1Prefix + Convert.ToBase64String(payload);
 	}
 
 	[Fact]

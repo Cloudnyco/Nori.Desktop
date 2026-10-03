@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Sockets;
 using Nori.Core.Network;
+using Nori.Core.Tests.TestSupport;
 
 namespace Nori.Core.Tests;
 
@@ -68,7 +69,7 @@ public class UrlAccessPolicyTests
 	[Fact]
 	public async Task 公网抓取拒绝重定向到元数据地址()
 	{
-		using HttpClient client = new(new ScriptedHandler(_ => Found(new Uri("http://169.254.169.254/latest/meta-data"))));
+		using HttpClient client = new(new HttpTestHandler(_ => Found(new Uri("http://169.254.169.254/latest/meta-data"))));
 		InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
 			UrlAccessPolicy.GetWithSafeRedirectsAsync(client, new Uri("https://example.com/start"), allowPrivate: false));
 		Assert.Contains("私网或保留地址", error.Message, StringComparison.Ordinal);
@@ -81,7 +82,7 @@ public class UrlAccessPolicyTests
 		UrlAccessPolicy.ResolveHostForTests = (_, _) => Task.FromResult(new[] { IPAddress.Parse("10.1.2.3"), IPAddress.Parse("1.1.1.1") });
 		try
 		{
-			using HttpClient client = new(new ScriptedHandler(_ =>
+			using HttpClient client = new(new HttpTestHandler(_ =>
 			{
 				calls++;
 				return new HttpResponseMessage(HttpStatusCode.OK);
@@ -103,7 +104,7 @@ public class UrlAccessPolicyTests
 		UrlAccessPolicy.ResolveHostForTests = (_, _) => throw new SocketException((int)SocketError.HostNotFound);
 		try
 		{
-			using HttpClient client = new(new ScriptedHandler(_ => new HttpResponseMessage(HttpStatusCode.NoContent)));
+			using HttpClient client = new(new HttpTestHandler(_ => new HttpResponseMessage(HttpStatusCode.NoContent)));
 			using HttpResponseMessage response = await UrlAccessPolicy.GetWithSafeRedirectsAsync(
 				client, new Uri("https://example.com/page"), allowPrivate: false);
 			Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
@@ -137,11 +138,5 @@ public class UrlAccessPolicyTests
 		HttpResponseMessage response = new(HttpStatusCode.Found);
 		response.Headers.Location = location;
 		return response;
-	}
-
-	private sealed class ScriptedHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
-	{
-		protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-			Task.FromResult(respond(request));
 	}
 }

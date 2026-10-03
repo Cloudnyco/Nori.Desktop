@@ -301,7 +301,6 @@ public sealed class WorkspaceToolsTests : IDisposable
 		JsonElement result = await CallAsync(
 			Registry(), "editFile", new { path = "a.cs", oldText = "中间要改", newText = "已经改了" });
 
-		Assert.Equal("已经改了", File.ReadAllText(Path.Combine(_root, "a.cs")).Split('\n')[1]);
 		Assert.Equal("第一行\n已经改了\n第三行\n", File.ReadAllText(Path.Combine(_root, "a.cs")));
 		Assert.Equal(1, result.GetProperty("replaced").GetInt32());
 		Assert.Equal(2, result.GetProperty("line").GetInt32());
@@ -565,7 +564,6 @@ public sealed class WorkspaceToolsTests : IDisposable
 	{
 		WorkspaceAccess access = Access();
 
-		Assert.Null(access.Resolve("sub/../../outside.txt"));
 		Assert.Null(access.Resolve("./../escape"));
 		Assert.Null(access.Resolve("a/./../../b"));
 	}

@@ -149,18 +149,6 @@ internal static class PetHitMask
 		return true;
 	}
 
-	/// <summary>把网格外接边界转换为单个客户端逻辑像素矩形。</summary>
-	public static List<(int X, int Y, int Width, int Height)> BuildHitRegions(
-		Bounds bounds,
-		double clientWidth,
-		double clientHeight)
-	{
-		List<(int X, int Y, int Width, int Height)> regions = [];
-		if (TryGetHitRegion(bounds, clientWidth, clientHeight, out (int X, int Y, int Width, int Height) region))
-			regions.Add(region);
-		return regions;
-	}
-
 	private static bool SameCoordinate(double previous, double next) =>
 		BitConverter.DoubleToInt64Bits(previous) == BitConverter.DoubleToInt64Bits(next);
 

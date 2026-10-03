@@ -215,7 +215,6 @@ public sealed class ToolPermissionPolicyTests
 
 		Assert.NotNull(parsed);
 		Assert.Equal(deadline, parsed!.Value);
-		Assert.Equal(deadline.ToUnixTimeMilliseconds(), parsed.Value.ToUnixTimeMilliseconds());
 	}
 
 	[Theory]

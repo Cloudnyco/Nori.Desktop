@@ -198,6 +198,17 @@ publish.bat
 - **Path Security (`ResourcePathSafetyTests.cs`)**: Prevents path traversal, UNC, symlink breakouts, and directory escaping.
 - **Config Inference (`ConfigValueTests.cs`)**: Pins type inference for SQLite key/value reads.
 
+### Gated Live2D / GL Tests
+Real-model and real-GL tests in `Nori.Desktop.Tests` are skipped unless enabled explicitly. CI sets none of these variables and the models are not in git, so these tests never run in CI; run them locally after changing `Nori.Live2D` or `Nori.Desktop/Live2D`.
+- `[Live2DAssetsFact]`: `NORI_TEST_LIVE2D_ASSETS=1`. Models load from `NORI_LIVE2D_FIXTURES/<modelId>/` when set, otherwise from the nearest `data/resources/installed/live2d/<modelId>/` above the test output directory (`arg-nori`, `nori`).
+- `[NativeGlAssetsTheory]`: Windows x64 with `NORI_TEST_NATIVE_GL=1` and `NORI_TEST_LIVE2D_ASSETS=1`.
+- `[TextureQuadGlTheory]`: Windows x64 with `NORI_TEST_NATIVE_GL=1`.
+- `NORI_TEST_NATIVE_GL=1` also switches the shared headless fixture (`BridgeCommandsTests.BuildAvaloniaApp`) to real Skia drawing.
+
+```bash
+NORI_TEST_LIVE2D_ASSETS=1 NORI_TEST_NATIVE_GL=1 dotnet test Nori.Desktop.Tests/Nori.Desktop.Tests.csproj --configuration Release -m:1
+```
+
 ---
 
 ## 6. Commit & Pull Request Guidelines

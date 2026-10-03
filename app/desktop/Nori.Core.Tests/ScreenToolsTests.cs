@@ -72,24 +72,20 @@ public sealed class ScreenToolsTests
 
 	// ---- 注册 ----
 
-	[Fact]
-	public void 平台不支持截屏时不注册()
+	/// <summary>
+	/// 平台不支持截屏时不注册；模型不支持看图时同样不注册：那条路上每次调用都会在请求阶段失败。
+	/// 调用方未授权时传 null，判据在 AppRuntime，此处确认工具侧接得住。
+	/// </summary>
+	[Theory]
+	[InlineData(true, false, true)]
+	[InlineData(true, true, false)]
+	[InlineData(false, true, true)]
+	public void 能力不可用或未授权时不注册(bool authorized, bool captureAvailable, bool analyzerConfigured)
 	{
-		Assert.Null(Registry(new FakeCapture { IsAvailable = false }, new FakeAnalyzer()).Get(ScreenTools.ReadScreenName));
-	}
+		FakeCapture? capture = authorized ? new FakeCapture { IsAvailable = captureAvailable } : null;
+		FakeAnalyzer? analyzer = authorized ? new FakeAnalyzer { IsConfigured = analyzerConfigured } : null;
 
-	/// <summary>模型不支持看图时同样不注册：那条路上每次调用都会在请求阶段失败。</summary>
-	[Fact]
-	public void 模型没配好时不注册()
-	{
-		Assert.Null(Registry(new FakeCapture(), new FakeAnalyzer { IsConfigured = false }).Get(ScreenTools.ReadScreenName));
-	}
-
-	[Fact]
-	public void 未授权时不注册()
-	{
-		// 调用方未授权时传 null，判据在 AppRuntime，此处确认工具侧接得住。
-		Assert.Null(Registry(null, null).Get(ScreenTools.ReadScreenName));
+		Assert.Null(Registry(capture, analyzer).Get(ScreenTools.ReadScreenName));
 	}
 
 	/// <summary>看屏幕比读文件敏感，必须逐次确认。</summary>
@@ -124,6 +120,7 @@ public sealed class ScreenToolsTests
 		JsonElement result = await CallAsync(Registry(capture, analyzer), new { question = "这个报错什么意思" });
 
 		Assert.Equal(1, capture.Calls);
+		Assert.Equal(capture.Result.Screen, analyzer.Received);
 		Assert.Equal(["这个报错什么意思"], analyzer.Questions);
 		Assert.Equal("画面里是一个编译错误", result.GetProperty("answer").GetString());
 		Assert.Equal("Visual Studio Code", result.GetProperty("window").GetString());
@@ -176,16 +173,5 @@ public sealed class ScreenToolsTests
 		Assert.False(result.IsSuccess);
 		Assert.Contains("UIPI", result.Error!, StringComparison.Ordinal);
 		Assert.Empty(analyzer.Questions);
-	}
-
-	[Fact]
-	public async Task 传给模型的就是截到的那张图()
-	{
-		FakeCapture capture = new();
-		FakeAnalyzer analyzer = new();
-
-		await CallAsync(Registry(capture, analyzer), new { });
-
-		Assert.Equal(capture.Result.Screen, analyzer.Received);
 	}
 }

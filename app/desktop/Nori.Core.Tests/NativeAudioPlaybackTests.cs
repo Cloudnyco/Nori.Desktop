@@ -110,6 +110,7 @@ public sealed class NativeAudioPlaybackTests
 		await playback.PlayAsync(Bytes(), CancellationToken.None);
 
 		Assert.Equal(audio.Samples.Length, device.Written.Count);
+		Assert.Equal(audio.Samples, device.Written);
 		Assert.Equal(new AudioFormat(44100, 1), device.Opened);
 		Assert.True(device.Drained);
 		Assert.True(device.DisposedOnce);
@@ -570,18 +571,6 @@ public sealed class NativeAudioPlaybackTests
 
 		Assert.True(stereo > 0.1, $"立体声下应当有可观的电平，实际 {stereo}");
 		Assert.Equal(stereo, surround, 3);
-	}
-
-	[Fact]
-	public async Task 格式一致时不动样本()
-	{
-		FakeDevice device = new();
-		PcmAudio audio = Tone(frames: 50);
-		using NativeAudioPlayback playback = Playback(device, audio);
-
-		await playback.PlayAsync(Bytes(), CancellationToken.None);
-
-		Assert.Equal(audio.Samples, device.Written);
 	}
 
 	// ── 音量 ───────────────────────────────────────────────────────────────

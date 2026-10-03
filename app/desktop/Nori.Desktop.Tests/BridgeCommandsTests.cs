@@ -233,29 +233,23 @@ public partial class BridgeCommandsTests : IDisposable
 
 	private sealed class SynchronousUiDispatcher : IUiDispatcher
 	{
-		public int InvokeCount { get; private set; }
-
 		public void Post(Action action)
 		{
-			InvokeCount++;
 			action();
 		}
 
 		public Task<T> InvokeAsync<T>(Func<T> action)
 		{
-			InvokeCount++;
 			return Task.FromResult(action());
 		}
 
 		public Task InvokeTaskAsync(Func<Task> action)
 		{
-			InvokeCount++;
 			return action();
 		}
 
 		public Task<T> InvokeTaskAsync<T>(Func<Task<T>> action)
 		{
-			InvokeCount++;
 			return action();
 		}
 	}
@@ -395,35 +389,20 @@ public partial class BridgeCommandsTests : IDisposable
 			Mcp = new McpManager(_http, _config),
 			Http = _http,
 			AgentOperations = new AgentOperationRegistry(),
-			Automation = automationWindows is { } isWindows
-				? new Nori.Desktop.Automation.AutomationRuntime(
-					_config,
-					safeMode,
-					isWindows,
-					visionAvailable: automationVision,
-					browserRunnerFactory: browserRunnerFactory,
-					chatService: chat,
-					desktopVisionRunnerFactory: desktopVisionRunnerFactory,
-					desktopVisionPlannerFactory: desktopVisionPlannerFactory,
-					desktopVisionActionFactory: desktopVisionActionFactory,
-					desktopVisionScreenshotFactory: desktopVisionScreenshotFactory,
-					desktopVisionWindowCatalogFactory: desktopVisionWindowCatalogFactory,
-					desktopVisionApprovalCallback: desktopVisionApprovalCallback,
-					browserTaskTimeout: browserTaskTimeout)
-				: new Nori.Desktop.Automation.AutomationRuntime(
-					_config,
-					safeMode,
-					OperatingSystem.IsWindows(),
-					visionAvailable: automationVision,
-					browserRunnerFactory: browserRunnerFactory,
-					chatService: chat,
-					desktopVisionRunnerFactory: desktopVisionRunnerFactory,
-					desktopVisionPlannerFactory: desktopVisionPlannerFactory,
-					desktopVisionActionFactory: desktopVisionActionFactory,
-					desktopVisionScreenshotFactory: desktopVisionScreenshotFactory,
-					desktopVisionWindowCatalogFactory: desktopVisionWindowCatalogFactory,
-					desktopVisionApprovalCallback: desktopVisionApprovalCallback,
-					browserTaskTimeout: browserTaskTimeout),
+			Automation = new Nori.Desktop.Automation.AutomationRuntime(
+				_config,
+				safeMode,
+				automationWindows ?? OperatingSystem.IsWindows(),
+				visionAvailable: automationVision,
+				browserRunnerFactory: browserRunnerFactory,
+				chatService: chat,
+				desktopVisionRunnerFactory: desktopVisionRunnerFactory,
+				desktopVisionPlannerFactory: desktopVisionPlannerFactory,
+				desktopVisionActionFactory: desktopVisionActionFactory,
+				desktopVisionScreenshotFactory: desktopVisionScreenshotFactory,
+				desktopVisionWindowCatalogFactory: desktopVisionWindowCatalogFactory,
+				desktopVisionApprovalCallback: desktopVisionApprovalCallback,
+				browserTaskTimeout: browserTaskTimeout),
 			Windows = _windows,
 			SafeMode = safeMode,
 			// 不用自动挑选：Windows 上它会创建 AppContainer 配置文件，测试跑完会留在机器上。

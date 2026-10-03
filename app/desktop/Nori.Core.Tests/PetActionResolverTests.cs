@@ -14,7 +14,8 @@ public sealed class PetActionResolverTests
 	[InlineData("excited", "04_WakuWaku")]
 	[InlineData("sleep", "sleep_Loop")]
 	[InlineData("01_Idle_Loop", "01_Idle_Loop")]
-	public void NaturalMotionNamesResolve(string requested, string expected) =>
+	[InlineData("wave", null)]
+	public void NaturalMotionNamesResolve(string requested, string? expected) =>
 		Assert.Equal(expected, PetActionResolver.ResolveMotion(Motions, requested));
 
 	[Theory]
@@ -25,8 +26,4 @@ public sealed class PetActionResolverTests
 	public void NaturalExpressionNamesResolve(string requested, string expected) =>
 		Assert.Equal(expected, PetActionResolver.ResolveExpression(
 			["00_Default", "03_Angry", "07_Smile", "13_Happy", "14_Surprised"], requested));
-
-	[Fact]
-	public void UnknownNameReturnsNull() =>
-		Assert.Null(PetActionResolver.ResolveMotion(Motions, "wave"));
 }

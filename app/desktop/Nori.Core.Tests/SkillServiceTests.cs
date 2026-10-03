@@ -11,8 +11,6 @@ namespace Nori.Core.Tests;
 [Collection("HttpClient.DefaultProxy")]
 public sealed class SkillServiceTests : IDisposable
 {
-	private static readonly SemaphoreSlim RemoteRequestGate = new(1, 1);
-
 	private readonly TempDatabase _tempDatabase = new("nori-skills");
 	private readonly NoriDatabase _database;
 	private readonly ConfigStore _config;
@@ -167,12 +165,41 @@ public sealed class SkillServiceTests : IDisposable
 		Assert.DoesNotContain(marker, error.Message, StringComparison.Ordinal);
 	}
 
+	/// <summary>直接覆盖公开解析入口，保证 frontmatter 元数据与正文分开进入技能记录。</summary>
+	[Fact]
+	public void SKILL_md的frontmatter与正文分别进入元数据和指令()
+	{
+		string content = """
+			---
+			name: My Skill
+			description: 测试技能说明
+			version: 2.0.0
+			tags: a, b
+			---
+			指令正文第一段。
+			""";
+
+		SkillRecord skill = SkillService.ParseSkillMarkdown(content, "https://example.com/SKILL.md");
+
+		Assert.Equal("my-skill", skill.Id);
+		Assert.Equal("My Skill", skill.Name);
+		Assert.Equal("测试技能说明", skill.Description);
+		Assert.Equal("2.0.0", skill.Version);
+		Assert.Equal(["a", "b"], skill.Tags);
+		Assert.Equal("指令正文第一段。", skill.Instructions);
+		Assert.False(skill.Enabled);
+		Assert.Equal("url", skill.Source);
+		Assert.Equal("https://example.com/SKILL.md", skill.Url);
+	}
+
 	private static HttpClient CreateHttpClient(string body, HttpStatusCode status = HttpStatusCode.OK) =>
-		new(new FixedResponseHandler(body, status));
+		new(new HttpTestHandler(_ => new HttpResponseMessage(status)
+		{
+			Content = new StringContent(body, Encoding.UTF8, "text/plain"),
+		}));
 
 	private static async Task<T> WithoutSystemProxy<T>(Func<Task<T>> action)
 	{
-		await RemoteRequestGate.WaitAsync();
 		IWebProxy originalProxy = HttpClient.DefaultProxy;
 		HttpClient.DefaultProxy = new WebProxy {BypassList = [".*"]};
 		try
@@ -182,7 +209,6 @@ public sealed class SkillServiceTests : IDisposable
 		finally
 		{
 			HttpClient.DefaultProxy = originalProxy;
-			RemoteRequestGate.Release();
 		}
 	}
 
@@ -191,19 +217,5 @@ public sealed class SkillServiceTests : IDisposable
 		_database.Dispose();
 		_tempDatabase.Dispose();
 		GC.SuppressFinalize(this);
-	}
-
-	private sealed class FixedResponseHandler(string body, HttpStatusCode status) : HttpMessageHandler
-	{
-		protected override Task<HttpResponseMessage> SendAsync(
-			HttpRequestMessage request,
-			CancellationToken cancellationToken)
-		{
-			HttpResponseMessage response = new(status)
-			{
-				Content = new StringContent(body, Encoding.UTF8, "text/plain"),
-			};
-			return Task.FromResult(response);
-		}
 	}
 }

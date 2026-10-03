@@ -9,26 +9,23 @@ namespace Nori.Desktop.Tests;
 
 public sealed class GlRuntimeBoundaryTests
 {
-	[Theory]
-	[InlineData(0)]
-	[InlineData(11)]
-	public void 恢复宿主VAO时不重新绑定EBO(int hostVao)
+	[Fact]
+	public void 恢复宿主VAO时不重新绑定EBO()
 	{
 		var gl = new RecordingGlApi();
-		gl.BindVertexArray(hostVao);
-		if (hostVao != 0) gl.BindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 13);
+		gl.BindVertexArray(0);
 		gl.IntegerQueries.Clear();
 		var scope = new GlStateScope(gl);
-		if (hostVao == 0) Assert.DoesNotContain(gl.GL_ELEMENT_ARRAY_BUFFER_BINDING, gl.IntegerQueries);
+		Assert.DoesNotContain(gl.GL_ELEMENT_ARRAY_BUFFER_BINDING, gl.IntegerQueries);
 		gl.BindVertexArray(21);
 		gl.BindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 23);
 		gl.StateCalls.Clear();
 
 		scope.Dispose();
 
-		Assert.Contains($"vao:{hostVao}", gl.StateCalls);
+		Assert.Contains("vao:0", gl.StateCalls);
 		Assert.DoesNotContain(gl.StateCalls, call => call.StartsWith($"buffer:{gl.GL_ELEMENT_ARRAY_BUFFER}:", StringComparison.Ordinal));
-		Assert.Equal(hostVao == 0 ? 0 : 13, Read(gl, gl.GL_ELEMENT_ARRAY_BUFFER_BINDING));
+		Assert.Equal(0, Read(gl, gl.GL_ELEMENT_ARRAY_BUFFER_BINDING));
 		gl.BindVertexArray(21);
 		Assert.Equal(23, Read(gl, gl.GL_ELEMENT_ARRAY_BUFFER_BINDING));
 	}

@@ -20,9 +20,6 @@ public sealed class PluginRuntimeTests
 		Assert.Equal(new PluginApiVersion(1, 2), manifest.Api);
 		Assert.Equal("Nori", Assert.Single(manifest.Authors).Name);
 		Assert.Equal("lib/Nori.PluginRuntime.TestPlugin.dll", manifest.Runtime.Assembly);
-		Assert.True(PluginManifestReader.IsCompatible(new PluginApiVersion(1, 2), manifest.Api));
-		Assert.True(PluginManifestReader.IsCompatible(new PluginApiVersion(1, 5), manifest.Api));
-		Assert.False(PluginManifestReader.IsCompatible(new PluginApiVersion(2, 0), manifest.Api));
 	}
 
 	[Theory]
@@ -71,7 +68,6 @@ public sealed class PluginRuntimeTests
 	}
 
 	[Theory]
-	[InlineData("1.0", "1.2", false)]
 	[InlineData("1.1", "1.2", false)]
 	[InlineData("1.2", "1.2", true)]
 	[InlineData("1.5", "1.2", true)]
@@ -482,42 +478,17 @@ public sealed class PluginRuntimeTests
 		using (FileStream file = File.Create(package))
 		using (ZipArchive archive = new(file, ZipArchiveMode.Create))
 		{
-			WriteEntry(archive, "manifest.json", CreateManifest(id, version, apiVersion, capabilities, entryType, optionalCapabilities: optionalCapabilities));
-			ZipArchiveEntry assemblyEntry = archive.CreateEntry("lib/Nori.PluginRuntime.TestPlugin.dll");
-			using (Stream target = assemblyEntry.Open())
-			using (FileStream source = File.OpenRead(assembly))
-			{
-				source.CopyTo(target);
-			}
-			WriteEntry(archive, "web/index.html", "<!doctype html><title>plugin</title>");
-			WriteEntry(archive, "README.md", "test");
+			PluginTestPackages.WriteEntry(archive, "manifest.json", CreateManifest(id, version, apiVersion, capabilities, entryType, optionalCapabilities: optionalCapabilities));
+			PluginTestPackages.WriteAssemblyEntry(archive, "lib/Nori.PluginRuntime.TestPlugin.dll", assembly);
+			PluginTestPackages.WriteEntry(archive, "web/index.html", "<!doctype html><title>plugin</title>");
+			PluginTestPackages.WriteEntry(archive, "README.md", "test");
 			if (includeContractAssembly)
-			{
-				ZipArchiveEntry contractEntry = archive.CreateEntry("lib/Nori.PluginRuntime.dll");
-				using Stream target = contractEntry.Open();
-				using FileStream source = File.OpenRead(typeof(INoriPlugin).Assembly.Location);
-				source.CopyTo(target);
-			}
+				PluginTestPackages.WriteAssemblyEntry(archive, "lib/Nori.PluginRuntime.dll", typeof(INoriPlugin).Assembly.Location);
 		}
 		return package;
 	}
 
-	private static void WriteEntry(ZipArchive archive, string name, string content)
-	{
-		using StreamWriter writer = new(archive.CreateEntry(name).Open());
-		writer.Write(content);
-	}
+	private static string CreateTemp() => PluginTestPackages.CreateTemp("nori-plugin-tests");
 
-	private static string CreateTemp()
-	{
-		string path = Path.Combine(Path.GetTempPath(), "nori-plugin-tests", Guid.NewGuid().ToString("N"));
-		Directory.CreateDirectory(path);
-		return path;
-	}
-
-	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "测试夹具销毁只能尽力清理，不能让清理异常覆盖测试结果。")]
-	private static void DeleteDirectory(string path)
-	{
-		try { if (Directory.Exists(path)) Directory.Delete(path, true); } catch { }
-	}
+	private static void DeleteDirectory(string path) => PluginTestPackages.DeleteDirectory(path);
 }

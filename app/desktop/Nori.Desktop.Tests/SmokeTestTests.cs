@@ -172,44 +172,27 @@ public sealed class SmokeTestTests
 		}
 	}
 
-	[Fact]
-	public void SmokeModeRejectsNonEmptyProfileWithoutDeletingIt()
+	[Theory]
+	[InlineData("sentinel.txt", "keep")]
+	[InlineData("data/core/database/" + AppPaths.DatabaseFileName, "not a test database")]
+	public void SmokeModeRejectsNonEmptyProfileWithoutDeletingIt(string relativeFile, string content)
 	{
 		string profile = Path.Combine(Path.GetTempPath(), $"nori-smoke-nonempty-{Guid.NewGuid():N}");
-		Directory.CreateDirectory(profile);
-		string sentinel = Path.Combine(profile, "sentinel.txt");
-		File.WriteAllText(sentinel, "keep");
 		try
 		{
-			bool parsed = SmokeTestOptions.TryParse(["--smoke-test", "first-run", "--profile", profile], out SmokeTestOptions? options, out string error);
-			Assert.False(parsed);
-			Assert.Null(options);
-			Assert.Contains("完全为空", error, StringComparison.Ordinal);
-			Assert.Equal("keep", File.ReadAllText(sentinel));
-		}
-		finally { Directory.Delete(profile, true); }
-	}
-
-	[Fact]
-	public void SmokeModeRejectsExistingDatabase()
-	{
-		string profile = Path.Combine(Path.GetTempPath(), $"nori-smoke-test-{Guid.NewGuid():N}");
-		string dataDir = Path.Combine(profile, "data");
-		Directory.CreateDirectory(dataDir);
-		string databaseDirectory = Path.Combine(dataDir, "core", "database");
-		Directory.CreateDirectory(databaseDirectory);
-		File.WriteAllText(Path.Combine(databaseDirectory, AppPaths.DatabaseFileName), "not a test database");
-		try
-		{
+			string file = Path.Combine(profile, relativeFile);
+			Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+			File.WriteAllText(file, content);
 			bool parsed = SmokeTestOptions.TryParse(["--smoke-test", "first-run", "--profile", profile], out SmokeTestOptions? options, out string error);
 
 			Assert.False(parsed);
 			Assert.Null(options);
 			Assert.Contains("完全为空", error, StringComparison.Ordinal);
+			Assert.Equal(content, File.ReadAllText(file));
 		}
 		finally
 		{
-			Directory.Delete(profile, true);
+			if (Directory.Exists(profile)) Directory.Delete(profile, true);
 		}
 	}
 }

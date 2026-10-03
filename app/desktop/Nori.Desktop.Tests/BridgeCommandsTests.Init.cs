@@ -50,20 +50,16 @@ public partial class BridgeCommandsTests
 	{
 		BridgeCommands commands = CreateCommands();
 
-		string hidden = JsonSerializer.Serialize(
-			_runtime.BuildSnapshot());
-		using JsonDocument hiddenDocument = JsonDocument.Parse(hidden);
-		Assert.False(hiddenDocument.RootElement.GetProperty("pet").GetProperty("visible").GetBoolean());
-		Assert.False(hiddenDocument.RootElement.GetProperty("general").GetProperty("sidebarCollapsed").GetBoolean());
+		JsonElement hidden = JsonSerializer.SerializeToElement(_runtime.BuildSnapshot());
+		Assert.False(hidden.GetProperty("pet").GetProperty("visible").GetBoolean());
+		Assert.False(hidden.GetProperty("general").GetProperty("sidebarCollapsed").GetBoolean());
 
 		_windows.Show(WindowLabels.Pet);
 		await commands.InvokeAsync(new FakeBridgeSource("main"), "settings_update_general", Args(new {sidebarCollapsed = true}));
 
-		string shown = JsonSerializer.Serialize(
-			_runtime.BuildSnapshot());
-		using JsonDocument shownDocument = JsonDocument.Parse(shown);
-		Assert.True(shownDocument.RootElement.GetProperty("pet").GetProperty("visible").GetBoolean());
-		Assert.True(shownDocument.RootElement.GetProperty("general").GetProperty("sidebarCollapsed").GetBoolean());
+		JsonElement shown = JsonSerializer.SerializeToElement(_runtime.BuildSnapshot());
+		Assert.True(shown.GetProperty("pet").GetProperty("visible").GetBoolean());
+		Assert.True(shown.GetProperty("general").GetProperty("sidebarCollapsed").GetBoolean());
 	}
 
 	[Fact]
@@ -71,20 +67,16 @@ public partial class BridgeCommandsTests
 	{
 		_config.SetTelemetryConsent(TelemetryConsent.Granted);
 		BridgeCommands commands = CreateCommands();
-		string before = JsonSerializer.Serialize(
-			_runtime.BuildSnapshot());
-		using JsonDocument beforeDocument = JsonDocument.Parse(before);
-		JsonElement beforeTelemetry = beforeDocument.RootElement.GetProperty("telemetry");
+		JsonElement before = JsonSerializer.SerializeToElement(_runtime.BuildSnapshot());
+		JsonElement beforeTelemetry = before.GetProperty("telemetry");
 		Assert.True(beforeTelemetry.GetProperty("enabled").GetBoolean());
 		Assert.False(beforeTelemetry.GetProperty("available").GetBoolean());
 		Assert.Equal("granted", beforeTelemetry.GetProperty("consent").GetString());
 
 		await commands.InvokeAsync(new FakeBridgeSource("main"), "settings_update_general", Args(new {telemetryEnabled = false}));
 		Assert.Equal(TelemetryConsent.Denied, _config.GetTelemetryConsent());
-		string after = JsonSerializer.Serialize(
-			_runtime.BuildSnapshot());
-		using JsonDocument afterDocument = JsonDocument.Parse(after);
-		JsonElement afterTelemetry = afterDocument.RootElement.GetProperty("telemetry");
+		JsonElement after = JsonSerializer.SerializeToElement(_runtime.BuildSnapshot());
+		JsonElement afterTelemetry = after.GetProperty("telemetry");
 		Assert.False(afterTelemetry.GetProperty("enabled").GetBoolean());
 		Assert.False(afterTelemetry.GetProperty("available").GetBoolean());
 		Assert.Equal("denied", afterTelemetry.GetProperty("consent").GetString());
@@ -118,9 +110,8 @@ public partial class BridgeCommandsTests
 	[Fact]
 	public void Snapshot_ContainsUpdaterState()
 	{
-		string json = JsonSerializer.Serialize(_runtime.BuildSnapshot());
-		using JsonDocument doc = JsonDocument.Parse(json);
-		Assert.True(doc.RootElement.TryGetProperty("updater", out JsonElement updaterEl));
+		JsonElement snapshot = JsonSerializer.SerializeToElement(_runtime.BuildSnapshot());
+		Assert.True(snapshot.TryGetProperty("updater", out JsonElement updaterEl));
 		Assert.Equal("idle", updaterEl.GetProperty("state").GetString());
 	}
 	[Fact]

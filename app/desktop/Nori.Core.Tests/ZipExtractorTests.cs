@@ -22,6 +22,7 @@ public class ZipExtractorTests
 	[InlineData("//server/share/x", "UNC")]
 	[InlineData("C:/Windows/win.ini", "Windows 绝对路径")]
 	[InlineData("a/../../etc/passwd", "路径穿越")]
+	[InlineData("a/\u0001b.png", "非法字符")]
 	public void 非法路径被拒绝(string raw, string reason)
 	{
 		ResourceException error = Assert.Throws<ResourceException>(() => ZipExtractor.SanitizePath(raw));
@@ -29,8 +30,24 @@ public class ZipExtractorTests
 	}
 
 	[Fact]
-	public void 控制字符被拒绝() =>
-		Assert.Throws<ResourceException>(() => ZipExtractor.SanitizePath("a/\u0001b.png"));
+	public void 目录条目只按空名称判断()
+	{
+		using MemoryStream stream = new();
+		using (ZipArchive archive = new(stream, ZipArchiveMode.Create, true))
+		{
+			archive.CreateEntry("nested/");
+			archive.CreateEntry("nested/file.txt");
+			archive.CreateEntry("folder");
+		}
+		stream.Position = 0;
+		using ZipArchive read = new(stream, ZipArchiveMode.Read);
+		ZipArchiveEntry directory = read.Entries.Single(entry => entry.FullName == "nested/");
+		ZipArchiveEntry file = read.Entries.Single(entry => entry.FullName == "nested/file.txt");
+		ZipArchiveEntry namedLikeFolder = read.Entries.Single(entry => entry.FullName == "folder");
+		Assert.True(ZipExtractor.IsDirectoryEntry(directory));
+		Assert.False(ZipExtractor.IsDirectoryEntry(file));
+		Assert.False(ZipExtractor.IsDirectoryEntry(namedLikeFolder));
+	}
 
 	[Theory]
 	// 所有条目共享同一个顶层目录 → 可以剥

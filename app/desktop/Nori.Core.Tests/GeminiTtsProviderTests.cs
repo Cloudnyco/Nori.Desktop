@@ -47,14 +47,6 @@ public class GeminiTtsProviderTests : IDisposable
         Assert.Equal("Kore", body["generationConfig"]?["speechConfig"]?["voiceConfig"]?["prebuiltVoiceConfig"]?["voiceName"]?.GetValue<string>());
     }
 
-    [Fact]
-    public void VoiceServiceCreatesGeminiProvider()
-    {
-        using HttpClient client = new(new HttpTestHandler(_ => Success([0, 0])));
-        using VoiceService service = new(client, _config, null, () => null);
-        Assert.IsType<GeminiTtsProvider>(service.CreateProvider("gemini"));
-    }
-
     public void Dispose()
     {
         _database.Dispose();

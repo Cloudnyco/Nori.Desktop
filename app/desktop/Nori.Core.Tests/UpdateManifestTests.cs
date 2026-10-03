@@ -50,35 +50,13 @@ public sealed class UpdateManifestTests
 	}
 
 	[Theory]
-	[InlineData("http://github.com/file.zip")] // 非 HTTPS 拒绝样本
-	[InlineData("ftp://github.com/file.zip")]
-	[InlineData("not-a-url")]
-	public void FromJson_NonHttpsUrl_Throws(string invalidUrl)
-	{
-		string json = $$"""
-		{
-			"schema_version": 1,
-			"product_version": "1.0.0",
-			"numeric_version": "1.0.0",
-			"revision": 0,
-			"rid": "win-x64",
-			"release_tag": "v1.0.0",
-			"package_name": "nori.zip",
-			"download_url": "{{invalidUrl}}",
-			"sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			"size_bytes": 100,
-			"entrypoint": "Nori.Desktop.exe"
-		}
-		""";
-
-		Assert.Throws<InvalidOperationException>(() => UpdateManifest.FromJson(json));
-	}
-
-	[Theory]
-	[InlineData("https://evil.com/nori.zip")]
-	[InlineData("https://attacker.githubusercontent.com/nori.zip")]
-	[InlineData("https://raw.githubusercontent.com/nori.zip")]
-	public void FromJson_DisallowedHost_Throws(string url)
+	[InlineData("http://github.com/file.zip", "HTTPS URL")] // 非 HTTPS 拒绝样本
+	[InlineData("ftp://github.com/file.zip", "HTTPS URL")]
+	[InlineData("not-a-url", "HTTPS URL")]
+	[InlineData("https://evil.com/nori.zip", "白名单")]
+	[InlineData("https://attacker.githubusercontent.com/nori.zip", "白名单")]
+	[InlineData("https://raw.githubusercontent.com/nori.zip", "白名单")]
+	public void FromJson_不安全下载地址被拒绝(string url, string expectedErrorFragment)
 	{
 		string json = $$"""
 		{
@@ -97,7 +75,7 @@ public sealed class UpdateManifestTests
 		""";
 
 		var ex = Assert.Throws<InvalidOperationException>(() => UpdateManifest.FromJson(json));
-		Assert.Contains("白名单", ex.Message);
+		Assert.Contains(expectedErrorFragment, ex.Message);
 	}
 
 	[Theory]

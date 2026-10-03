@@ -13,6 +13,8 @@ public class VoiceTextSanitizerTests
 	[InlineData("啊咧(>_<)", "啊咧")]
 	[InlineData("随便(・_・)", "随便")]
 	[InlineData("嗯嗯(｡･ω･｡)", "嗯嗯")]
+	[InlineData("今天(^_^)天气(≧▽≦)不错(๑˃̵ᴗ˂̵)", "今天天气不错")]
+	[InlineData("(๑•̀ㅂ•́)و✧", "")]
 	public void 括号颜文字被移除(string input, string expected)
 	{
 		Assert.Equal(expected, VoiceTextSanitizer.StripKaomoji(input));
@@ -40,18 +42,6 @@ public class VoiceTextSanitizerTests
 	}
 
 	[Fact]
-	public void 多个颜文字连排全部移除()
-	{
-		Assert.Equal("今天天气不错", VoiceTextSanitizer.StripKaomoji("今天(^_^)天气(≧▽≦)不错(๑˃̵ᴗ˂̵)"));
-	}
-
-	[Fact]
-	public void 全颜文字文本清洗后为空()
-	{
-		Assert.Equal("", VoiceTextSanitizer.StripKaomoji("(๑•̀ㅂ•́)و✧"));
-	}
-
-	[Fact]
 	public void 无颜文字文本原样返回()
 	{
 		const string input = "今天天气真好呀，我们一起去散步吧？";
@@ -69,21 +59,12 @@ public class VoiceTextSanitizerTests
 	[InlineData("今天好开心😊", "今天好开心")]
 	[InlineData("谢谢啦❤️", "谢谢啦")]
 	[InlineData("超棒！🎉", "超棒！")]
-	[InlineData("我是狼🐺", "我是狼")]
-	[InlineData("晚安🌙", "晚安")]
-	[InlineData("加油💪", "加油")]
 	[InlineData("震惊🤯", "震惊")]
-	[InlineData("欢迎👋", "欢迎")]
-	public void 单字符emoji被移除(string input, string expected)
-	{
-		Assert.Equal(expected, VoiceTextSanitizer.StripKaomoji(input));
-	}
-
-	[Theory]
 	[InlineData("庆祝🎉🎊", "庆祝")]
 	[InlineData("爱你❤️😘", "爱你")]
 	[InlineData("太棒了👍👍", "太棒了")]
-	public void 多个emoji连排全部移除(string input, string expected)
+	[InlineData("😊😂❤️", "")]
+	public void emoji被移除(string input, string expected)
 	{
 		Assert.Equal(expected, VoiceTextSanitizer.StripKaomoji(input));
 	}
@@ -92,12 +73,6 @@ public class VoiceTextSanitizerTests
 	public void emoji与颜文字混合全部移除()
 	{
 		Assert.Equal("今天真不错", VoiceTextSanitizer.StripKaomoji("今天(^_^)真不错😊✨"));
-	}
-
-	[Fact]
-	public void 纯emoji文本清洗后为空()
-	{
-		Assert.Equal("", VoiceTextSanitizer.StripKaomoji("😊😂❤️"));
 	}
 
 	[Fact]
