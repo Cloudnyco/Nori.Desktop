@@ -42,6 +42,7 @@ internal sealed class PluginStartupRecoveryStore
 		}
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "启动恢复临时文件清理失败不能覆盖恢复结果。")]
 	private void Persist()
 	{
 		string temporary = _path + ".tmp-" + Guid.NewGuid().ToString("N");

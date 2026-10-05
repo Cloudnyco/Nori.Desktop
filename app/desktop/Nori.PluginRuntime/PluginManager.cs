@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 namespace Nori.PluginRuntime;
 
@@ -26,21 +27,13 @@ internal sealed record PluginRuntimeOptions
 	public PluginVersion HostVersion { get; init; } = new(1, 0, 0);
 	public bool DevelopmentHost { get; init; }
 	public bool SafeMode { get; init; }
-	public IReadOnlyCollection<string> KnownCapabilityIds { get; init; } =
-	[
-		PluginCapabilityIds.WebView,
-	];
+	public IReadOnlyCollection<string> KnownCapabilityIds { get; init; } = [];
 	public Func<PluginDescriptor, CancellationToken, IEnumerable<IPluginCapability>>? CapabilityFactory { get; init; }
-	public Func<string, string, Uri>? AssetUriFactory { get; init; }
-	public Func<string, CancellationToken, Task>? ClosePluginWindowsAsync { get; init; }
 	public Action<PluginException>? OnError { get; init; }
 	public Action<PluginDescriptor, string, Exception?>? OnLog { get; init; }
 	public TimeSpan ActivationTimeout { get; init; } = TimeSpan.FromSeconds(15);
 	public TimeSpan DeactivationTimeout { get; init; } = TimeSpan.FromSeconds(5);
 }
-
-/// <summary>活跃插件聊天卡片部件 (约定 web/card.html)。</summary>
-public sealed record PluginChatWidget(string PluginId, string Title, Uri EntryUrl);
 
 /// <summary>插件当前状态快照。只包含可安全暴露给宿主 UI 的运行时信息。</summary>
 internal sealed record PluginInfo(
@@ -63,7 +56,7 @@ internal sealed class PluginManager : IAsyncDisposable
 	private readonly PluginRuntimeOptions _options;
 	private readonly PluginPackageInstaller _installer;
 	private readonly PluginLoader _loader = new();
-	private readonly Dictionary<string, PluginHandle> _plugins = new(StringComparer.Ordinal);
+	private readonly ConcurrentDictionary<string, PluginHandle> _plugins = new(StringComparer.Ordinal);
 	private readonly CancellationTokenSource _shutdownSource = new();
 	private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
 	private readonly PluginStartupRecoveryStore _startupRecovery;
@@ -170,7 +163,7 @@ internal sealed class PluginManager : IAsyncDisposable
 		foreach (string stale in _plugins.Keys.Where(id => !seen.Contains(id)).ToArray())
 		{
 			PluginHandle handle = _plugins[stale];
-			if (handle.Instance is null && handle.LoadContext is null) _plugins.Remove(stale);
+			if (handle.Instance is null && handle.LoadContext is null) _plugins.TryRemove(stale, out _);
 		}
 		ValidateDependencies();
 		return Plugins;
@@ -370,7 +363,7 @@ internal sealed class PluginManager : IAsyncDisposable
 			_stateStore.SetEnabled(pluginId, false);
 
 			try { await DeactivateCoreAsync(pluginId, cancellationToken, disabled: true).ConfigureAwait(false); }
-			catch (PluginException) { /* cleanup still decides whether uninstall can continue */ }
+			catch (PluginException) { /* 由后续清理逻辑决定卸载是否可继续 */ }
 
 			if (!UnloadContext(handle))
 			{
@@ -385,7 +378,7 @@ internal sealed class PluginManager : IAsyncDisposable
 			{
 				_installer.Uninstall(pluginId);
 				if (deleteData) DeletePluginData(pluginId);
-				_plugins.Remove(pluginId);
+				_plugins.TryRemove(pluginId, out _);
 				_startupRecovery.Clear(pluginId);
 				_stateStore.Remove(pluginId);
 				return new PluginUninstallResult(true, false, null);
@@ -420,23 +413,6 @@ internal sealed class PluginManager : IAsyncDisposable
 			.SelectMany(handle => handle.Contributions.GetAll<T>())
 			.ToArray();
 
-	/// <summary>
-	/// 返回活跃插件的聊天卡片部件: 约定为插件包内存在 web/card.html,
-	/// 标题取插件名, 入口为宿主资源服务的同源 URL。由宿主聊天界面的通用卡片槽挂载。
-	/// </summary>
-	public IReadOnlyList<PluginChatWidget> GetChatWidgets()
-	{
-		List<PluginChatWidget> widgets = [];
-		foreach (PluginHandle handle in _plugins.Values.Where(handle => handle.State == PluginLifecycleState.Active))
-		{
-			if (!File.Exists(Path.Combine(handle.Directory, "web", "card.html"))) continue;
-			Uri entry = _options.AssetUriFactory?.Invoke(handle.Manifest.Id, "web/card.html")
-				?? new Uri(Path.Combine(handle.Directory, "web", "card.html"), UriKind.Absolute);
-			widgets.Add(new PluginChatWidget(handle.Manifest.Id, handle.Manifest.Name, entry));
-		}
-		return widgets;
-	}
-
 	/// <summary>返回当前活动插件提供的指定类型贡献及其来源插件描述。</summary>
 	public IReadOnlyList<(PluginDescriptor Plugin, T Contribution)> GetContributionsWithSource<T>()
 		where T : class, IPluginContribution =>
@@ -452,7 +428,7 @@ internal sealed class PluginManager : IAsyncDisposable
 			}, Contribution: contribution)))
 			.ToArray();
 
-	/// <summary>返回当前插件的安装目录，供 AssetServer 做公开资源映射。</summary>
+	/// <summary>返回当前插件的安装目录，供包内公开资源读取。</summary>
 	public string? ResolveAssetRoot(string pluginId) =>
 		_plugins.TryGetValue(pluginId, out PluginHandle? handle)
 			? handle.Directory
@@ -529,6 +505,7 @@ internal sealed class PluginManager : IAsyncDisposable
 		}
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "插件停止阶段必须继续撤销其余资源，不能让单个插件异常阻断卸载。")]
 	private async Task DeactivateCoreAsync(string pluginId, CancellationToken cancellationToken, bool disabled)
 	{
 		if (!_plugins.TryGetValue(pluginId, out PluginHandle? handle)) return;
@@ -548,19 +525,6 @@ internal sealed class PluginManager : IAsyncDisposable
 		try { handle.Context?.Revoke(); } catch { }
 
 		PluginException? failure = null;
-		if (_options.ClosePluginWindowsAsync is not null)
-		{
-			try
-			{
-				await _options.ClosePluginWindowsAsync(pluginId, cancellationToken).WaitAsync(_options.DeactivationTimeout, cancellationToken).ConfigureAwait(false);
-			}
-			catch (Exception exception)
-			{
-				failure = new PluginException(PluginErrorCodes.DeactivationFailed, "插件窗口关闭失败", exception);
-				Report(failure);
-			}
-		}
-
 		try
 		{
 			await handle.Instance.DeactivateAsync(cancellationToken).AsTask().WaitAsync(_options.DeactivationTimeout, cancellationToken).ConfigureAwait(false);
@@ -612,7 +576,7 @@ internal sealed class PluginManager : IAsyncDisposable
 			Plugin = descriptor,
 			Logger = new PluginLogger((message, exception) => _options.OnLog?.Invoke(descriptor, message, exception)),
 			Storage = new JsonPluginStorage(Path.Combine(_options.DataDirectory, handle.Manifest.Id)),
-			Assets = new PluginAssetProvider(handle.Directory, path => _options.AssetUriFactory?.Invoke(handle.Manifest.Id, path) ?? new Uri(Path.Combine(handle.Directory, path.Replace('/', Path.DirectorySeparatorChar)), UriKind.Absolute)),
+			Assets = new PluginAssetProvider(handle.Directory),
 			Contributions = handle.Contributions,
 			Capabilities = capabilityRegistry,
 			CapabilityRegistry = capabilityRegistry,
@@ -647,6 +611,7 @@ internal sealed class PluginManager : IAsyncDisposable
 		Report(exception, handle);
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S1854", Justification = "清除局部加载上下文引用以便弱引用卸载检查，避免 GC 保留插件上下文。")]
 	private bool UnloadContext(PluginHandle handle)
 	{
 		PluginLoadContext? context = handle.LoadContext;
@@ -835,7 +800,7 @@ internal sealed class PluginManager : IAsyncDisposable
 				if (deleteData) DeletePluginData(pluginId);
 				_startupRecovery.Clear(pluginId);
 				_stateStore.Remove(pluginId);
-				_plugins.Remove(pluginId);
+				_plugins.TryRemove(pluginId, out _);
 			}
 			catch (PluginException exception)
 			{
@@ -914,6 +879,7 @@ internal sealed class PluginManager : IAsyncDisposable
 		return Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)).Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)), comparison);
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "诊断回调失败不能阻断主流程或覆盖原始插件错误。")]
 	private void Report(PluginException exception, PluginHandle? handle = null)
 	{
 		try
@@ -925,7 +891,7 @@ internal sealed class PluginManager : IAsyncDisposable
 				$"{_options.HostApiVersion.Major}.{_options.HostApiVersion.Minor}",
 				_options.HostVersion.ToString()));
 		}
-		catch { }
+		catch { /* 插件窗口关闭失败不应阻断版本提示。 */ }
 	}
 
 	private void EnsureNotDisposed()

@@ -24,20 +24,20 @@ on:
         default: false
         type: boolean
       run_extra_checks:
-        description: "运行 TODO/FIXME 门禁和额外 Windows 冒烟测试"
+        description: "运行额外 Windows 冒烟测试"
         required: false
         default: false
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-# 核心门禁仅保留版本校验、编译/单测、基础启动冒烟和标签冲突检查。
-# Sentry、TODO/FIXME 与额外 Windows 冒烟按配置或输入启用，不再无条件阻塞发布。
+# 核心门禁包括版本校验、前后端质量检查、编译/单测、基础启动冒烟和标签冲突检查。
+# Sentry 与额外 Windows 冒烟按配置或输入启用。
 # 分发许可确认改为仓库级 Variables，一次设置后无需每次手动勾选。
 jobs:
   validate:
@@ -51,7 +51,6 @@ jobs:
     env:
       # 法律/分发确认仍保留，但改成仓库级一次性 Variables，避免每次发布重复勾选。
       NORI_AVALONIA_WEBVIEW_DISTRIBUTION_LICENSE_CONFIRMED: ${{ vars.NORI_AVALONIA_WEBVIEW_DISTRIBUTION_LICENSE_CONFIRMED || 'false' }}
-      NORI_CUBISM_CORE_DISTRIBUTION_LICENSE_CONFIRMED: ${{ vars.NORI_CUBISM_CORE_DISTRIBUTION_LICENSE_CONFIRMED || 'false' }}
     steps:
       - name: 检查仓库级分发许可确认
         shell: bash
@@ -60,12 +59,8 @@ jobs:
             echo "请先在 Repository Variables 中将 NORI_AVALONIA_WEBVIEW_DISTRIBUTION_LICENSE_CONFIRMED 设为 true。" >&2
             exit 1
           fi
-          if [ "$NORI_CUBISM_CORE_DISTRIBUTION_LICENSE_CONFIRMED" != "true" ]; then
-            echo "请先在 Repository Variables 中将 NORI_CUBISM_CORE_DISTRIBUTION_LICENSE_CONFIRMED 设为 true。" >&2
-            exit 1
-          fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
@@ -148,7 +143,7 @@ jobs:
           echo "程序 informational version: $informational (标签将在所有测试通过后创建)"
 
   preflight:
-    name: 前端与发布结构门禁
+    name: 主题令牌与发布结构门禁
     needs: validate
     runs-on: ubuntu-latest
     defaults:
@@ -156,72 +151,33 @@ jobs:
         working-directory: app/desktop
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
-      VITE_SENTRY_DSN_WEB: ${{ secrets.SENTRY_DSN_WEB }}
-      NORI_SENTRY_RELEASE: ${{ needs.validate.outputs.sentry_release }}
-      NORI_PRODUCT_VERSION: ${{ needs.validate.outputs.version }}
-      NORI_PRODUCT_INFORMATIONAL_VERSION: ${{ needs.validate.outputs.informational }}
-      NORI_COMMIT_SHA: ${{ github.sha }}
-      NORI_SENTRY_ENVIRONMENT: production
-      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-      SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
-      SENTRY_PROJECT_WEB: ${{ secrets.SENTRY_PROJECT_WEB }}
-      SENTRY_URL: ${{ secrets.SENTRY_URL || 'https://sentry.io' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.sha }}
-      - id: sentry_web
-        name: 检测 Web Sentry 配置
-        shell: bash
-        run: |
-          enabled=true
-          for name in VITE_SENTRY_DSN_WEB SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT_WEB; do
-            if [ -z "${!name}" ]; then
-              echo "未配置 $name；本次发布不强制 Web Sentry 上传。"
-              enabled=false
-            fi
-          done
-          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
         with:
           version: 11
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: app/desktop/pnpm-lock.yaml
-      - name: 安装前端依赖
+      - name: 安装主题检查依赖
         run: pnpm install --frozen-lockfile
-      - name: 一方 TODO/FIXME 门禁（可选）
-        if: inputs.run_extra_checks
+      - name: 主题令牌门 · 静态检查
+        run: pnpm lint
+      - name: 一方 TODO/FIXME 门禁
         run: pnpm check:todo
-      - name: 前端门 · 类型检查与构建
+      - name: 主题令牌门 · 类型检查
         run: pnpm build
-      - name: 前端门 · 单元测试
-        run: pnpm test
+      - name: 主题令牌门 · 覆盖率
+        run: pnpm coverage
       - name: 发布结构 fixture 门
         run: node scripts/validate-publish-structure.test.mjs
       - name: 自动更新清单 fixture 门
         run: node scripts/generate-update-manifest.test.mjs
       # 后端构建与全量单测统一交给 native 三平台门禁，不在 Ubuntu 重复执行。
-      - name: 处理 source map
-        shell: bash
-        run: |
-          if [ "${{ steps.sentry_web.outputs.enabled }}" = "true" ]; then
-            if find dist -name '*.map' -print -quit | grep -q .; then
-              echo "Sentry 已启用，但 source map 仍留在 dist 中。" >&2
-              exit 1
-            fi
-          else
-            # 未启用 Sentry 时也不把 source map 放进公开发布产物。
-            find dist -name '*.map' -delete
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nori-dist-${{ needs.validate.outputs.version }}
-          path: app/desktop/dist
-          if-no-files-found: error
-          retention-days: 2
 
   native:
     name: ${{ matrix.name }} 编译与单测
@@ -257,23 +213,21 @@ jobs:
       SENTRY_PROJECT_NATIVE: ${{ secrets.SENTRY_PROJECT_NATIVE }}
       SENTRY_URL: ${{ secrets.SENTRY_URL || 'https://sentry.io' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.sha }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: nori-dist-${{ needs.validate.outputs.version }}
-          path: app/desktop/dist
       - name: 安装 Linux 原生编译依赖
         if: matrix.name == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-0 libgtk-3-0
-      - uses: actions/setup-dotnet@v4
+          alsa=libasound2
+          if apt-cache show libasound2t64 >/dev/null 2>&1; then alsa=libasound2t64; fi
+          sudo apt-get install -y libgtk-3-0 "$alsa"
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: "10.0.x"
       - name: 缓存 NuGet 全局包
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('app/desktop/**/*.csproj', 'app/desktop/Directory.Build.props', 'app/desktop/version.props', 'app/desktop/Nori.slnx') }}
@@ -292,7 +246,7 @@ jobs:
             if [ -z "${!name}" ]; then echo "未配置 $name；相关 Sentry 功能将跳过。"; missing=1; fi
           done
           if [ "$missing" -eq 0 ]; then echo "Native Sentry 配置完整。"; fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
       - name: Windows 发布目标还原
@@ -342,7 +296,7 @@ jobs:
 
       - name: 上传待发布 Windows 产物
         if: matrix.name == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nori-windows-release-${{ needs.validate.outputs.version }}
           path: |
@@ -364,7 +318,6 @@ jobs:
         if: matrix.name != 'windows'
         shell: bash
         run: |
-          test -f dist/index.html
           chmod +x publish.sh
           NORI_SKIP_FRONTEND=1 NORI_KEEP_SYMBOLS=1 ./publish.sh "${{ matrix.rid }}"
       - name: 上传 Linux/macOS Native Sentry 符号（可选）
@@ -421,7 +374,7 @@ jobs:
           echo "已生成 $archive 及 $rid 发布元数据"
       - name: 上传待发布 Linux/macOS 产物
         if: matrix.name != 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nori-${{ matrix.name }}-release-${{ needs.validate.outputs.version }}
           path: |
@@ -440,11 +393,13 @@ jobs:
     name: 所有测试通过后创建标签
     needs: [validate, preflight, native]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       tag: ${{ needs.validate.outputs.tag }}
       version: ${{ needs.validate.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -479,17 +434,17 @@ jobs:
       - name: 未配置 Sentry 时跳过
         if: env.SENTRY_AUTH_TOKEN == '' || env.SENTRY_ORG == '' || env.SENTRY_PROJECT_NATIVE == ''
         run: echo "Native Sentry 未完整配置，跳过 release finalize。"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         if: env.SENTRY_AUTH_TOKEN != '' && env.SENTRY_ORG != '' && env.SENTRY_PROJECT_NATIVE != ''
         with:
           ref: ${{ needs.create_tag.outputs.tag }}
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         if: env.SENTRY_AUTH_TOKEN != '' && env.SENTRY_ORG != '' && env.SENTRY_PROJECT_NATIVE != ''
         with:
           dotnet-version: "10.0.x"
       - name: 缓存 NuGet 全局包
         if: env.SENTRY_AUTH_TOKEN != '' && env.SENTRY_ORG != '' && env.SENTRY_PROJECT_NATIVE != ''
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('app/desktop/**/*.csproj', 'app/desktop/Directory.Build.props', 'app/desktop/version.props', 'app/desktop/Nori.slnx') }}
@@ -515,7 +470,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: "nori-*-release-${{ needs.validate.outputs.version }}"
           path: release-artifacts

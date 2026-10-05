@@ -235,6 +235,7 @@ internal sealed class JsonPluginStorage : IPluginStorage
 		}
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "临时文件清理失败不能覆盖已完成的插件状态写入。")]
 	private void Save()
 	{
 		string temporary = _path + ".tmp-" + Guid.NewGuid().ToString("N");
@@ -268,12 +269,10 @@ internal sealed class JsonPluginStorage : IPluginStorage
 internal sealed class PluginAssetProvider : IPluginAssets
 {
 	private readonly string _root;
-	private readonly Func<string, Uri>? _uriFactory;
 
-	public PluginAssetProvider(string root, Func<string, Uri>? uriFactory = null)
+	public PluginAssetProvider(string root)
 	{
 		_root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-		_uriFactory = uriFactory;
 	}
 
 	public Stream OpenRead(string relativePath)
@@ -285,7 +284,7 @@ internal sealed class PluginAssetProvider : IPluginAssets
 	public Uri GetUri(string relativePath)
 	{
 		string path = Resolve(relativePath) ?? throw new PluginException(PluginErrorCodes.AssetDenied, "插件资源路径不允许访问");
-		return _uriFactory?.Invoke(relativePath) ?? new Uri(path, UriKind.Absolute);
+		return new Uri(path, UriKind.Absolute);
 	}
 
 	internal static bool IsPublicAsset(string? path)
@@ -357,6 +356,7 @@ internal sealed class PluginContext : IPluginContext
 	public required IPluginCapabilities Capabilities { get; init; }
 	public CancellationToken StoppingToken => StoppingSource.Token;
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "插件撤销阶段必须继续释放其余资源。")]
 	internal void Revoke()
 	{
 		try { StoppingSource.Cancel(throwOnFirstException: false); } catch { }

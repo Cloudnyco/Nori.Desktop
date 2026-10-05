@@ -22,12 +22,7 @@ node scripts\validate-publish-input.mjs "%APP_VERSION%" "%REVISION%" win-x64 || 
 if "%NORI_INCLUDE_RUNTIME%"=="1" goto :runtime_error
 if /I "%NORI_INCLUDE_RUNTIME%"=="true" goto :runtime_error
 
-if /I "%NORI_SKIP_FRONTEND%"=="1" (
-	if not exist dist\index.html (
-		echo [错误] 缺少 dist\index.html。
-		exit /b 2
-	)
-) else (
+if /I not "%NORI_SKIP_FRONTEND%"=="1" (
 	call pnpm build || goto :error
 )
 
@@ -49,7 +44,6 @@ copy /y "..\..\LICENSE" "%ROOT%\LICENSE" >nul || goto :error
 >"%ROOT%\.current.tmp" echo %SLOT%
 move /y "%ROOT%\.current.tmp" "%ROOT%\.current" >nul
 if not exist "%ROOT%\Nori.exe" goto :error
-if not exist "%ROOT%\%SLOT%\wwwroot\index.html" goto :error
 node scripts\validate-publish-structure.mjs "%ROOT%" win-x64 || goto :error
 node scripts\check-package-size.mjs --path "%ROOT%" --label "win-x64 package" --max-mib 180 || goto :error
 

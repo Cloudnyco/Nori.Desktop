@@ -78,13 +78,11 @@ body:
         请提供您的运行环境信息，有助于快速复现环境特定问题：
         - 操作系统版本（如 Windows 11 23H2 / Windows 10 22H2）
         - Nori 客户端版本（可在应用设置或关于中查看）
-        - WebView2 运行时版本
         - 使用的 Live2D 模型名称（默认 Nori / 导入的自定义模型）
         - 显卡与图形驱动（如集成显卡 / NVIDIA / AMD）
       placeholder: |
         - 操作系统：Windows 11 专业版 23H2
         - Nori 版本：Dev 或发布页中的完整版本
-        - WebView2 运行时：已安装最新版
         - 模型：默认 Nori 模型
         - 显卡：NVIDIA RTX 4060
     validations:

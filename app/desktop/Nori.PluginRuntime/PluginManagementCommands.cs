@@ -61,18 +61,15 @@ internal sealed class PluginManagementCommands
 {
 	private readonly PluginManager _manager;
 	private readonly string _mainWindowLabel;
-	private readonly Func<string, string, Uri>? _assetUriFactory;
 	private readonly IPluginPackagePicker _picker;
 
 	public PluginManagementCommands(
 		PluginManager manager,
 		string mainWindowLabel,
-		Func<string, string, Uri>? assetUriFactory,
 		IPluginPackagePicker? picker)
 	{
 		_manager = manager ?? throw new ArgumentNullException(nameof(manager));
 		_mainWindowLabel = string.IsNullOrWhiteSpace(mainWindowLabel) ? "main" : mainWindowLabel;
-		_assetUriFactory = assetUriFactory;
 		_picker = picker ?? new AvaloniaPluginPackagePicker();
 	}
 
@@ -144,8 +141,11 @@ internal sealed class PluginManagementCommands
 		string author = string.Join(", ", info.Manifest.Authors.Select(item => item.Name.Trim()).Where(name => name.Length > 0));
 		string? iconUrl = null;
 		string? assetRoot = _manager.ResolveAssetRoot(info.Id);
-		if (_assetUriFactory is not null && assetRoot is not null && File.Exists(Path.Combine(assetRoot, "icon.png")))
-			iconUrl = _assetUriFactory(info.Id, "icon.png").ToString();
+		if (assetRoot is not null)
+		{
+			string iconPath = Path.Combine(assetRoot, "icon.png");
+			if (File.Exists(iconPath)) iconUrl = new Uri(iconPath, UriKind.Absolute).AbsoluteUri;
+		}
 
 		return new PluginListItemDto(
 			info.Id,

@@ -10,7 +10,7 @@ public enum SessionType
 	/// <summary>Windows 桌面</summary>
 	Windows,
 
-	/// <summary>macOS (Cocoa)</summary>
+	/// <summary>macOS 桌面 (Cocoa)</summary>
 	MacOS,
 
 	/// <summary>Linux + X11 (含 XWayland)</summary>
@@ -26,7 +26,7 @@ public enum SessionType
 /// <summary>
 /// 平台能力标志
 ///
-/// 前端一切与平台相关的 UI 都由这些标志驱动 —— 不支持就明确禁用并给出说明,
+/// 界面上与平台相关的行为都由这些标志驱动 —— 不支持就明确禁用并给出说明,
 /// 而不是靠 try/catch 静默吞掉 PlatformNotSupportedException。
 /// </summary>
 public sealed record PlatformCapabilities
@@ -34,7 +34,7 @@ public sealed record PlatformCapabilities
 	/// <summary>能否读取窗口外的全局光标 (眼神跟随)</summary>
 	public required bool SupportsGlobalCursor { get; init; }
 
-	/// <summary>能否从 HTML 标题栏发起原生窗口拖动</summary>
+	/// <summary>能否发起原生窗口拖动</summary>
 	public required bool SupportsWindowDrag { get; init; }
 
 	/// <summary>能否按模型交互区域做点击穿透</summary>
@@ -50,12 +50,11 @@ public sealed record PlatformCapabilities
 /// <summary>
 /// 平台相关能力
 ///
-/// 浏览器拿不到窗口外的光标, 也无法从 WebView 内部发起原生窗口拖动或设置交互区域穿透,
-/// 这几件事必须由宿主用系统 API 完成. 各平台实现:
+/// 窗口外光标、原生拖动和点击穿透必须由宿主用系统 API 完成。各平台实现:
 /// - Windows: user32 (GetCursorPos / WM_NCLBUTTONDOWN / WM_NCHITTEST)
 /// - macOS:   ObjC runtime (NSEvent.mouseLocation / performWindowDragWithEvent: / setIgnoresMouseEvents:)
 /// - Linux X11: libX11 + XShape (XQueryPointer / _NET_WM_MOVERESIZE / ShapeInput)
-/// - Wayland: 协议不允许全局光标与输入形状, 相关能力标志为 false, 由前端降级
+/// - Wayland: 协议不允许全局光标与输入形状, 相关能力标志为 false, 由界面降级
 /// </summary>
 public interface IPlatformServices
 {
@@ -65,6 +64,9 @@ public interface IPlatformServices
 	/// <summary>当前平台的能力标志</summary>
 	PlatformCapabilities Capabilities { get; }
 
+	/// <summary>系统是否要求减少动画；无法可靠读取时默认返回 true。</summary>
+	bool PrefersReducedMotion { get; }
+
 	/// <summary>
 	/// 获取全局光标位置 (物理像素, 相对屏幕左上角)
 	/// </summary>
@@ -73,7 +75,7 @@ public interface IPlatformServices
 	/// <summary>
 	/// 从当前鼠标按下状态发起窗口拖动
 	///
-	/// WebView 会吞掉指针事件, 因此 HTML 标题栏的拖动要回调到宿主由系统接管
+	/// 无边框窗口的拖动由系统接管
 	/// </summary>
 	void StartWindowDrag(nint windowHandle);
 

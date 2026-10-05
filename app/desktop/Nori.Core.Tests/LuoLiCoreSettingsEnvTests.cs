@@ -1,7 +1,7 @@
 using Nori.Core.Chat.LuoLiCore;
 using Nori.Core.Configuration;
 using Nori.Core.Data;
-using Nori.Core.Security;
+using Nori.Core.Tests.TestSupport;
 
 namespace Nori.Core.Tests;
 
@@ -13,22 +13,13 @@ namespace Nori.Core.Tests;
 /// </summary>
 public sealed class LuoLiCoreSettingsEnvTests : IDisposable
 {
-	private readonly string _path = Path.Combine(Path.GetTempPath(), $"nori-luoli-env-{Guid.NewGuid():N}.db");
+	private readonly TempDatabase _tempDatabase = new("nori-luoli-env");
 	private readonly NoriDatabase _database;
 	private readonly ConfigStore _config;
 
-	private sealed class FixedKeyStore : ISecretKeyStore
-	{
-		private readonly byte[] _key = Enumerable.Range(0, SecretKeyStore.KeySize).Select(index => (byte)index).ToArray();
-
-		public byte[] LoadOrCreate() => _key;
-
-		public bool IsFileFallback => true;
-	}
-
 	public LuoLiCoreSettingsEnvTests()
 	{
-		_database = NoriDatabase.Open(_path);
+		_database = NoriDatabase.Open(_tempDatabase.Path);
 		_config = new ConfigStore(_database, new FixedKeyStore());
 		_config.InitDefaults("test");
 	}
@@ -36,7 +27,7 @@ public sealed class LuoLiCoreSettingsEnvTests : IDisposable
 	public void Dispose()
 	{
 		_database.Dispose();
-		try { File.Delete(_path); } catch (IOException) { /* 临时库删不掉不影响断言 */ }
+		_tempDatabase.Dispose();
 	}
 
 	/// <summary>不去改进程环境：那会串到并行跑的其他测试里，表现成偶发失败。</summary>
@@ -148,10 +139,12 @@ public sealed class LuoLiCoreSettingsEnvTests : IDisposable
 
 	/// <summary>
 	/// 换了地址之后旧会话 id 属于另一台服务端，继续拿它发消息只会一直 404 —— 而那个失败看
-	/// 起来像「服务端坏了」，不像「你改了配置」。
+	/// 起来像「服务端坏了」，不像「你改了配置」；换了密钥也必须作废，避免复用不再匹配的会话。
 	/// </summary>
-	[Fact]
-	public void 换了地址之后旧会话作废()
+	[Theory]
+	[InlineData("http://127.0.0.1:4000", "sk-env")]
+	[InlineData("http://127.0.0.1:3000", "sk-new")]
+	public void 地址或密钥变化时旧会话作废(string baseUrl, string apiKey)
 	{
 		LuoLiCoreSettingsStore first = Store(
 			(LuoLiCoreSettingsStore.EnvBaseUrl, "http://127.0.0.1:3000"),
@@ -159,26 +152,11 @@ public sealed class LuoLiCoreSettingsEnvTests : IDisposable
 		first.SaveSessionId("sess_old");
 		Assert.Equal("sess_old", first.Read().SessionId);
 
-		LuoLiCoreSettingsStore moved = Store(
-			(LuoLiCoreSettingsStore.EnvBaseUrl, "http://127.0.0.1:4000"),
-			(LuoLiCoreSettingsStore.EnvApiKey, "sk-env"));
+		LuoLiCoreSettingsStore changed = Store(
+			(LuoLiCoreSettingsStore.EnvBaseUrl, baseUrl),
+			(LuoLiCoreSettingsStore.EnvApiKey, apiKey));
 
-		Assert.Equal("", moved.Read().SessionId);
-	}
-
-	[Fact]
-	public void 换了密钥之后旧会话同样作废()
-	{
-		LuoLiCoreSettingsStore first = Store(
-			(LuoLiCoreSettingsStore.EnvBaseUrl, "http://127.0.0.1:3000"),
-			(LuoLiCoreSettingsStore.EnvApiKey, "sk-old"));
-		first.SaveSessionId("sess_old");
-
-		LuoLiCoreSettingsStore rekeyed = Store(
-			(LuoLiCoreSettingsStore.EnvBaseUrl, "http://127.0.0.1:3000"),
-			(LuoLiCoreSettingsStore.EnvApiKey, "sk-new"));
-
-		Assert.Equal("", rekeyed.Read().SessionId);
+		Assert.Equal("", changed.Read().SessionId);
 	}
 
 	[Fact]

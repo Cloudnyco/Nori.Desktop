@@ -1,19 +1,19 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Platform;
+using Avalonia.Threading;
 using Nori.Core.Configuration;
 using Nori.Core.Live2D;
 using Nori.Core.Logging;
 using Nori.Core.Resources;
 using Nori.Desktop.Bridge;
+using Nori.Desktop.QuickChat;
 using Nori.Desktop.Windows;
 
 namespace Nori.Desktop.Tray;
 
 /// <summary>
-/// 系统托盘
-///
-/// 对应 Rust 版 tray.rs. 托盘是唯一常驻的入口: 左键开主界面, 菜单切换 Nori 与退出.
+/// 系统托盘。托盘是常驻入口：左键打开主界面，菜单切换 Nori 宠物窗口与退出应用。
 /// </summary>
 public static class TrayMenu
 {
@@ -40,6 +40,7 @@ public static class TrayMenu
 	/// 原来四条标题是在 Install 里一次性拼好的字符串: 语言改了不动, Nori 藏起来了也不动。
 	/// </summary>
 	private static NativeMenuItem? _toggleItem;
+	private static NativeMenuItem? _quickChatItem;
 	private static NativeMenuItem? _mainItem;
 	private static NativeMenuItem? _settingsItem;
 	private static NativeMenuItem? _accountItem;
@@ -49,8 +50,7 @@ public static class TrayMenu
 	private static AppServices? _services;
 
 	/// <summary>界面语言是不是英文。</summary>
-	private static bool IsEnglish(AppServices services) =>
-		services.Config.GetStringOr("language", "zh-CN") == "en-US";
+	private static bool IsEnglish(AppServices services) => UiLanguage.IsEnglish(services.Config);
 
 	/// <summary>
 	/// 显示 / 隐藏那一条的标题。
@@ -65,6 +65,10 @@ public static class TrayMenu
 
 	/// <summary>打开主界面。左键点托盘也是这个, 菜单里仍然要有 —— 不是每个人都会去试左键。</summary>
 	internal static string MainLabel(bool english) => english ? "Open main window" : "打开主界面";
+
+	internal static string QuickChatLabel(bool enabled, bool english) => english
+		? $"Quick Chat: {(enabled ? "On" : "Off")}"
+		: $"快捷聊天：{(enabled ? "开启" : "关闭")}";
 
 	internal static string SettingsLabel(bool english) => english ? "Settings" : "设置";
 
@@ -99,10 +103,16 @@ public static class TrayMenu
 	/// </summary>
 	public static void Refresh()
 	{
+		if (!Dispatcher.UIThread.CheckAccess())
+		{
+			Dispatcher.UIThread.Post(Refresh);
+			return;
+		}
 		if (_services is not {} services) return;
 		bool english = IsEnglish(services);
 		bool petVisible = services.Windows.IsWindowVisible(WindowLabels.Pet);
 		if (_toggleItem is {} toggle) toggle.Header = ToggleLabel(petVisible, english);
+		if (_quickChatItem is {} quickChat) quickChat.Header = QuickChatLabel(services.Config.GetQuickChatEnabled(), english);
 		if (_mainItem is {} main) main.Header = MainLabel(english);
 		if (_settingsItem is {} settings) settings.Header = SettingsLabel(english);
 		if (_accountItem is {} account) account.Header = CurrentAccountLabel(services, english);
@@ -142,6 +152,20 @@ public static class TrayMenu
 			services.Windows.TogglePet();
 		};
 
+		NativeMenuItem quickChat = _quickChatItem = new(QuickChatLabel(services.Config.GetQuickChatEnabled(), english));
+		quickChat.Click += async (_, _) =>
+		{
+			try
+			{
+				await QuickChatSettings.SetEnabledAsync(services, !services.Config.GetQuickChatEnabled()).ConfigureAwait(false);
+				Refresh();
+			}
+			catch (Exception exception)
+			{
+				services.Logger.Write(LogSource.Backend, "warn", $"托盘快捷聊天设置保存失败：{exception.GetType().Name}");
+			}
+		};
+
 		NativeMenuItem openMain = _mainItem = new(MainLabel(english));
 		openMain.Click += (_, _) => ShowMain(services);
 
@@ -168,6 +192,7 @@ public static class TrayMenu
 			Menu =
 			[
 				toggle,
+				quickChat,
 				openMain,
 				new NativeMenuItemSeparator(),
 				openSettings,
@@ -193,7 +218,7 @@ public static class TrayMenu
 		catch (Exception exception)
 		{
 			// 托盘不是必需品: 失败只记日志, 由前端补一个内建入口
-			services.Logger.Write(LogSource.Backend, "warn", $"托盘不可用, 将由主界面提供入口: {exception.Message}");
+			services.Logger.Write(LogSource.Backend, "warn", $"托盘不可用, 将由主界面提供入口: {exception.GetType().Name}");
 			Current = null;
 			_icon = null;
 			return false;

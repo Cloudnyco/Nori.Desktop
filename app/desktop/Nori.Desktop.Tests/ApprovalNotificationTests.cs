@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Avalonia.Threading;
 using Nori.Core.Agent;
 using Nori.Core.Configuration;
 using Nori.Core.Notifications;
@@ -26,9 +27,21 @@ public partial class BridgeCommandsTests
 		public List<ApprovalNotice> Shown { get; } = [];
 		public List<string> Hidden { get; } = [];
 		public bool Available { get; set; } = true;
+		public int? HideThreadId { get; private set; }
+		public bool FailOnShow { get; init; }
+		public bool FailOnHide { get; init; }
 
-		public void Show(ApprovalNotice notice) => Shown.Add(notice);
-		public void Hide(string requestId) => Hidden.Add(requestId);
+		public void Show(ApprovalNotice notice)
+		{
+			if (FailOnShow) throw new InvalidOperationException("模拟通知显示失败");
+			Shown.Add(notice);
+		}
+		public void Hide(string requestId)
+		{
+			HideThreadId = Environment.CurrentManagedThreadId;
+			if (FailOnHide) throw new InvalidOperationException("模拟通知撤销失败");
+			Hidden.Add(requestId);
+		}
 	}
 
 	private ToolApprovalRequest Request(string id = "approval-one", string level = "confirm") => new()
@@ -61,21 +74,6 @@ public partial class BridgeCommandsTests
 		Assert.True(await decision.WaitAsync(TimeSpan.FromSeconds(2)));
 	}
 
-	/// <summary>通知只是第二个面，应用内那条事件一条都不能少。</summary>
-	[Fact]
-	public async Task 发了通知之后应用内的卡片照旧()
-	{
-		FakeNotifier notifier = new();
-		_runtime.UseNotifierForTests(notifier);
-		FakeBridgeSource source = new(WindowLabels.Main);
-
-		Task<bool> decision = _runtime.RequestApprovalAsync(source, "session", Request(), CancellationToken.None);
-
-		// 应用内那条仍然在等、仍然可以由窗口解掉 —— 这就是「卡片没被撤掉」。
-		Assert.True(_runtime.RespondApproval(source, "approval-one", false));
-		Assert.False(await decision.WaitAsync(TimeSpan.FromSeconds(2)));
-	}
-
 	/// <summary>在应用内点掉之后，屏幕上那条要收走 —— 留一张点了没反应的卡片比不弹更糟。</summary>
 	[Fact]
 	public async Task 在应用内批准之后通知被收掉()
@@ -92,22 +90,142 @@ public partial class BridgeCommandsTests
 		Assert.Equal("approval-one", Assert.Single(notifier.Hidden));
 	}
 
+	private Task ActivateToastFromBackgroundAsync(string arguments) => Task.Run(() =>
+	{
+		// 必须从真实后台线程进入，不能让 UI 线程内联掩盖漏调度的问题。
+		Assert.False(Dispatcher.UIThread.CheckAccess());
+		return _runtime.OnToastActivatedAsync(arguments);
+	}).WaitAsync(TimeSpan.FromSeconds(5));
+
+	[Theory]
+	[InlineData(true, false)]
+	[InlineData(false, true)]
+	[InlineData(true, true)]
+	public Task 通知呈现异常不丢失授权也不阻断完成(bool failOnShow, bool failOnHide) => WithSettingsUiAsync(async () =>
+	{
+		FakeNotifier notifier = new() {FailOnShow = failOnShow, FailOnHide = failOnHide};
+		_runtime.UseNotifierForTests(notifier);
+		using NativeChatTestSource source = new();
+		int results = 0;
+		source.Received = payload =>
+		{
+			if (payload.GetProperty("type").GetString() == "approval-result") results++;
+		};
+		Task<bool> decision = _runtime.RequestApprovalAsync(source, "session", Request(), CancellationToken.None);
+		Assert.False(decision.IsCompleted);
+
+		await ActivateToastFromBackgroundAsync(ToastActivation.Encode(ToastAction.Deny, "approval-one"));
+
+		Assert.False(await decision.WaitAsync(TimeSpan.FromSeconds(2)));
+		Assert.Equal(1, results);
+		Assert.False(_runtime.RespondApprovalFromNotification("approval-one", true));
+		Assert.False(_runtime.Permissions.Remembered("session", "writeFile"));
+		if (failOnShow)
+			Assert.Contains(_services.Logger.RecentLogs(), entry => entry.Message == "显示系统通知失败：InvalidOperationException");
+		if (failOnHide)
+			Assert.Contains(_services.Logger.RecentLogs(), entry => entry.Message == "撤销系统通知失败：InvalidOperationException");
+	});
+
 	[Theory]
 	[InlineData(true)]
 	[InlineData(false)]
-	public async Task 从通知上的决定算数(bool approved)
+	public Task 从通知上的决定在UI线程收尾且不抢焦点(bool approved) => WithSettingsUiAsync(async () =>
+	{
+		int uiThreadId = Environment.CurrentManagedThreadId;
+		int resultThreadId = 0;
+		FakeNotifier notifier = new();
+		_runtime.UseNotifierForTests(notifier);
+		using NativeChatTestSource source = new() {IsVisible = false};
+		source.Received = payload =>
+		{
+			if (payload.GetProperty("type").GetString() == "approval-result")
+				resultThreadId = Environment.CurrentManagedThreadId;
+		};
+
+		Task<bool> decision = _runtime.RequestApprovalAsync(source, "session", Request(), CancellationToken.None);
+		await ActivateToastFromBackgroundAsync(ToastActivation.Encode(
+			approved ? ToastAction.Allow : ToastAction.Deny, "approval-one"));
+
+		Assert.Equal(approved, await decision.WaitAsync(TimeSpan.FromSeconds(2)));
+		Assert.Equal(approved, _runtime.Permissions.Remembered("session", "writeFile"));
+		Assert.Equal("approval-one", Assert.Single(notifier.Hidden));
+		Assert.Equal(uiThreadId, notifier.HideThreadId);
+		Assert.Equal(uiThreadId, resultThreadId);
+		Assert.False(_windows.IsWindowVisible(WindowLabels.Main));
+		Assert.Equal(0, _windows.ChatShowCount);
+	});
+
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public Task 通知正文在UI线程打开且窗口异常不泄漏(bool failOnOpen) => WithSettingsUiAsync(async () =>
+	{
+		int uiThreadId = Environment.CurrentManagedThreadId;
+		int showThreadId = 0;
+		FakeNotifier notifier = new();
+		_runtime.UseNotifierForTests(notifier);
+		using NativeChatTestSource source = new();
+		_windows.VisibilityChanged += (label, visible) =>
+		{
+			if (label != WindowLabels.Main || !visible) return;
+			showThreadId = Environment.CurrentManagedThreadId;
+			if (failOnOpen) throw new InvalidOperationException("模拟窗口打开失败");
+		};
+		Task<bool> decision = _runtime.RequestApprovalAsync(source, "session", Request(), CancellationToken.None);
+
+		await ActivateToastFromBackgroundAsync(ToastActivation.Open("approval-one"));
+
+		Assert.Equal(uiThreadId, showThreadId);
+		Assert.False(decision.IsCompleted);
+		Assert.Empty(notifier.Hidden);
+		if (failOnOpen)
+			Assert.Contains(_services.Logger.RecentLogs(), entry => entry.Message == "处理系统通知失败：InvalidOperationException");
+		await ActivateToastFromBackgroundAsync(ToastActivation.Encode(ToastAction.Deny, "approval-one"));
+		Assert.False(await decision.WaitAsync(TimeSpan.FromSeconds(2)));
+	});
+
+	[Theory]
+	[InlineData("")]
+	[InlineData("action=allow")]
+	[InlineData("action=unknown&id=approval-one")]
+	[InlineData("action=allow&id=approval-missing")]
+	[InlineData("action=deny&id=approval-missing")]
+	[InlineData("action=open&id=approval-missing")]
+	public Task 后台无效通知不决定授权也不打开窗口(string arguments) => WithSettingsUiAsync(async () =>
 	{
 		FakeNotifier notifier = new();
 		_runtime.UseNotifierForTests(notifier);
-		FakeBridgeSource source = new(WindowLabels.Main);
-
+		using NativeChatTestSource source = new();
 		Task<bool> decision = _runtime.RequestApprovalAsync(source, "session", Request(), CancellationToken.None);
 
-		Assert.True(_runtime.RespondApprovalFromNotification("approval-one", approved));
-		Assert.Equal(approved, await decision.WaitAsync(TimeSpan.FromSeconds(2)));
-		// 通知这条路结束的，同样要把屏幕上那条收掉。
-		Assert.Equal("approval-one", Assert.Single(notifier.Hidden));
-	}
+		await ActivateToastFromBackgroundAsync(arguments);
+
+		Assert.False(decision.IsCompleted);
+		Assert.Empty(notifier.Hidden);
+		Assert.False(_windows.IsWindowVisible(WindowLabels.Main));
+		Assert.Equal(0, _windows.ChatShowCount);
+		await ActivateToastFromBackgroundAsync(ToastActivation.Encode(ToastAction.Deny, "approval-one"));
+		Assert.False(await decision.WaitAsync(TimeSpan.FromSeconds(2)));
+	});
+
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public Task 已处理或取消的通知正文不再打开窗口(bool cancelled) => WithSettingsUiAsync(async () =>
+	{
+		_runtime.UseNotifierForTests(new FakeNotifier());
+		using NativeChatTestSource source = new();
+		using CancellationTokenSource cancellation = new();
+		Task<bool> decision = _runtime.RequestApprovalAsync(source, "session", Request(), cancellation.Token);
+		if (cancelled) cancellation.Cancel();
+		else await ActivateToastFromBackgroundAsync(ToastActivation.Encode(ToastAction.Deny, "approval-one"));
+		Assert.False(await decision.WaitAsync(TimeSpan.FromSeconds(2)));
+
+		await ActivateToastFromBackgroundAsync(ToastActivation.Open("approval-one"));
+
+		Assert.False(_windows.IsWindowVisible(WindowLabels.Main));
+		Assert.Equal(0, _windows.ChatShowCount);
+	});
 
 	/// <summary>
 	/// 通知不属于任何一个窗口，所以它走的是不校验来源的那条路。
@@ -197,21 +315,24 @@ public partial class BridgeCommandsTests
 	}
 
 	[Fact]
-	public async Task 快照带出通知开关与本平台支不支持()
+	public void 快照带出通知开关与本平台支不支持()
 	{
 		JsonElement workspace = JsonSerializer
 			.SerializeToElement(_runtime.BuildSnapshot(), BridgeJson.Options)
 			.GetProperty("workspace");
 
 		Assert.True(workspace.GetProperty("toastApprovals").GetBoolean());
-		Assert.Equal(OperatingSystem.IsWindows(), workspace.GetProperty("toastSupported").GetBoolean());
+		// 自动化测试的 OperatingSystem 别名恒为 Windows；通知契约必须看真实宿主平台。
+		Assert.Equal(System.OperatingSystem.IsWindows(), workspace.GetProperty("toastSupported").GetBoolean());
 
-		await CreateCommands().InvokeAsync(
-			new FakeBridgeSource(WindowLabels.Main), "settings_update_notifications", Args(new {enabled = false}));
+		// 这里只验证快照投影，不能调用会删除真实快捷方式与注册表项的注销命令。
+		_config.Set(ConfigStore.KeyToastApprovals, new ConfigValue.Boolean(false));
+		_runtime.InvalidateSnapshot();
 
 		JsonElement after = JsonSerializer
 			.SerializeToElement(_runtime.BuildSnapshot(), BridgeJson.Options)
 			.GetProperty("workspace");
 		Assert.False(after.GetProperty("toastApprovals").GetBoolean());
+		Assert.Equal(System.OperatingSystem.IsWindows(), after.GetProperty("toastSupported").GetBoolean());
 	}
 }

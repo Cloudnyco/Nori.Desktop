@@ -7,6 +7,7 @@ using Nori.Desktop.Bridge;
 using Nori.Desktop.Memory;
 using Nori.Desktop.Models;
 using Nori.Desktop.Settings;
+using static Nori.Desktop.SnapshotJson;
 
 namespace Nori.Desktop.Windows;
 
@@ -15,7 +16,7 @@ public sealed partial class ModelsWindow
 	private readonly Border _previewHost = new()
 	{
 		Name = "ModelsPreviewHost",
-		CornerRadius = new CornerRadius(10),
+		CornerRadius = new CornerRadius(12),
 		BorderThickness = new Thickness(1),
 		ClipToBounds = true,
 		HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -37,6 +38,7 @@ public sealed partial class ModelsWindow
 	private long _previewRequest;
 	private string? _previewExpression;
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S1854", Justification = "预览按钮事件回调按 Avalonia 事件契约保留，受控刷新任务无需同步等待。")]
 	private void InitializePreview(AppServices services)
 	{
 		_preview = new ModelPreviewControl(services) {Name = "ModelsPreview"};
@@ -51,7 +53,7 @@ public sealed partial class ModelsWindow
 		_overlay.RegionTested += region => _preview?.TestRegion(region);
 		_overlay.BackgroundTested += point => _preview?.TapAt(point);
 		_overlay.CreationFinished += ApplyBindings;
-		AddHandler(Button.ClickEvent, (_, args) =>
+		AddHandler(Button.ClickEvent, (sender, args) =>
 		{
 			if (_applying || _adjustFor is not { } modelId || args.Source is not Button button) return;
 			// 显式选择“无”即使草稿未变也要清除测试表情；普通快照不能打断本地试播。

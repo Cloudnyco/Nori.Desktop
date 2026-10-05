@@ -1,12 +1,9 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using Avalonia;
 using Avalonia.OpenGL.Controls;
 using Avalonia.OpenGL;
 using Avalonia.Threading;
-using Live2DCSharpSDK.App;
-using Live2DCSharpSDK.Framework;
-using Live2DCSharpSDK.Framework.Rendering;
-using Live2DCSharpSDK.OpenGL;
+using Nori.Desktop.Live2D.Gl;
 using Nori.Core.Live2D;
 
 namespace Nori.Desktop.Live2D;
@@ -14,32 +11,31 @@ namespace Nori.Desktop.Live2D;
 /// <summary>
 /// Avalonia 原生 OpenGL 渲染控件
 ///
-/// 承载 Live2DCSharpSDK 原生渲染管线：
+/// 承载宿主直接组合的原生模型渲染管线：
 /// - 基于 OpenGlControlBase，以物理像素（Bounds x RenderScaling）渲染
-/// - 开启 2048x2048 高精度裁剪蒙版缓冲与各向异性过滤
+/// - 开启 2048x2048 裁剪蒙版缓冲与各向异性过滤
 /// - 后台定时驱动 RequestNextFrameRendering，按 l2d_max_fps 限帧
 /// - 约 10Hz 采样全视口 alpha 缓冲，生成贴近可见模型尺寸的连续交互矩形
 /// </summary>
 public sealed class PetGlControl : OpenGlControlBase
 {
-	private const double MaskSampleIntervalSeconds = 0.100;
+	private const double MaskSampleIntervalSeconds = 0.150;
 
 	private readonly PetRuntime _runtime;
-	private LAppDelegateOpenGL? _lapp;
+	private readonly Action<RenderFrameArgs> _renderFrame;
+	private readonly record struct RenderFrameArgs(GlInterface Gl, int Framebuffer);
 	private AvaloniaGlApi? _glApi;
-	private bool _sdkLeaseAcquired;
 	private DateTime _lastRenderTime;
 	private OpenGLTextureQuad? _textureQuad;
-	private CubismOffscreenSurface_OpenGLES2? _sceneSurface;
-	private CubismOffscreenSurface_OpenGLES2? _hitMaskSurface;
+	private NativeGlSurface? _sceneSurface;
+	private NativeGlSurface? _hitMaskSurface;
 	private int _sceneWidth;
 	private int _sceneHeight;
 	private bool _offscreenAvailable;
 
-	// Alpha 命中掩码缓存
+	// Alpha 命中边界缓存
 	private readonly object _maskLock = new();
-	private readonly byte[] _maskBits = new byte[PetHitMask.ByteLength];
-	private readonly byte[] _maskScratch = new byte[PetHitMask.ByteLength];
+	private PetHitMask.Bounds _maskBounds = PetHitMask.Bounds.Empty;
 	private double _lastMaskSampleTime;
 	private int _lastViewportW;
 	private int _lastViewportH;
@@ -57,59 +53,33 @@ public sealed class PetGlControl : OpenGlControlBase
 	public PetGlControl(PetRuntime runtime)
 	{
 		_runtime = runtime;
+		_renderFrame = RenderFrame;
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "GL 初始化失败后的资源回滚不能覆盖原始异常。")]
 	protected override void OnOpenGlInit(GlInterface gl)
 	{
 		base.OnOpenGlInit(gl);
 
-		// CubismIdManager 与 LAppPal.DeltaTime 是进程级静态状态；双 GL 控件必须
-		// 在各自上下文仍为 current 的回调内串行进入 SDK，而不是把 GL 工作搬到别的线程。
-		CubismFramework.RunSynchronized(() =>
+		_runtime.RunSynchronized(() =>
 		{
-			// Cubism 的日志绝不能走 Console.WriteLine: Nori.Desktop 是 WinExe, 没有控制台,
-			// Console.WriteLine 会抛 IOException(句柄无效), 而它是在渲染回调里被调用的,
-			// 未捕获会直接把整个进程带走。统一转到应用自己的文件日志。
-			var cubismAllocator = new LAppAllocator();
-			var cubismOption = new CubismOption
-			{
-				LogFunction = _runtime.WriteCubismLog,
-				LoggingLevel = LogLevel.Warning,
-			};
-			if (!CubismFramework.StartUp(cubismAllocator, cubismOption))
-			{
-				throw new InvalidOperationException("Live2D Cubism Framework 初始化失败");
-			}
-			_sdkLeaseAcquired = true;
-
 			try
 			{
 				_glApi = new AvaloniaGlApi(gl);
-				_lapp = new LAppDelegateOpenGL(
-					_glApi,
-					_ => throw new InvalidOperationException("GL 线程禁止同步解码模型纹理"))
-				{
-					BGColor = new(0, 0, 0, 0),
-				};
-
 				_textureQuad = new OpenGLTextureQuad(_glApi);
-				_sceneSurface = new CubismOffscreenSurface_OpenGLES2(_glApi);
-				_hitMaskSurface = new CubismOffscreenSurface_OpenGLES2(_glApi);
-				_runtime.OnGlInit(_lapp, _glApi);
+				_sceneSurface = new NativeGlSurface(_glApi);
+				_hitMaskSurface = new NativeGlSurface(_glApi);
+				_runtime.OnGlInit(_glApi);
 				_runtime.SetRenderSurfaceState(false, false, _renderActive);
 				StartRenderLoop();
 			}
 			catch
 			{
 				try { _runtime.OnGlDeinit(); } catch { }
-				try { _lapp?.Dispose(); } catch { }
-				_lapp = null;
 				DisposeRenderTargets();
 				try { _textureQuad?.Dispose(); } catch { }
 				_textureQuad = null;
 				_glApi = null;
-				CubismFramework.CleanUp();
-				_sdkLeaseAcquired = false;
 				throw;
 			}
 		});
@@ -120,23 +90,16 @@ public sealed class PetGlControl : OpenGlControlBase
 		StopRenderLoop();
 		try
 		{
-			CubismFramework.RunSynchronized(() =>
+			_runtime.RunSynchronized(() =>
 			{
 				try { _runtime.OnGlDeinit(); }
-				catch (Exception exception) { _runtime.WriteCubismLog($"释放 Live2D 运行时失败: {exception.Message}"); }
-				try { _lapp?.Dispose(); }
-				catch (Exception exception) { _runtime.WriteCubismLog($"释放 Live2D 模型失败: {exception.Message}"); }
-				_lapp = null;
+				catch (Exception exception) { _runtime.WriteLive2DLog($"释放 Live2D 运行时失败: {exception.Message}"); }
 				DisposeRenderTargets();
 				try { _textureQuad?.Dispose(); }
-				catch (Exception exception) { _runtime.WriteCubismLog($"释放 Live2D 合成器失败: {exception.Message}"); }
+				catch (Exception exception) { _runtime.WriteLive2DLog($"释放 Live2D 合成器失败: {exception.Message}"); }
 				_textureQuad = null;
 				_glApi = null;
-				if (_sdkLeaseAcquired)
-				{
-					CubismFramework.CleanUp();
-					_sdkLeaseAcquired = false;
-				}
+
 			});
 		}
 		finally
@@ -147,26 +110,28 @@ public sealed class PetGlControl : OpenGlControlBase
 
 	protected override unsafe void OnOpenGlRender(GlInterface gl, int fb)
 	{
-		CubismFramework.RunSynchronized(() =>
+		_runtime.RunSynchronized(new RenderFrameArgs(gl, fb), _renderFrame);
+	}
+
+	private unsafe void RenderFrame(RenderFrameArgs args)
+	{
+		try
 		{
-			try
-			{
-				RenderCore(gl, fb);
-			}
-			catch (Exception exception)
-			{
-				// 渲染回调跑在合成器提交路径上, 抛出去就是进程级崩溃
-				_runtime.WriteCubismLog($"伴侣渲染帧异常: {exception}");
-			}
-		});
+			RenderCore(args.Gl, args.Framebuffer);
+		}
+		catch (Exception exception)
+		{
+			// 渲染回调跑在合成器提交路径上, 抛出去就是进程级崩溃
+			_runtime.WriteLive2DLog($"伴侣渲染帧异常: {exception}");
+		}
 	}
 
 	private unsafe void RenderCore(GlInterface gl, int fb)
 	{
 		Interlocked.Exchange(ref _framePending, 0);
-		if (!_renderActive || _glApi is null || _lapp is null) return;
+		if (!_renderActive || _glApi is null) return;
 
-		Stopwatch frameTimer = Stopwatch.StartNew();
+		long frameStart = Stopwatch.GetTimestamp();
 		double scale = 1.0;
 		if (VisualRoot is Avalonia.Controls.TopLevel topLevel)
 		{
@@ -187,12 +152,18 @@ public sealed class PetGlControl : OpenGlControlBase
 		bool shadowApplied = false;
 		if (offscreen && _sceneSurface is { } scene && scene.IsValid() && _textureQuad is {IsAvailable: true} quad)
 		{
-			scene.BeginDraw(fb);
-			gl.Viewport(0, 0, _sceneWidth, _sceneHeight);
-			gl.ClearColor(0, 0, 0, 0);
-			gl.Clear(GlConsts.GL_COLOR_BUFFER_BIT | GlConsts.GL_DEPTH_BUFFER_BIT);
-			_runtime.RenderFrame(span, viewportW, viewportH, Bounds.Width, Bounds.Height);
-			scene.EndDraw();
+			scene.BeginDraw();
+			try
+			{
+				gl.Viewport(0, 0, _sceneWidth, _sceneHeight);
+				gl.ClearColor(0, 0, 0, 0);
+				gl.Clear(GlConsts.GL_COLOR_BUFFER_BIT | GlConsts.GL_DEPTH_BUFFER_BIT);
+				_runtime.RenderFrame(span, viewportW, viewportH, Bounds.Width, Bounds.Height);
+			}
+			finally
+			{
+				scene.EndDraw();
+			}
 
 			gl.BindFramebuffer(_glApi.GL_FRAMEBUFFER, fb);
 			gl.Viewport(0, 0, viewportW, viewportH);
@@ -217,101 +188,108 @@ public sealed class PetGlControl : OpenGlControlBase
 		if (nowSec - _lastMaskSampleTime >= MaskSampleIntervalSeconds)
 		{
 			_lastMaskSampleTime = nowSec;
-			Stopwatch maskTimer = Stopwatch.StartNew();
+			long maskStart = Stopwatch.GetTimestamp();
 			SampleAlphaMask(viewportW, viewportH, fb);
-			_runtime.RecordRenderMetrics(frameTimer.Elapsed.TotalMilliseconds, maskTimer.Elapsed.TotalMilliseconds);
+			_runtime.RecordRenderMetrics(ElapsedMilliseconds(frameStart), ElapsedMilliseconds(maskStart));
 		}
 		else
 		{
-			_runtime.RecordRenderMetrics(frameTimer.Elapsed.TotalMilliseconds, 0);
+			_runtime.RecordRenderMetrics(ElapsedMilliseconds(frameStart), 0);
 		}
 	}
 
 	private unsafe void SampleAlphaMask(int viewportW, int viewportH, int defaultFramebuffer)
 	{
-		if (!_renderActive || _glApi is null || viewportW <= 0 || viewportH <= 0) return;
+		var glApi = _glApi;
+		if (!_renderActive || glApi is null || viewportW <= 0 || viewportH <= 0) return;
 
 		int readWidth = viewportW;
 		int readHeight = viewportH;
 		bool hitMaskTarget = false;
-		if (_offscreenAvailable && _sceneSurface is { } scene && scene.IsValid())
+		try
 		{
-			readWidth = _sceneWidth;
-			readHeight = _sceneHeight;
-			if (_hitMaskSurface is { } hit
-				&& hit.IsValid()
-				&& _textureQuad is {IsHitMaskAvailable: true} quad)
+			if (_offscreenAvailable && _sceneSurface is { } scene && scene.IsValid())
 			{
-				hit.BeginDraw(defaultFramebuffer);
-				_glApi.Viewport(0, 0, PetHitMask.Width, PetHitMask.Height);
-				hit.Clear(0, 0, 0, 0);
-				if (quad.DrawHitMask(scene.ColorBuffer))
+				readWidth = _sceneWidth;
+				readHeight = _sceneHeight;
+				if (_hitMaskSurface is { } hit
+					&& hit.IsValid()
+					&& _textureQuad is {IsHitMaskAvailable: true} quad)
 				{
-					readWidth = PetHitMask.Width;
-					readHeight = PetHitMask.Height;
-					hitMaskTarget = true;
+					hit.BeginDraw();
+					try
+					{
+						glApi.Viewport(0, 0, PetHitMask.Width, PetHitMask.Height);
+						hit.Clear(0, 0, 0, 0);
+						if (quad.DrawHitMask(scene.ColorBuffer))
+						{
+							readWidth = PetHitMask.Width;
+							readHeight = PetHitMask.Height;
+							hitMaskTarget = true;
+							ReadPixels();
+						}
+					}
+					finally
+					{
+						hit.EndDraw();
+					}
 				}
-				else
+				if (!hitMaskTarget)
 				{
-					hit.EndDraw();
-					scene.BeginDraw(defaultFramebuffer);
-					_glApi.Viewport(0, 0, readWidth, readHeight);
+					// 命中目标已在 finally 结束；场景回读也不能把绘制快照带到下一帧。
+					scene.BeginDraw();
+					try
+					{
+						glApi.Viewport(0, 0, readWidth, readHeight);
+						ReadPixels();
+					}
+					finally
+					{
+						scene.EndDraw();
+					}
 				}
 			}
 			else
 			{
-				scene.BeginDraw(defaultFramebuffer);
-				_glApi.Viewport(0, 0, readWidth, readHeight);
+				glApi.BindFramebuffer(glApi.GL_FRAMEBUFFER, defaultFramebuffer);
+				glApi.Viewport(0, 0, readWidth, readHeight);
+				ReadPixels();
 			}
 		}
-		else
+		finally
 		{
-			_glApi.BindFramebuffer(_glApi.GL_FRAMEBUFFER, defaultFramebuffer);
-			_glApi.Viewport(0, 0, readWidth, readHeight);
+			glApi.BindFramebuffer(glApi.GL_FRAMEBUFFER, defaultFramebuffer);
+			glApi.Viewport(0, 0, viewportW, viewportH);
 		}
-
-		int bufferLength = checked(readWidth * readHeight * 4);
-		if (_pixelBuffer.Length != bufferLength) _pixelBuffer = new byte[bufferLength];
-		fixed (byte* pointer = _pixelBuffer)
-		{
-			// GLES2 允许的最小实现使用一次同步回读；低分辨率 FBO 路径固定为 96x128。
-			_glApi.GLReadPixels(0, 0, readWidth, readHeight, _glApi.GL_RGBA, _glApi.GL_UNSIGNED_BYTE, (nint)pointer);
-		}
-
-		if (hitMaskTarget)
-		{
-			_hitMaskSurface!.EndDraw();
-		}
-		else if (_offscreenAvailable && _sceneSurface is { } fallbackScene && fallbackScene.IsValid())
-		{
-			fallbackScene.EndDraw();
-		}
-
-		_glApi.BindFramebuffer(_glApi.GL_FRAMEBUFFER, defaultFramebuffer);
-		_glApi.Viewport(0, 0, viewportW, viewportH);
 		PublishAlphaMask(_pixelBuffer, readWidth, readHeight, hitMaskTarget);
+
+		void ReadPixels()
+		{
+			int bufferLength = checked(readWidth * readHeight * 4);
+			if (_pixelBuffer.Length != bufferLength) _pixelBuffer = new byte[bufferLength];
+			fixed (byte* pointer = _pixelBuffer)
+			{
+				// GLES2 允许的最小实现使用一次同步回读；低分辨率 FBO 路径固定为 96x128。
+				glApi.GLReadPixels(0, 0, readWidth, readHeight, glApi.GL_RGBA, glApi.GL_UNSIGNED_BYTE, (nint)pointer);
+			}
+		}
 	}
 
 	private void PublishAlphaMask(byte[] pixels, int width, int height, bool reduced)
 	{
-		if (reduced)
-		{
-			PetHitMask.BuildFromReducedPixels(pixels, width, height, _maskScratch);
-		}
-		else
-		{
-			PetHitMask.BuildFromSourcePixels(pixels, width, height, _maskScratch);
-		}
+		PetHitMask.Bounds bounds = reduced
+			? PetHitMask.BuildFromReducedPixels(pixels, width, height)
+			: PetHitMask.BuildFromSourcePixels(pixels, width, height);
 
 		lock (_maskLock)
 		{
-			Buffer.BlockCopy(_maskScratch, 0, _maskBits, 0, _maskBits.Length);
+			_maskBounds = bounds;
 		}
 	}
 
 	private bool EnsureRenderTargets(int viewportW, int viewportH, float renderScale)
 	{
-		if (_glApi is null || _sceneSurface is null || _hitMaskSurface is null || _textureQuad is not {IsAvailable: true})
+		if (_glApi is null || _textureQuad is not {IsAvailable: true})
 		{
 			_offscreenAvailable = false;
 			_runtime.SetRenderSurfaceState(false, false, _renderActive);
@@ -331,40 +309,85 @@ public sealed class PetGlControl : OpenGlControlBase
 
 		if (_offscreenAvailable && targetWidth == _sceneWidth && targetHeight == _sceneHeight) return true;
 
-		DisposeRenderTargets();
+		_offscreenAvailable = TryResizeRenderTargets(_glApi, ref _sceneSurface, ref _hitMaskSurface,
+			targetWidth, targetHeight, _runtime.WriteLive2DLog);
+		// 回滚时仍按旧场景的实际尺寸绘制和回读，而不是使用失败的请求尺寸。
+		_sceneWidth = _sceneSurface?.BufferWidth ?? 0;
+		_sceneHeight = _sceneSurface?.BufferHeight ?? 0;
+		return _offscreenAvailable;
+	}
+
+	/// <summary>候选场景就绪后才交换；命中目标失败只降级采样，不撤销场景。</summary>
+	internal static bool TryResizeRenderTargets(OpenGLApi gl, ref NativeGlSurface? scene, ref NativeGlSurface? hit,
+		int width, int height, Action<string> writeLog)
+	{
+		bool previousAvailable = scene?.IsValid() == true;
+		if (previousAvailable && scene!.BufferWidth == width && scene.BufferHeight == height) return true;
+
+		NativeGlSurface? nextScene = new(gl);
+		NativeGlSurface? nextHit = null;
+		bool hitCreated = false;
 		try
 		{
-			bool sceneCreated = _sceneSurface.CreateOffscreenSurface(targetWidth, targetHeight);
-			bool hitCreated = _hitMaskSurface.CreateOffscreenSurface(PetHitMask.Width, PetHitMask.Height);
-			if (!sceneCreated)
+			if (!nextScene.CreateOffscreenSurface(width, height))
 			{
-				DisposeRenderTargets();
-				return false;
+				writeLog(previousAvailable
+					? "创建伴侣场景 FBO 失败, 保留旧场景继续绘制"
+					: "创建伴侣场景 FBO 失败, 已降级为直接渲染");
+				return previousAvailable;
 			}
-			_sceneWidth = targetWidth;
-			_sceneHeight = targetHeight;
-			_offscreenAvailable = true;
-			if (!hitCreated)
+
+			// 命中目标尺寸固定，不随场景缩放重建。
+			if (hit?.IsValid() != true)
 			{
-				// 场景纹理仍可用于合成与一次整图回读；命中掩码不会读到阴影。
-				_runtime.WriteCubismLog("低分辨率命中掩码 FBO 不可用, 已降级为场景纹理单次回读");
+				nextHit = new NativeGlSurface(gl);
+				try
+				{
+					hitCreated = nextHit.CreateOffscreenSurface(PetHitMask.Width, PetHitMask.Height);
+					if (!hitCreated)
+						writeLog("低分辨率命中掩码 FBO 不可用, 已降级为场景纹理单次回读");
+				}
+				catch (Exception exception)
+				{
+					writeLog($"创建命中掩码 FBO 失败, 已降级为场景纹理单次回读: {exception.Message}");
+				}
 			}
+
+			var previousScene = scene;
+			scene = nextScene;
+			nextScene = null;
+			if (hitCreated)
+			{
+				var previousHit = hit;
+				hit = nextHit;
+				nextHit = null;
+				DisposeRenderTarget(previousHit, "命中掩码", writeLog);
+			}
+			DisposeRenderTarget(previousScene, "场景", writeLog);
 			return true;
 		}
 		catch (Exception exception)
 		{
-			DisposeRenderTargets();
-			_runtime.WriteCubismLog($"创建伴侣离屏渲染目标失败, 已降级为直接渲染: {exception.Message}");
-			return false;
+			writeLog($"创建伴侣场景 FBO 失败, {(previousAvailable ? "保留旧场景继续绘制" : "已降级为直接渲染")}: {exception.Message}");
+			return previousAvailable;
 		}
+		finally
+		{
+			DisposeRenderTarget(nextScene, "候选场景", writeLog);
+			DisposeRenderTarget(nextHit, "候选命中掩码", writeLog);
+		}
+	}
+
+	private static void DisposeRenderTarget(NativeGlSurface? surface, string name, Action<string> writeLog)
+	{
+		try { surface?.DestroyOffscreenSurface(); }
+		catch (Exception exception) { writeLog($"释放伴侣{name} FBO 失败: {exception.Message}"); }
 	}
 
 	private void DisposeRenderTargets()
 	{
-		try { _sceneSurface?.DestroyOffscreenSurface(); }
-		catch (Exception exception) { _runtime.WriteCubismLog($"释放伴侣场景 FBO 失败: {exception.Message}"); }
-		try { _hitMaskSurface?.DestroyOffscreenSurface(); }
-		catch (Exception exception) { _runtime.WriteCubismLog($"释放伴侣命中掩码 FBO 失败: {exception.Message}"); }
+		DisposeRenderTarget(_sceneSurface, "场景", _runtime.WriteLive2DLog);
+		DisposeRenderTarget(_hitMaskSurface, "命中掩码", _runtime.WriteLive2DLog);
 		_sceneWidth = 0;
 		_sceneHeight = 0;
 		_offscreenAvailable = false;
@@ -377,23 +400,20 @@ public sealed class PetGlControl : OpenGlControlBase
 	{
 		lock (_maskLock)
 		{
-			return PetHitMask.IsPointOnModel(_maskBits, clientX, clientY, Bounds.Width, Bounds.Height);
+			return PetHitMask.IsPointOnModel(_maskBounds, clientX, clientY, Bounds.Width, Bounds.Height);
 		}
 	}
 
-	/// <summary>
-	/// 把当前模型外接边界转成单个可点击矩形 (客户端逻辑像素)
-	///
-	/// Windows 走 WM_NCHITTEST 查询同一矩形; Linux X11 把矩形交给输入形状,
-	/// macOS 则按光标是否位于矩形内切换整窗穿透。
-	/// </summary>
-	public List<(int X, int Y, int Width, int Height)> BuildHitRegions(double clientWidth, double clientHeight)
+	internal PetHitMask.Bounds MaskBounds
 	{
-		lock (_maskLock)
+		get
 		{
-			return PetHitMask.BuildHitRegions(_maskBits, clientWidth, clientHeight);
+			lock (_maskLock) return _maskBounds;
 		}
 	}
+
+	private static double ElapsedMilliseconds(long startedAt) =>
+		Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
 
 	private void StartRenderLoop()
 	{
@@ -492,7 +512,7 @@ public sealed class PetGlControl : OpenGlControlBase
 		_renderActive = true;
 		_lastRenderTime = default;
 		_runtime.SetRenderSurfaceState(_offscreenAvailable, false, true);
-		if (_lapp is null || _glApi is null) return;
+		if (_glApi is null) return;
 		// 清掉可能滞留的旧帧请求标记, 最坏情况多画一帧
 		Interlocked.Exchange(ref _framePending, 0);
 		StartRenderLoop();

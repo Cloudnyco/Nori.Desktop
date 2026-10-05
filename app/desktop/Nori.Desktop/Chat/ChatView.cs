@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Threading;
+using static Nori.Desktop.SnapshotJson;
 
 namespace Nori.Desktop.Chat;
 
@@ -30,6 +31,7 @@ public sealed partial class ChatView : UserControl, IDisposable
 	private bool _preparing;
 	private bool _clearing;
 	private long _snapshotRequest;
+	private long _historyRevision = -1;
 	private Task? _startOperation;
 	private Task? _voiceOperation;
 	private string _voiceState = "idle";
@@ -78,7 +80,23 @@ public sealed partial class ChatView : UserControl, IDisposable
 			JsonElement snapshot = await _service.GetSnapshotAsync(_lifetime.Token);
 			if (_disposed || request != _snapshotRequest) return;
 			ApplySnapshot(snapshot);
-			if (!_loadedHistory && !_state.LoadingHistory && !_state.Sending) await LoadHistoryAsync(false);
+			if (!_loadedHistory && !_state.LoadingHistory && !_state.Sending)
+			{
+				long revision = _service.HistoryRevision;
+				await LoadHistoryAsync(false);
+				_historyRevision = revision;
+			}
+			else if (_loadedHistory && !_state.LoadingHistory && !_state.Sending && _historyRevision != _service.HistoryRevision)
+			{
+				long revision = _service.HistoryRevision;
+				JsonElement latest = await ExecuteAsync("chat_history_page", new { limit = 200 }, _lifetime.Token);
+				if (!_disposed && request == _snapshotRequest && !_state.Sending)
+				{
+					_state.MergeLatestHistory(latest);
+					_historyRevision = revision;
+					FlushRender();
+				}
+			}
 		}
 		catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
 		catch (Exception exception) { if (!_disposed && request == _snapshotRequest) ReportFailure(exception); }
@@ -87,10 +105,10 @@ public sealed partial class ChatView : UserControl, IDisposable
 	internal void ApplySnapshot(JsonElement snapshot)
 	{
 		_snapshot = snapshot;
-		JsonElement chat = NativeChatJson.P(snapshot, "chat");
-		_configured = chat.ValueKind == JsonValueKind.Object ? NativeChatJson.B(chat, "configured") : NativeChatJson.B(NativeChatJson.P(snapshot, "ai"), "configured");
-		_safeMode = NativeChatJson.B(NativeChatJson.P(snapshot, "app"), "safeMode");
-		string language = NativeChatJson.S(NativeChatJson.P(snapshot, "general"), "language", _language);
+		JsonElement chat = P(snapshot, "chat");
+		_configured = chat.ValueKind == JsonValueKind.Object ? B(chat, "configured") : B(P(snapshot, "ai"), "configured");
+		_safeMode = B(P(snapshot, "app"), "safeMode");
+		string language = S(P(snapshot, "general"), "language", _language);
 		if (language != _language) { _language = language; ApplyLanguage(); LanguageChanged?.Invoke(); }
 		QueueRender(); FlushRender();
 	}
@@ -152,7 +170,7 @@ public sealed partial class ChatView : UserControl, IDisposable
 		{
 			if (_disposed) return;
 			_state.ApplyEvent(safePayload);
-			if (NativeChatJson.S(safePayload, "type") != "chunk") FlushRender();
+			if (S(safePayload, "type") != "chunk") FlushRender();
 		});
 	}
 	private void OnHostStateChanged() => Dispatcher.UIThread.Post(QueueRefresh);
@@ -194,7 +212,7 @@ public sealed partial class ChatView : UserControl, IDisposable
 		try
 		{
 			JsonElement result = await ExecuteAsync("chat_start", new { text }, _lifetime.Token);
-			_state.AttachSession(result.ValueKind == JsonValueKind.String ? result.GetString() ?? "" : NativeChatJson.S(result, "sessionId"));
+			_state.AttachSession(result.ValueKind == JsonValueKind.String ? result.GetString() ?? "" : S(result, "sessionId"));
 		}
 		catch (Exception exception) { _state.StartFailed(exception); }
 		finally { _startOperation = null; FlushRender(); }
@@ -269,7 +287,7 @@ public sealed partial class ChatView : UserControl, IDisposable
 		try
 		{
 			JsonElement result = await ExecuteAsync("stt_stop", cancellationToken: _lifetime.Token);
-			string transcript = NativeChatJson.S(result, "text");
+			string transcript = S(result, "text");
 			if (transcript.Length > 0)
 			{
 				_state.Draft = string.IsNullOrWhiteSpace(_state.Draft) ? transcript : _state.Draft + " " + transcript;
@@ -289,6 +307,7 @@ public sealed partial class ChatView : UserControl, IDisposable
 		if (_disposed) return;
 		UpdateVoiceLabel(); UpdateApprovalCountdown();
 	}
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3168", Justification = "UI 事件调用的受控 fire-and-forget 入口，内部已捕获异常。")]
 	private async void Run(Task task)
 	{
 		_operations.Add(task);

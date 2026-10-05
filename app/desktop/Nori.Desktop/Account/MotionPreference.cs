@@ -6,7 +6,7 @@ namespace Nori.Desktop.Account;
 /// <summary>
 /// 系统的「减少动画」偏好。
 ///
-/// 网页端由 <c>prefers-reduced-motion</c> 提供，原生端无等价机制，需直接查询系统。
+/// 原生端没有 CSS <c>prefers-reduced-motion</c> 那样的现成机制，需直接查询系统。
 /// Windows 上对应「显示 → 动画效果」开关。关闭该开关的用户通常出于前庭功能或注意力
 /// 方面的需要，忽略该设置会导致界面不可用，而非仅影响观感。
 ///

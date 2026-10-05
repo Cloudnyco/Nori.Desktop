@@ -1,3 +1,4 @@
+using Nori.Desktop.Appearance;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -22,11 +23,10 @@ namespace Nori.Desktop.Windows;
 /// <summary>
 /// 原生初始化窗口。
 ///
-/// 从 WebView 迁过来的第一个：它自足（不碰音频、不碰插件、不需要 Vue 的任何服务），
-/// 迁过来之后启动路径上就少一次 WebView 冷启动 —— 那正是用户第一眼等待的那几百毫秒。
+/// 它自足：不碰音频、不碰插件。
 ///
 /// 流程与原来一致：
-/// 进入 → 跑一次初始化 → 打开主界面 → 自己隐藏。等不到信号时留一条 10 秒的自救出口，
+/// 进入 → 跑一次初始化 → 打开主界面 → 关闭自己。等不到信号时留一条 10 秒的自救出口，
 /// 不让用户永远看着转圈。
 /// </summary>
 public sealed class InitWindow : Window
@@ -48,12 +48,7 @@ public sealed class InitWindow : Window
 		Title = definition.Title;
 		Width = definition.Width; Height = definition.Height;
 		CanResize = definition.CanResize;
-		// 与 NoriWindow 同一套判断：能原生拖动就去掉系统边框（整个应用都是自绘 chrome，
-		// 少设这一行就会在一堆无边框窗口里冒出一个系统标题栏）；不能拖的平台退回
-		// 系统边框，不留一个既拖不动也没有提示的窗口。
-		WindowDecorations = PlatformServices.Current.Capabilities.SupportsWindowDrag
-			? WindowDecorations.None
-			: WindowDecorations.Full;
+		WindowDecorations = WindowDecorations.None;
 		WindowStartupLocation = WindowStartupLocation.CenterScreen;
 		RequestedThemeVariant = ThemeVariant.Dark;
 		Styles.Add(new StyleInclude(new Uri("avares://Nori.Desktop/"))
@@ -62,30 +57,24 @@ public sealed class InitWindow : Window
 		});
 		Background = ChatPalette.Background;
 
-		_view = new InitView(IsEnglish(), () => _ = RetryAsync(), () => _services.Windows.Shutdown());
+		_view = new InitView(IsEnglish(), () => _ = RetryAsync());
 		Content = _view;
 
-		// 去掉系统边框之后要自己接拖动。启动画面整面都可拖 —— 它没有标题栏，
-		// 用户会下意识按住任意位置挪。
-		PointerPressed += (_, args) =>
-		{
-			if (args.GetCurrentPoint(this).Properties.IsLeftButtonPressed) BeginMoveDrag(args);
-		};
+		NativeWindowChrome.Attach(this, IsEnglish, () => _services.Windows.Shutdown());
 
 		// **推到下一帧再起跑。** 在 Opened 处理器里同步走完「进主界面」会连带
 		// Hide 掉自己，而那时窗口还在完成显示流程，屏幕上会留下一个不重绘的空壳。
-		Opened += (_, _) =>
-		{
-			_shownAt = DateTime.UtcNow;
-			Dispatcher.UIThread.Post(() => _ = BeginAsync());
-		};
-		PropertyChanged += (_, args) =>
+		PropertyChanged += (sender, args) =>
 		{
 			if (args.Property != IsVisibleProperty) return;
-			// 首次运行路径下这个窗口是隐藏启动的，向导完成后宿主 Show 它 —— 变可见
-			// 就是原来那条 nori:init-start 广播的等价信号，不必再走一次事件总线。
-			if (IsVisible) Dispatcher.UIThread.Post(() => _ = BeginAsync());
-			else _view.StopAnimation();
+			// 首次运行路径下这个窗口是隐藏启动的，向导完成后宿主 Show 它。
+			// 变为可见时补跑开始流程。
+			if (IsVisible) Dispatcher.UIThread.Post(() => _ = BeginAsync(), DispatcherPriority.Loaded);
+			else
+			{
+				_watchdog?.Stop();
+				_view.StopAnimation();
+			}
 		};
 		Closing += (_, args) =>
 		{
@@ -95,35 +84,29 @@ public sealed class InitWindow : Window
 		};
 	}
 
-	private bool IsEnglish() =>
-		_services.Config.GetStringOr(ConfigStore.KeyLanguage, "zh-CN")
-			.StartsWith("en", StringComparison.OrdinalIgnoreCase);
+	private bool IsEnglish() => UiLanguage.IsEnglish(_services.Config);
 
 	/// <summary>
 	/// 起跑。
 	///
-	/// 可见、或宿主已经置位了「该开始了」，就直接走；两样都没有说明这一轮不该由
-	/// 我们发起（例如首次运行向导还开着），只留一条超时出口。
+	/// 可见时起跑；排队期间已隐藏就不再启动定时器，也不消费首次运行的待启动标记。
+	/// 运行时尚未就绪时保留超时出口，避免永远停在加载动效。
 	/// </summary>
 	private async Task BeginAsync()
 	{
-		if (_started) return;
+		if (_started || !IsVisible) return;
 		_view.SetLanguage(IsEnglish());
 		_view.StartAnimation();
 		// 入场序列与初始化并行，不 await：await 会使动效计入启动耗时。
 		_ = _view.PlayIntroAsync();
 
-		// 视觉测试需要逐档截图。实际运行中初始化随即开始，入场序列通常不会走完
-		// （符合预期），但那样无法取到各档位的渲染结果。
-		if (HoldForTests) return;
-
-		if (_services.Runtime is not { } runtime) return;
-		if (runtime.ConsumeInitStartPending() || IsVisible)
+		if (_services.Runtime is not { } runtime)
 		{
-			await EnterAsync();
+			ArmWatchdog();
 			return;
 		}
-		ArmWatchdog();
+		runtime.ConsumeInitStartPending();
+		await EnterAsync();
 	}
 
 	private void ArmWatchdog()
@@ -133,7 +116,7 @@ public sealed class InitWindow : Window
 		_watchdog.Tick += (_, _) =>
 		{
 			_watchdog?.Stop();
-			if (!_started) _view.ShowTimeout();
+			if (!_started && IsVisible) _view.ShowTimeout();
 		};
 		_watchdog.Start();
 	}
@@ -148,7 +131,7 @@ public sealed class InitWindow : Window
 
 	private async Task EnterAsync()
 	{
-		if (_started) return;
+		if (_started || !IsVisible) return;
 		_started = true;
 		_watchdog?.Stop();
 		try
@@ -168,46 +151,8 @@ public sealed class InitWindow : Window
 		}
 	}
 
-	// ── 测试用的几个口子 ────────────────────────────────────────────────
-	//
-	// 这一页没有可点的中间态可供断言：动效是定时器画的、超时是等出来的。
-	// 与其在测试里等 10 秒，不如把这三样露出来。
-
-	/// <summary>是否已经发起过进入主界面。</summary>
-	internal bool HasStartedForTests => _started;
-
-	/// <summary>直接切到超时面板，不等那 10 秒。</summary>
-	internal void ShowTimeoutForTests()
-	{
-		_view.SetLanguage(IsEnglish());
-		_view.ShowTimeout();
-	}
-
-	/// <summary>超时面板上那颗按钮的文案。</summary>
-	internal string RetryLabelForTests => _view.RetryLabel;
-
-	/// <summary>视觉测试用：停留在入场序列，不自动进入主界面。</summary>
-	internal bool HoldForTests { get; set; }
-
-	/// <summary>视觉测试用：执行一次收尾，不打开主界面。</summary>
-	internal Task PlayHandoffForTests() => _view.PlayHandoffAsync();
-
-	/// <summary>
-	/// 视觉测试用：当前档位。
-	///
-	/// 按时间取样不可靠：入场序列各档由 <c>await Task.Delay</c> 推进，而测试在同一
-	/// UI 线程上轮询，二者竞争调度，实际耗时可达标称值的两到三倍。取样改为按状态判断。
-	/// </summary>
-	internal HaloMood MoodForTests => _view.MoodForTests;
-
-	/// <summary>视觉测试用：窗口显示到现在过了多少毫秒。</summary>
-	internal double ElapsedSinceShownForTests =>
-		_shownAt is {} at ? (DateTime.UtcNow - at).TotalMilliseconds : 0;
-
-	private DateTime? _shownAt;
-
-	/// <summary>视觉测试用：将入场序列置为终态，以便截取稳定的 Working 档。</summary>
-	internal void SettleIntroForTests() => _view.SettleIntro();
+	internal bool AnimationRunningForTests => _view.AnimationRunning;
+	internal bool WatchdogRunningForTests => _watchdog?.IsEnabled == true;
 
 	protected override void OnClosed(EventArgs e)
 	{
@@ -240,7 +185,7 @@ internal sealed class InitView : Panel
 
 	private bool _english;
 
-	internal InitView(bool english, Action onRetry, Action onClose)
+	internal InitView(bool english, Action onRetry)
 	{
 		_english = english;
 
@@ -298,18 +243,6 @@ internal sealed class InitView : Panel
 			},
 		};
 
-		Button close = new()
-		{
-			Content = "✕",
-			Width = 34, Height = 26,
-			HorizontalAlignment = HorizontalAlignment.Right,
-			VerticalAlignment = VerticalAlignment.Top,
-			Margin = new Thickness(0, 6, 8, 0),
-			Background = Brushes.Transparent, Foreground = ChatPalette.Muted,
-			BorderThickness = default,
-		};
-		close.Click += (_, _) => onClose();
-
 		Children.Add(new StackPanel
 		{
 			Spacing = 18,
@@ -321,7 +254,6 @@ internal sealed class InitView : Panel
 			RenderTransformOrigin = RelativePoint.Center,
 			Children = {_halo, _statusCapsule, _timeoutCard},
 		});
-		Children.Add(close);
 
 		ApplyText();
 	}
@@ -376,11 +308,14 @@ internal sealed class InitView : Panel
 		if (retrying) _retryError.IsVisible = false;
 	}
 
-	/// <summary>视觉测试用：光环当前在哪一档。</summary>
-	internal HaloMood MoodForTests => _halo.Mood;
-
 	/// <summary>起转。窗口可见时才应该转 —— 隐藏着空转一个定时器没有意义。</summary>
-	internal void StartAnimation() => _halo.Start();
+	internal bool AnimationRunning => _halo.IsRunning;
+
+	internal void StartAnimation()
+	{
+		if (_timeoutCard.IsVisible) return;
+		_halo.Start();
+	}
 
 	internal void StopAnimation() => _halo.Stop();
 

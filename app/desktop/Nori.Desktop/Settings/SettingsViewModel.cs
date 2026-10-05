@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Text.Json;
 using System.Windows.Input;
 using Avalonia.Threading;
+using Nori.Core.Configuration;
 using Nori.Desktop.Settings.Pages;
 
 namespace Nori.Desktop.Settings;
@@ -40,6 +41,9 @@ public sealed class SettingsViewModel : SettingsObservableObject, IDisposable
 	private bool _disposed;
 	private Task? _refreshTask;
 	private bool _refreshPending;
+	private int _hostVisible;
+	private int _refreshWhenShown;
+	private int _snapshotEpoch;
 
 	/// <summary>创建设置窗口状态。</summary>
 	public SettingsViewModel(SettingsService service)
@@ -207,12 +211,20 @@ public sealed class SettingsViewModel : SettingsObservableObject, IDisposable
 		while (_refreshPending && !_disposed)
 		{
 			_refreshPending = false;
+			int epoch = Volatile.Read(ref _snapshotEpoch);
 			try
 			{
 				JsonElement snapshot = await _service.GetSnapshotAsync(_lifetimeCts.Token).ConfigureAwait(true);
 				if (_disposed) return;
+				// 窗口在读取期间隐藏时，结果可能已经混入隐藏之后的配置，留到再次显示再读。
+				if (Volatile.Read(ref _snapshotEpoch) != epoch)
+				{
+					Volatile.Write(ref _refreshWhenShown, 1);
+					if (Volatile.Read(ref _hostVisible) != 0) _refreshPending = true;
+					continue;
+				}
 				string language = SettingsSnapshotReader.String(snapshot, Language, "general", "language");
-				if (language is not ("zh-CN" or "en-US")) language = language.StartsWith("en", StringComparison.OrdinalIgnoreCase) ? "en-US" : "zh-CN";
+				if (language is not ("zh-CN" or "en-US")) language = UiLanguage.IsEnglish(language) ? "en-US" : "zh-CN";
 				Language = language;
 				foreach (SettingsPageBase page in _pages.Values) page.ApplySnapshot(snapshot);
 				// 未显示的复杂页面在导航时读取，避免每次运行时变化都查询所有宿主服务。
@@ -223,7 +235,7 @@ public sealed class SettingsViewModel : SettingsObservableObject, IDisposable
 			catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested) { return; }
 			catch (Exception exception)
 			{
-				ErrorMessage = exception.Message;
+				ErrorMessage = SettingsErrorText.Resolve(exception);
 			}
 		}
 	}
@@ -267,9 +279,27 @@ public sealed class SettingsViewModel : SettingsObservableObject, IDisposable
 		Dispose();
 	}
 
+	/// <summary>窗口隐藏时只记下待刷新，再次显示时读取一次最新快照。</summary>
+	internal void SetHostVisible(bool visible)
+	{
+		if (_disposed) return;
+		if (!visible && Volatile.Read(ref _hostVisible) != 0) Interlocked.Increment(ref _snapshotEpoch);
+		Volatile.Write(ref _hostVisible, visible ? 1 : 0);
+		if (visible && Interlocked.Exchange(ref _refreshWhenShown, 0) == 1)
+			_ = RefreshSnapshotAsync(_lifetimeCts.Token);
+	}
+
 	private void OnStateChanged()
 	{
 		if (_disposed) return;
+		if (Volatile.Read(ref _hostVisible) == 0)
+		{
+			Volatile.Write(ref _refreshWhenShown, 1);
+			// 标记写入后窗口可能刚好变为可见，补一次刷新以免丢掉这次状态。
+			if (Volatile.Read(ref _hostVisible) != 0 && Interlocked.Exchange(ref _refreshWhenShown, 0) == 1)
+				_ = RefreshSnapshotAsync(_lifetimeCts.Token);
+			return;
+		}
 		_ = RefreshSnapshotAsync(_lifetimeCts.Token);
 	}
 

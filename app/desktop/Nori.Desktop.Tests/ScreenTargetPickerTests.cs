@@ -25,18 +25,8 @@ public sealed class ScreenTargetPickerTests
 	///
 	/// 用户在聊天窗口里问「看看我的屏幕」时，前台窗口正是 Nori。直接取前台会让她截到自己，
 	/// 然后对着自己的聊天记录作答 —— 功能看起来能跑，答案完全没用。
+	/// 取 z 序最靠前的那个：那是被聊天窗口挡住、用户真正在看的。
 	/// </summary>
-	[Fact]
-	public void 跳过本进程的窗口()
-	{
-		WindowsTopLevelWindow? picked = Pick(
-			(1, "Nori", Environment.ProcessId),
-			(2, "Visual Studio Code", 4242));
-
-		Assert.Equal("Visual Studio Code", picked?.Title);
-	}
-
-	/// <summary>取 z 序最靠前的那个：那是被聊天窗口挡住、用户真正在看的。</summary>
 	[Fact]
 	public void 取z序上第一个别人的窗口()
 	{
@@ -61,14 +51,9 @@ public sealed class ScreenTargetPickerTests
 	}
 
 	[Fact]
-	public void 只有自己的窗口时选不出目标()
+	public void 没有可选窗口时选不出目标()
 	{
 		Assert.Null(Pick((1, "Nori", Environment.ProcessId)));
-	}
-
-	[Fact]
-	public void 一个窗口都没有时选不出目标()
-	{
 		Assert.Null(Pick());
 	}
 

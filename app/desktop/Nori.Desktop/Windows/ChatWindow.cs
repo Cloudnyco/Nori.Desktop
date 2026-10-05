@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Nori.Core.Configuration;
 using Nori.Desktop.Bridge;
 using Nori.Desktop.Chat;
 
@@ -15,16 +16,17 @@ public sealed class ChatWindow : Window
 	private bool _closing;
 	private bool _prepared;
 
-	/// <summary>建立原生对话宿主和可复用正文，不创建 WebView。</summary>
+	/// <summary>建立原生对话宿主和可复用正文。</summary>
 	public ChatWindow(AppServices services)
 	{
-		Width = 960; Height = 640; MinWidth = 720; MinHeight = 480;
+		NativeWindowSizing.Apply(this, NativeWindowSizing.ChatSize);
 		WindowStartupLocation = WindowStartupLocation.CenterScreen;
 		RequestedThemeVariant = ThemeVariant.Dark;
 		Styles.Add(new StyleInclude(new Uri("avares://Nori.Desktop/")) { Source = new Uri("avares://Nori.Desktop/Settings/SettingsTheme.axaml") });
 		Background = ChatPalette.Background;
 		_service = new NativeChatService(services, this);
 		Body = new ChatView(_service) { Margin = new Thickness(12) }; Content = Body;
+		NativeWindowChrome.Attach(this, () => UiLanguage.IsEnglish(Body.Language));
 		UpdateTitle(); Body.LanguageChanged += UpdateTitle;
 		Opened += (_, _) => Body.SetHostVisible(true);
 		PropertyChanged += (_, args) => { if (args.Property == IsVisibleProperty && !_prepared) Body.SetHostVisible(IsVisible); };
@@ -47,10 +49,12 @@ public sealed class ChatWindow : Window
 	public void ReportHostFailure(Exception exception)
 	{
 		if (!Dispatcher.UIThread.CheckAccess()) { Dispatcher.UIThread.Post(() => ReportHostFailure(exception)); return; }
-		Body.ReportFailure(exception); if (!IsVisible) Show(); Activate();
+		Body.ReportFailure(exception);
+		if (!IsVisible) Show();
+		Activate();
 	}
 
-	private void UpdateTitle() => Title = Body.Language.StartsWith("en", StringComparison.OrdinalIgnoreCase) ? "Nori · Chat" : "Nori · 对话";
+	private void UpdateTitle() => Title = UiLanguage.IsEnglish(Body.Language) ? "Nori · Chat" : "Nori · 对话";
 	private async void OnClosing(object? sender, WindowClosingEventArgs args)
 	{
 		if (AllowClose) return;

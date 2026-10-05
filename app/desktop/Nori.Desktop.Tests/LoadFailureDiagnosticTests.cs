@@ -6,27 +6,19 @@ namespace Nori.Desktop.Tests;
 /// <summary>加载类失败 (NORI-1X / NORI-24) 的安全诊断标签测试。</summary>
 public sealed class LoadFailureDiagnosticTests
 {
-	[Fact]
-	public void FileLoad失败标签只含程序集文件名与HRESULT()
+	[Theory]
+	[InlineData(@"C:\app\vendor\Blocked.dll", "Blocked.dll")]
+	[InlineData("/opt/nori/vendor/Blocked.so", "Blocked.so")]
+	public void FileLoad失败标签只暴露文件名与HRESULT(string path, string expectedAssembly)
 	{
 		Dictionary<string, string>? tags = CrashReporter.LoadFailureTags(
-			new FileLoadException("Could not load file.", @"C:\app\vendor\Blocked.dll")) as Dictionary<string, string>;
+			new FileLoadException("Could not load file.", path)) as Dictionary<string, string>;
 
 		Assert.NotNull(tags);
 		Assert.Equal("file_load", tags!["exception_kind"]);
-		Assert.Equal("Blocked.dll", tags["assembly"]);
+		Assert.Equal(expectedAssembly, tags["assembly"]);
 		Assert.StartsWith("0x", tags["hresult"], StringComparison.Ordinal);
 		Assert.DoesNotContain("vendor", tags["assembly"], StringComparison.Ordinal);
-	}
-
-	[Fact]
-	public void FileLoad失败标签在POSIX路径下也只取文件名()
-	{
-		Dictionary<string, string>? tags = CrashReporter.LoadFailureTags(
-			new FileLoadException("Could not load file.", "/opt/nori/vendor/Blocked.so")) as Dictionary<string, string>;
-
-		Assert.NotNull(tags);
-		Assert.Equal("Blocked.so", tags!["assembly"]);
 	}
 
 	[Fact]

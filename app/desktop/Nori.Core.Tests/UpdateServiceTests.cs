@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
 using System.Net;
 using System.Security.Cryptography;
@@ -5,11 +6,13 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks.Sources;
 using Nori.Core.Data;
+using Nori.Core.Tests.TestSupport;
 using Nori.Core.Update;
 
 namespace Nori.Core.Tests;
 
 /// <summary>真实部署上下文、网络信任边界与状态机回归。</summary>
+[SuppressMessage("Security", "S5332", Justification = "HTTP 地址是更新重定向拒绝测试夹具，不会被跟随。")]
 public sealed class UpdateServiceTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), $"nori-update-{Guid.NewGuid():N}");
@@ -80,7 +83,7 @@ public sealed class UpdateServiceTests : IDisposable
 	[InlineData("1.0.0", false, "unsupported", "不在正式更新支持列表")]
 	public async Task DisallowedEnvironment_HasReasonAndNeverConnects(string product, bool safe, string rid, string reason)
 	{
-		using HttpClient client = new(new Handler(Respond));
+		using HttpClient client = new(new HttpTestHandler(Respond));
 		using UpdateService service = Create(client, product, safe, rid);
 		Assert.Contains(reason, service.CurrentStatus.UnavailableReason);
 		Assert.Contains(reason, (await Assert.ThrowsAsync<InvalidOperationException>(() => service.CheckForUpdateAsync())).Message);
@@ -91,7 +94,7 @@ public sealed class UpdateServiceTests : IDisposable
 	[Fact]
 	public async Task CurrentPointerCannotImpersonateRunningSlot()
 	{
-		using HttpClient client = new(new Handler(Respond));
+		using HttpClient client = new(new HttpTestHandler(Respond));
 		using UpdateService service = Create(client, executable: Environment.ProcessPath!);
 		Assert.NotNull(service.CurrentStatus.UnavailableReason);
 		await Assert.ThrowsAsync<InvalidOperationException>(() => service.CheckForUpdateAsync());
@@ -104,7 +107,7 @@ public sealed class UpdateServiceTests : IDisposable
 	public async Task RateLimitNeverBypassesApi(int code)
 	{
 		int requests = 0;
-		using HttpClient client = new(new Handler(_ => { requests++; return new((HttpStatusCode)code); }));
+		using HttpClient client = new(new HttpTestHandler(_ => { requests++; return new((HttpStatusCode)code); }));
 		using UpdateService service = Create(client);
 		Assert.Contains("403/429", (await Assert.ThrowsAsync<InvalidOperationException>(() => service.CheckForUpdateAsync())).Message);
 		Assert.Equal(1, requests);
@@ -113,7 +116,7 @@ public sealed class UpdateServiceTests : IDisposable
 	[Fact]
 	public async Task CurrentManifestRevisionPreventsDowngrade_AndClearsStaleCandidate()
 	{
-		using HttpClient client = new(new Handler(Respond));
+		using HttpClient client = new(new HttpTestHandler(Respond));
 		using UpdateService service = Create(client);
 		Assert.True((await service.CheckForUpdateAsync()).Available);
 		_manifest["numeric_version"] = "1.0.0";
@@ -126,7 +129,7 @@ public sealed class UpdateServiceTests : IDisposable
 	[Fact]
 	public async Task SuccessfulInstallNotifiesAndPreservesReadyState()
 	{
-		using HttpClient client = new(new Handler(Respond));
+		using HttpClient client = new(new HttpTestHandler(Respond));
 		using UpdateService service = Create(client);
 		List<UpdaterState> states = [];
 		service.StatusChanged += () => states.Add(service.CurrentStatus.State);
@@ -150,7 +153,7 @@ public sealed class UpdateServiceTests : IDisposable
 	[Fact]
 	public void RestartWithoutCommittedUpdateIsRejected()
 	{
-		using HttpClient client = new(new Handler(Respond));
+		using HttpClient client = new(new HttpTestHandler(Respond));
 		using UpdateService service = Create(client);
 		Assert.Contains("已就绪", Assert.Throws<InvalidOperationException>(service.LaunchRestart).Message);
 		service.CancelActiveOperation();
@@ -160,7 +163,7 @@ public sealed class UpdateServiceTests : IDisposable
 	[Fact]
 	public async Task PreCancelledCheckDoesNotLeaveActiveOperation()
 	{
-		using HttpClient client = new(new Handler(Respond));
+		using HttpClient client = new(new HttpTestHandler(Respond));
 		using UpdateService service = Create(client);
 		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.CheckForUpdateAsync(new CancellationToken(true)));
 		Assert.True((await service.CheckForUpdateAsync()).Available);
@@ -170,7 +173,7 @@ public sealed class UpdateServiceTests : IDisposable
 	public async Task HashMismatchLeavesCurrentAndCleansDownload()
 	{
 		_manifest["sha256"] = new string('f', 64);
-		using HttpClient client = new(new Handler(Respond));
+		using HttpClient client = new(new HttpTestHandler(Respond));
 		using UpdateService service = Create(client);
 		await service.CheckForUpdateAsync();
 		Assert.Contains("SHA-256", (await Assert.ThrowsAsync<InvalidOperationException>(() => service.DownloadAndInstallAsync())).Message);
@@ -186,7 +189,7 @@ public sealed class UpdateServiceTests : IDisposable
 	public async Task ManifestMustBindToSameReleaseAsset(string field, string value)
 	{
 		_manifest[field] = value;
-		using HttpClient client = new(new Handler(Respond));
+		using HttpClient client = new(new HttpTestHandler(Respond));
 		using UpdateService service = Create(client);
 		await Assert.ThrowsAsync<InvalidOperationException>(() => service.CheckForUpdateAsync());
 	}
@@ -195,7 +198,7 @@ public sealed class UpdateServiceTests : IDisposable
 	public async Task AssetSizeMismatchRejected()
 	{
 		_manifest["size_bytes"] = _package.Length + 1;
-		using HttpClient client = new(new Handler(Respond));
+		using HttpClient client = new(new HttpTestHandler(Respond));
 		using UpdateService service = Create(client);
 		await Assert.ThrowsAsync<InvalidOperationException>(() => service.CheckForUpdateAsync());
 	}
@@ -204,7 +207,7 @@ public sealed class UpdateServiceTests : IDisposable
 	public async Task MissingManifestProvidesManualLinkWithoutDownload()
 	{
 		_release["assets"] = new JsonArray();
-		using HttpClient client = new(new Handler(Respond));
+		using HttpClient client = new(new HttpTestHandler(Respond));
 		using UpdateService service = Create(client);
 		Assert.False((await service.CheckForUpdateAsync()).Available);
 		Assert.Equal($"https://github.com/{UpdateService.DefaultRepository}/releases/tag/v1.1.0-test", service.CurrentStatus.ManualDownloadUrl);
@@ -221,7 +224,7 @@ public sealed class UpdateServiceTests : IDisposable
 	public async Task UnsafeRedirectRejectedBeforeSecondRequest(string location)
 	{
 		int requests = 0;
-		using HttpClient client = new(new Handler(_ =>
+		using HttpClient client = new(new HttpTestHandler(_ =>
 		{
 			requests++;
 			HttpResponseMessage response = new(HttpStatusCode.Found);
@@ -237,7 +240,7 @@ public sealed class UpdateServiceTests : IDisposable
 	public async Task RedirectLimitIsFive()
 	{
 		int requests = 0;
-		using HttpClient client = new(new Handler(request =>
+		using HttpClient client = new(new HttpTestHandler(request =>
 		{
 			requests++;
 			HttpResponseMessage response = new(HttpStatusCode.Found);
@@ -253,7 +256,7 @@ public sealed class UpdateServiceTests : IDisposable
 	public async Task UnknownMetadataLengthIsBoundedWhileStreaming()
 	{
 		using CountingStream stream = new();
-		using HttpClient client = new(new Handler(_ => new(HttpStatusCode.OK) { Content = new StreamContent(stream) }));
+		using HttpClient client = new(new HttpTestHandler(_ => new(HttpStatusCode.OK) { Content = new StreamContent(stream) }));
 		using UpdateService service = Create(client);
 		Assert.Contains("1 MiB", (await Assert.ThrowsAsync<InvalidOperationException>(() => service.CheckForUpdateAsync())).Message);
 		Assert.InRange(stream.ReadBytes, 1024 * 1024 + 1, 1024 * 1024 + 8192);
@@ -263,7 +266,7 @@ public sealed class UpdateServiceTests : IDisposable
 	public async Task DownloadConsumesEachValueTaskExactlyOnce()
 	{
 		using SingleConsumptionStream stream = new(_package);
-		using HttpClient client = new(new Handler(request => request.RequestUri!.AbsoluteUri.EndsWith(".zip", StringComparison.Ordinal)
+		using HttpClient client = new(new HttpTestHandler(request => request.RequestUri!.AbsoluteUri.EndsWith(".zip", StringComparison.Ordinal)
 			? new(HttpStatusCode.OK) { Content = new StreamContent(stream) } : Respond(request)));
 		using UpdateService service = Create(client);
 		await service.CheckForUpdateAsync();
@@ -277,7 +280,7 @@ public sealed class UpdateServiceTests : IDisposable
 	{
 		TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		using BlockingStream stream = new(started);
-		using HttpClient client = new(new Handler(_ => new(HttpStatusCode.OK) { Content = new StreamContent(stream) }));
+		using HttpClient client = new(new HttpTestHandler(_ => new(HttpStatusCode.OK) { Content = new StreamContent(stream) }));
 		// 只缩短内部期限，仍验证收到响应头后正文读取会被超时令牌取消。
 		using UpdateService service = Create(client, metadataTimeout: TimeSpan.FromMilliseconds(250));
 		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.CheckForUpdateAsync().WaitAsync(TimeSpan.FromSeconds(5)));
@@ -289,7 +292,7 @@ public sealed class UpdateServiceTests : IDisposable
 	public async Task BrokenCurrentManifestIsUnavailableInsteadOfCrashingConstruction()
 	{
 		File.WriteAllText(Path.Combine(Path.GetDirectoryName(_executable)!, "deployment.json"), "{}");
-		using HttpClient client = new(new Handler(Respond));
+		using HttpClient client = new(new HttpTestHandler(Respond));
 		using UpdateService service = Create(client);
 		Assert.NotNull(service.CurrentStatus.UnavailableReason);
 		await Assert.ThrowsAsync<KeyNotFoundException>(() => service.CheckForUpdateAsync());
@@ -303,7 +306,7 @@ public sealed class UpdateServiceTests : IDisposable
 	{
 		TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		using BlockingStream stream = new(started);
-		using HttpClient client = new(new Handler(_ => new(HttpStatusCode.OK) { Content = new StreamContent(stream) }));
+		using HttpClient client = new(new HttpTestHandler(_ => new(HttpStatusCode.OK) { Content = new StreamContent(stream) }));
 		using UpdateService service = Create(client);
 		Task check = service.CheckForUpdateAsync();
 		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -314,10 +317,6 @@ public sealed class UpdateServiceTests : IDisposable
 	}
 
 	public void Dispose() { try { Directory.Delete(_root, true); } catch (IOException) { } }
-	private sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
-	{
-		protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) => Task.FromResult(respond(request));
-	}
 	private class CountingStream : Stream
 	{
 		public int ReadBytes { get; private set; }

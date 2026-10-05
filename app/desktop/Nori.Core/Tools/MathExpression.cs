@@ -97,6 +97,7 @@ public static class MathExpression
 			return left;
 		}
 
+		[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S1244", Justification = "表达式除零检查必须精确判断零值，使用范围会拒绝合法非零输入。")]
 		private double ParseMultiplicative()
 		{
 			double left = ParseExponent();

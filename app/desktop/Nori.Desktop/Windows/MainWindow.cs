@@ -1,117 +1,62 @@
+using System.Diagnostics;
+using Nori.Desktop.Appearance;
 using Avalonia;
-using Avalonia.Animation;
-using Avalonia.Animation.Easings;
+using Avalonia.Automation;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Shapes;
-using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Media;
-using Avalonia.Media.Immutable;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using Nori.Core.Configuration;
+using Nori.Core.Live2D;
 using Nori.Core.Logging;
 using Nori.Core.Platform;
-using Nori.Desktop.Account;
+using Nori.Core.Resources;
 using Nori.Desktop.Bridge;
 using Nori.Desktop.Chat;
 using Nori.Desktop.Main;
-using Nori.Desktop.Ui;
 
 namespace Nori.Desktop.Windows;
 
-/// <summary>
-/// 原生主界面。迁移的最后一块 —— 它一走，WebView 在主路径上就没有了。
-///
-/// 结构照搬 Vue 版，因为那一版的分法是对的：左边一条侧边栏，上面是「主页」这个
-/// **页面**，下面是四个**启动器**（点了开另一个窗口，不是切页）。两者形状不同不是
-/// 装饰：把启动器画成标签页会让人以为点了会在当前窗口里换内容，而它们其实各自
-/// 开窗，这正是当初那次改动要解决的问题。
-///
-/// 数据直接读服务，不经快照 JSON：快照是给 WebView 跨进程用的，原生窗口就在同一个
-/// 进程里，绕一圈只会多一层可能漂的形状。
-/// </summary>
+/// <summary>原生主界面：主页常驻，侧栏入口打开各自的独立窗口。</summary>
 public sealed class MainWindow : Window
 {
 	private readonly AppServices _services;
 	private readonly HomeView _home;
-	private readonly StackPanel _launchers = new() {Spacing = 2};
-	private readonly StackPanel _navigation = new();
 	private readonly Border _sidebar = new();
-	private readonly Button _collapse = new();
-	private readonly TextBlock _hints = new()
-	{
-		Foreground = ChatPalette.Faint, FontSize = 11,
-		TextWrapping = TextWrapping.Wrap, MaxWidth = 640,
-	};
-
-	/// <summary>侧边栏是否收起。持久化，下次启动保持上次的选择。</summary>
+	private readonly TextBlock _homeLabel = Label(14, ChatPalette.Teal);
+	private readonly TextBlock _groupLabel = Label(12, ChatPalette.Faint);
+	private readonly TextBlock _pageTitle = Label(24, ChatPalette.Primary);
+	private readonly TextBlock _pageSubtitle = Label(12);
+	private readonly TextBlock _brandCaption = Label(12);
+	private readonly TextBlock _hints = Label(12);
+	private readonly TextBlock _error = Label(12, ChatPalette.Danger);
+	private readonly TextBlock _petStatus = Label(12);
+	private readonly Ellipse _petDot = new() {Width = 6, Height = 6};
+	private readonly Button _collapse = new() {Name = "CollapseSidebar", BorderThickness = default};
+	private readonly Button _petToggle = new() {Name = "TogglePet"};
+	private readonly Button _exit = new();
+	private NativeWindowChrome _windowChrome = null!;
+	private readonly List<LauncherEntry> _launchers = [];
+	private static readonly long RefreshIntervalTicks = (long)(Stopwatch.Frequency * 0.4);
+	private MainRefreshData _lastData;
+	private long _nextAllowed;
+	private int _dirty;
+	private int _pumpQueued;
+	private bool _stateHooked;
 	private bool _collapsed;
+	private bool _savingSidebar;
+	private volatile bool _updatesEnabled;
+	private volatile bool _closed;
+	private bool _english;
+	private (bool English, bool Collapsed)? _chromeState;
 
-	/// <summary>
-	/// 侧边栏底色。
-	///
-	/// 比内容区（<see cref="ChatPalette.Background"/>）再深一档：侧边栏是外壳不是
-	/// 内容，两者同色时整个窗口读作一块平面，左右分区只能靠那条 1px 边线撑着。
-	/// </summary>
-	private static readonly IBrush SidebarGround = new ImmutableSolidColorBrush(Color.Parse("#12161c"));
+	private readonly record struct MainRefreshData(bool English, bool Collapsed, HomeRefreshData Home);
 
-	/// <summary>当前页那一行的底色与高亮条。高亮条的渐变方向与品牌标记一致，自上而下。</summary>
-	private static readonly IBrush SidebarActive = new ImmutableSolidColorBrush(Color.FromArgb(30, 94, 234, 212));
-
-	private static IBrush SidebarBar => new LinearGradientBrush
-	{
-		StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
-		EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative),
-		GradientStops =
-		[
-			new GradientStop(Color.Parse("#7de3ff"), 0),
-			new GradientStop(Color.Parse("#5eead4"), 1),
-		],
-	};
-
-	/// <summary>悬停底色。白色 4%，与聊天页的 Overlay 同一个值。</summary>
-	private static readonly IBrush SidebarHover = ChatPalette.Overlay;
-
-	/// <summary>待办标记的颜色。与首页告警段取同一个值（Vue 版的 --warning）。</summary>
-	private static readonly IBrush SidebarBadge = new ImmutableSolidColorBrush(Color.Parse("#e8b168"));
-
-	/// <summary>启动器上那两颗点的控件名。取用一律按名字，不按 Children 下标。</summary>
-	private const string LauncherOpenDot = "launcher-open";
-	private const string LauncherBadgeDot = "launcher-badge";
-
-	/// <summary>展开与收起两种宽度。收起后只留图标列，图标的横坐标保持不变。</summary>
-	private const double SidebarWide = 184;
-	private const double SidebarNarrow = 60;
-
-	/// <summary>
-	/// 四个启动器。图标、取标签的函数、以及它对应的窗口。
-	///
-	/// 顺序即显示顺序，测试也按这个顺序断言（对话 / 模型 / 记忆 / 设置）。
-	/// </summary>
-	private static readonly (string Icon, Func<bool, string> Label, string Window)[] Launchers =
-	[
-		("bot", english => english ? "Chat" : "对话", WindowLabels.Chat),
-		("package", english => english ? "Models" : "模型", WindowLabels.Models),
-		("memory", english => english ? "Memory" : "记忆", WindowLabels.Memory),
-		("settings", english => english ? "Settings" : "设置", WindowLabels.Settings),
-	];
-
-    /// <summary>上一次画侧边栏时的状态签名；相同就不重建，见 <see cref="Refresh"/>。</summary>
-	private string _sidebarSignature = "";
-
-	/// <summary>
-	/// 侧边栏收起状态的配置键。
-	///
-	/// 用的是网页版那一个（快照里的 <c>general.sidebarCollapsed</c>、
-	/// <c>settings_update_general</c> 写的也是它），不是新起一个：同一个偏好两个键的话，
-	/// 两边各记各的，而且只有它在 <see cref="Nori.Core.Cloud.CloudSaveScope"/> 白名单里
-	/// —— 新键不会跟着账户同步到另一台机器。
-	/// </summary>
-	private const string KeySidebarCollapsed = "ui_sidebar_collapsed";
-
-	private DispatcherTimer? _refresh;
+	private sealed record LauncherEntry(string Window, Button Button, TextBlock Label, Ellipse Dot, Ellipse Badge);
 
 	/// <summary>仅宿主退出流程可允许真正关闭。</summary>
 	public bool AllowClose { get; set; }
@@ -120,31 +65,38 @@ public sealed class MainWindow : Window
 	{
 		_services = services;
 		Title = definition.Title;
-		Width = definition.Width; Height = definition.Height;
-		if (definition.MinWidth is {} minWidth) MinWidth = minWidth;
-		if (definition.MinHeight is {} minHeight) MinHeight = minHeight;
+		Width = definition.Width;
+		Height = definition.Height;
+		MinWidth = definition.MinWidth ?? 720;
+		MinHeight = definition.MinHeight ?? 480;
+		CanResize = definition.CanResize;
+		NativeWindowSizing.ConstrainOnFirstOpen(this, NativeWindowSizing.DefaultSize);
 		WindowStartupLocation = WindowStartupLocation.CenterScreen;
 		RequestedThemeVariant = ThemeVariant.Dark;
+		FontFamily = NoriTypography.System;
+		Background = ChatPalette.Background;
+		Foreground = ChatPalette.Body;
+		Resources["MainText"] = ChatPalette.Body;
+		Resources["MainLine"] = ChatPalette.Line;
+		Resources["MainHover"] = ChatPalette.Overlay;
+		Resources["MainAccent"] = ChatPalette.Teal;
+		Resources["MainOnAccent"] = ChatPalette.OnTeal;
 		Styles.Add(new StyleInclude(new Uri("avares://Nori.Desktop/"))
 		{
-			Source = new Uri("avares://Nori.Desktop/Settings/SettingsTheme.axaml"),
+			Source = new Uri("avares://Nori.Desktop/Main/MainTheme.axaml"),
 		});
-		Background = ChatPalette.Background;
-		WindowDecorations = PlatformServices.Current.Capabilities.SupportsWindowDrag
-			? WindowDecorations.None
-			: WindowDecorations.Full;
-
-		_home = new HomeView(services, Refresh);
-		_collapsed = _services.Config.GetBoolOr(KeySidebarCollapsed, false);
+		WindowDecorations = WindowDecorations.None;
+		_lastData = ReadMainRefreshData();
+		_english = _lastData.English;
+		_collapsed = _lastData.Collapsed;
+		_home = new HomeView(services, RefreshFromCache);
 		Content = BuildChrome();
-		Refresh();
-
+		ApplyMainRefresh(_lastData);
 		Opened += (_, _) => StartRefreshing();
 		Closing += (_, args) =>
 		{
 			if (AllowClose) return;
 			args.Cancel = true;
-			// 主界面关掉只是收起：托盘还在，伴侣可能还在桌面上。
 			Hide();
 		};
 		PropertyChanged += (_, args) =>
@@ -155,437 +107,350 @@ public sealed class MainWindow : Window
 		};
 	}
 
-	private bool IsEnglish() =>
-		_services.Config.GetStringOr(ConfigStore.KeyLanguage, "zh-CN")
-			.StartsWith("en", StringComparison.OrdinalIgnoreCase);
+	private bool IsEnglish() => _english;
 
 	private Control BuildChrome()
 	{
-		Border header = BuildHeader();
-		Border sidebar = BuildSidebar();
-
+		_pageTitle.FontWeight = FontWeight.SemiBold;
+		_error.IsVisible = false;
+		_hints.IsVisible = false;
 		ScrollViewer body = new()
 		{
-			HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
-			Padding = new Thickness(22, 18),
-			Content = _home,
+			Name = "HomeScroll", HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+			Padding = new Thickness(24, 22),
+			Content = new StackPanel
+			{
+				MaxWidth = 1120, Spacing = 20, HorizontalAlignment = HorizontalAlignment.Stretch,
+				Children = {new StackPanel {Spacing = 5, Children = {_pageTitle, _pageSubtitle}}, _error, _home},
+			},
 		};
-
-		Border footer = new()
-		{
-			Background = ChatPalette.Deep,
-			BorderBrush = ChatPalette.Panel, BorderThickness = new Thickness(0, 1, 0, 0),
-			Padding = new Thickness(16, 8),
-			Child = _hints,
-		};
-
-		DockPanel right = new() {LastChildFill = true};
-		DockPanel.SetDock(footer, Dock.Bottom);
-		right.Children.Add(footer);
-		right.Children.Add(body);
-
-		DockPanel shell = new() {LastChildFill = true};
-		DockPanel.SetDock(header, Dock.Top);
-		DockPanel.SetDock(sidebar, Dock.Left);
-		shell.Children.Add(header);
-		shell.Children.Add(sidebar);
-		shell.Children.Add(right);
-		return shell;
+		Grid workspace = new() {ColumnDefinitions = new ColumnDefinitions("Auto,*")};
+		workspace.Children.Add(BuildSidebar());
+		Grid.SetColumn(body, 1);
+		workspace.Children.Add(body);
+		Grid shell = new() {RowDefinitions = new RowDefinitions("52,*,Auto")};
+		shell.Children.Add(BuildHeader());
+		Grid.SetRow(workspace, 1);
+		shell.Children.Add(workspace);
+		Control footer = BuildFooter();
+		Grid.SetRow(footer, 2);
+		shell.Children.Add(footer);
+		return new Border {BorderBrush = ChatPalette.Line, BorderThickness = new Thickness(1), Child = shell};
 	}
 
 	private Border BuildHeader()
 	{
-		TextBlock brand = new()
+		StackPanel brand = new()
 		{
-			Text = "Nori", FontSize = 15, FontWeight = FontWeight.SemiBold,
-			Foreground = ChatPalette.Primary, VerticalAlignment = VerticalAlignment.Center,
-		};
-
-		Button minimize = ChromeButton("─", () => WindowState = WindowState.Minimized);
-		Button close = ChromeButton("✕", Hide);
-
-		Border header = new()
-		{
-			Height = 44,
-			Background = ChatPalette.Deep,
-			BorderBrush = ChatPalette.Panel, BorderThickness = new Thickness(0, 0, 0, 1),
-			Padding = new Thickness(16, 0, 6, 0),
-			Child = new DockPanel
+			Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center,
+			Children =
 			{
-				LastChildFill = false,
-				Children = {brand, close, minimize},
+				MainVisual.Icon("sparkles", 23, ChatPalette.Teal),
+				new TextBlock {Text = "Nori", FontSize = 18, FontWeight = FontWeight.SemiBold, Foreground = ChatPalette.Primary},
+				new Border {Width = 1, Height = 14, Background = ChatPalette.Line, Margin = new Thickness(4, 0)},
+				_brandCaption,
 			},
 		};
-		DockPanel.SetDock(brand, Dock.Left);
-		DockPanel.SetDock(close, Dock.Right);
-		DockPanel.SetDock(minimize, Dock.Right);
-
-		// 去掉系统边框之后，顶部这条就是拖动区。
-		header.PointerPressed += (_, args) =>
-		{
-			if (args.GetCurrentPoint(header).Properties.IsLeftButtonPressed) BeginMoveDrag(args);
-		};
-		return header;
+		_windowChrome = new NativeWindowChrome(this, IsEnglish, brand) { Height = 52 };
+		return _windowChrome;
 	}
 
-	private static Button ChromeButton(string glyph, Action onClick)
-	{
-		Button button = new()
-		{
-			Content = glyph, Width = 34, Height = 26,
-			Background = Brushes.Transparent, Foreground = ChatPalette.Muted,
-			BorderThickness = default,
-			VerticalAlignment = VerticalAlignment.Center,
-		};
-		button.Click += (_, _) => onClick();
-		return button;
-	}
-
-	/// <summary>
-	/// 侧边栏。
-	///
-	/// 「主页」和下面四个**形状不同**：前者是当前窗口里的页面，带左侧高亮条与选中底色；
-	/// 后者点了各自开窗，所以没有高亮条、没有选中态，只有一个「它已经开着」的圆点。
-	/// 这条区分是上一轮专门改过的，别再把它们画成一样。
-	///
-	/// 几何上五行共用一套：高亮条槽位 3px → 图标 16px → 标签 → 状态点。高亮条即使不
-	/// 显示也占位，图标因此在五行里共用一个横坐标；收起时这个横坐标不变，宽度变化不会
-	/// 让图标横移。
-	///
-	/// 结构在这里建一次，内容每次 <see cref="Refresh"/> 重填 —— 界面语言可在运行时切换，
-	/// 建一次填一次的话「主页」和分组标题会停在启动时的语言。
-	/// </summary>
 	private Border BuildSidebar()
 	{
-		_collapse.Background = Brushes.Transparent;
-		_collapse.BorderThickness = default;
-		_collapse.Padding = new Thickness(8, 0);
-		_collapse.Height = 34;
-		_collapse.Margin = new Thickness(8, 4, 8, 8);
-		_collapse.CornerRadius = new CornerRadius(8);
+		_homeLabel.FontWeight = FontWeight.SemiBold;
+		Border home = new()
+		{
+			Background = ChatPalette.Panel, CornerRadius = new CornerRadius(8), Padding = new Thickness(13, 12),
+			BorderBrush = ChatPalette.Teal, BorderThickness = new Thickness(2, 0, 0, 0),
+			Child = new StackPanel {Orientation = Orientation.Horizontal, Spacing = 12, Children = {MainVisual.Icon("home", 20, ChatPalette.Teal), _homeLabel}},
+		};
+		_groupLabel.Margin = new Thickness(14, 20, 0, 6);
+		StackPanel navigation = new() {Spacing = 5, Children = {home, _groupLabel}};
+		foreach (string window in new[] {WindowLabels.Chat, WindowLabels.Models, WindowLabels.Memory, WindowLabels.Settings})
+		{
+			TextBlock label = Label(13, ChatPalette.Body);
+			Ellipse dot = new() {Width = 6, Height = 6, Fill = ChatPalette.Teal, IsVisible = false};
+			Ellipse badge = new() {Width = 6, Height = 6, Fill = ChatPalette.Accent, IsVisible = false};
+			Grid row = new() {ColumnDefinitions = new ColumnDefinitions("20,*,Auto"), ColumnSpacing = 8};
+			row.Children.Add(MainVisual.Icon(window));
+			Grid.SetColumn(label, 1);
+			row.Children.Add(label);
+			StackPanel dots = new() {Orientation = Orientation.Horizontal, Spacing = 5, VerticalAlignment = VerticalAlignment.Center, Children = {badge, dot}};
+			Grid.SetColumn(dots, 2);
+			row.Children.Add(dots);
+			Button button = new()
+			{
+				Name = $"Launcher_{window}", Content = row, Height = 44,
+				Padding = new Thickness(12, 8), BorderThickness = default,
+				HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+			};
+			button.Click += (_, _) => RunAction(() => _services.Windows.Show(window));
+			_launchers.Add(new LauncherEntry(window, button, label, dot, badge));
+			navigation.Children.Add(button);
+		}
 		_collapse.HorizontalAlignment = HorizontalAlignment.Stretch;
-		_collapse.HorizontalContentAlignment = HorizontalAlignment.Stretch;
-		_collapse.Cursor = new Cursor(StandardCursorType.Hand);
-		_collapse.Click += (_, _) => SetCollapsed(!_collapsed);
-		Hoverable(_collapse);
-
-		DockPanel column = new() {LastChildFill = true};
-		DockPanel.SetDock(_collapse, Dock.Bottom);
-		column.Children.Add(_collapse);
-		column.Children.Add(_navigation);
-
-		_sidebar.Width = _collapsed ? SidebarNarrow : SidebarWide;
-		_sidebar.Background = SidebarGround;
+		_collapse.Click += async (_, _) => await ToggleSidebarAsync();
+		Grid contents = new() {RowDefinitions = new RowDefinitions("*,Auto"), Margin = new Thickness(10, 18, 10, 14)};
+		contents.Children.Add(navigation);
+		Grid.SetRow(_collapse, 1);
+		contents.Children.Add(_collapse);
+		_sidebar.Background = ChatPalette.Deep;
 		_sidebar.BorderBrush = ChatPalette.Line;
 		_sidebar.BorderThickness = new Thickness(0, 0, 1, 0);
-		_sidebar.Child = column;
-		// 宽度过渡只在用户点击收起时发生，属于对操作的回应；系统关闭动效时不加。
-		if (MotionPreference.AllowAnimation)
-		{
-			_sidebar.Transitions =
-			[
-				new DoubleTransition
-				{
-					Property = WidthProperty,
-					Duration = TimeSpan.FromMilliseconds(160),
-					Easing = new CubicEaseOut(),
-				},
-			];
-		}
+		_sidebar.Child = contents;
 		return _sidebar;
 	}
 
-	/// <summary>重填侧边栏。五行加一条分组标题，全部按当前语言与当前状态重建。</summary>
-	private void FillSidebar(bool english)
+	private Control BuildFooter()
 	{
-		_navigation.Children.Clear();
-
-		Border home = new()
+		_petToggle.Classes.Add("primary");
+		_petToggle.Click += (_, _) => RunAction(() =>
 		{
-			Height = 36,
-			Margin = new Thickness(8, 8, 8, 2),
-			CornerRadius = new CornerRadius(8),
-			Padding = new Thickness(8, 0),
-			Background = SidebarActive,
-			Child = Row("home", english ? "Home" : "主页", active: true),
+			if (!_home.ModelReady) _services.Windows.Show(WindowLabels.Models);
+			else if (_services.Windows.IsWindowVisible(WindowLabels.Pet)) _services.Windows.Hide(WindowLabels.Pet);
+			else _services.Windows.Show(WindowLabels.Pet);
+		});
+		_exit.Click += (_, _) => _services.Windows.Shutdown();
+		StackPanel status = new()
+		{
+			Orientation = Orientation.Horizontal, Spacing = 9,
+			VerticalAlignment = VerticalAlignment.Center, Children = {_petDot, _petStatus},
 		};
-		_navigation.Children.Add(home);
-
-		// 分组标题。收起后没有地方放文字，换成一条分隔线 —— 分组关系仍在，只是不写名字。
-		_navigation.Children.Add(_collapsed
-			? new Border
-			{
-				Height = 1, Background = ChatPalette.Line,
-				Margin = new Thickness(16, 12, 16, 10),
-			}
-			: new TextBlock
-			{
-				Text = english ? "Open" : "打开",
-				Foreground = ChatPalette.Faint, FontSize = 10,
-				FontWeight = FontWeight.SemiBold, LetterSpacing = 0.8,
-				Margin = new Thickness(19, 14, 0, 6),
-			});
-
-		_navigation.Children.Add(_launchers);
-
-		_collapse.Content = Row(_collapsed ? "chevron-right" : "chevron-left",
-				_collapsed
-					? english ? "Expand" : "展开侧栏"
-					: english ? "Collapse" : "收起侧栏",
-			active: false);
-		ToolTip.SetTip(_collapse, _collapsed ? english ? "Expand" : "展开侧栏" : null);
+		Grid row = new() {ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 12};
+		row.Children.Add(status);
+		StackPanel actions = new() {Orientation = Orientation.Horizontal, Spacing = 8, Children = {_exit, _petToggle}};
+		Grid.SetColumn(actions, 1);
+		row.Children.Add(actions);
+		return new Border
+		{
+			Padding = new Thickness(20, 10), Background = ChatPalette.Deep,
+			BorderBrush = ChatPalette.Line, BorderThickness = new Thickness(0, 1, 0, 0),
+			Child = new StackPanel {Spacing = 8, Children = {_hints, row}},
+		};
 	}
 
-	/// <summary>收起或展开。写入配置，下次启动沿用。</summary>
-	private void SetCollapsed(bool collapsed)
+	private async Task ToggleSidebarAsync()
 	{
-		if (_collapsed == collapsed) return;
-		_collapsed = collapsed;
+		if (_savingSidebar) return;
+		_savingSidebar = true;
+		_collapsed = !_collapsed;
+		ApplyMainRefresh(_lastData);
 		try
 		{
-			// 写成 "1"/"0"：settings_update_general 写这个键时用的就是这个形状，
-			// 两处写法不一致的话读取端要兼容两种，而其中一种迟早会漏。
-			_services.Config.Set(KeySidebarCollapsed, new ConfigValue.Text(collapsed ? "1" : "0"));
-			// 设置窗口与网页端读的是快照里的 general.sidebarCollapsed，不发通知它们不跟。
-			_services.Runtime?.InvalidateSnapshot("general");
+			bool value = _collapsed;
+			await Task.Run(() => _services.Config.Set("ui_sidebar_collapsed", new ConfigValue.Boolean(value)), _services.ShutdownToken);
+			_error.IsVisible = false;
 		}
 		catch (Exception failure)
 		{
-			// 写不进去只影响下次启动的初值，当前这次照常收起。
-			_services.Logger.Write(LogSource.Backend, "warn", $"侧边栏状态写入失败：{failure.Message}");
+			if (!_closed && !_services.ShutdownToken.IsCancellationRequested) ShowError(failure);
 		}
-		_sidebar.Width = collapsed ? SidebarNarrow : SidebarWide;
-		Refresh();
-	}
-
-	/// <summary>
-	/// 一行的内容。
-	///
-	/// 返回 DockPanel 而不是别的容器：读取端（含测试）按类型在这一层里找标签与状态点。
-	/// </summary>
-	private DockPanel Row(string icon, string label, bool active, params Control[] trailing)
-	{
-		Border bar = new()
+		finally
 		{
-			Width = 3, Height = 16,
-			CornerRadius = new CornerRadius(2),
-			Background = SidebarBar,
-			// 不显示时保留槽位，否则五行的图标各在各的横坐标上。
-			Opacity = active ? 1 : 0,
-			Margin = new Thickness(0, 0, 9, 0),
-			VerticalAlignment = VerticalAlignment.Center,
-		};
-
-		Control glyph = LineIcon.Build(icon, active ? ChatPalette.Teal : ChatPalette.Muted, 16);
-		glyph.Margin = new Thickness(0, 0, 10, 0);
-
-		TextBlock text = new()
-		{
-			Text = label, FontSize = 13,
-			FontWeight = active ? FontWeight.SemiBold : FontWeight.Medium,
-			Foreground = active ? ChatPalette.Primary : ChatPalette.Body,
-			IsVisible = !_collapsed,
-			VerticalAlignment = VerticalAlignment.Center,
-		};
-
-		DockPanel row = new() {LastChildFill = false, VerticalAlignment = VerticalAlignment.Center};
-		DockPanel.SetDock(bar, Dock.Left);
-		DockPanel.SetDock(glyph, Dock.Left);
-		DockPanel.SetDock(text, Dock.Left);
-		row.Children.Add(bar);
-		row.Children.Add(glyph);
-		row.Children.Add(text);
-		foreach (Control control in trailing)
-		{
-			DockPanel.SetDock(control, Dock.Right);
-			row.Children.Add(control);
+			_savingSidebar = false;
+			if (!_closed && !_services.ShutdownToken.IsCancellationRequested) QueueRefresh();
 		}
-		return row;
 	}
 
-	/// <summary>悬停底色。显式赋值会盖掉主题的悬停样式，所以两端都自己给。</summary>
-	private static void Hoverable(Button button)
+	private void RunAction(Action action)
 	{
-		button.PointerEntered += (_, _) => button.Background = SidebarHover;
-		button.PointerExited += (_, _) => button.Background = Brushes.Transparent;
+		try { action(); _error.IsVisible = false; }
+		catch (Exception failure) { ShowError(failure); }
+		RefreshFromCache();
 	}
 
-	/// <summary>
-	/// 一个启动器。点了开另一个窗口；已经开着时右侧亮一个圆点。
-	///
-	/// 圆点只表示「这个窗口开着」，没有第二种含义 —— 上一轮试过给关闭态也画一个暗点，
-	/// 在 6 像素的圆上那个颜色根本看不出来，等于一个看不见的提示。
-	///
-	/// <paramref name="badge"/> 是另一种指示：该窗口里存在待配置项（目前只有设置页的
-	/// 模型服务未配置），用告警色的圆点，与开关状态的青色点区分。
-	/// </summary>
-	private Control LauncherEntry(string icon, string label, string windowLabel, bool badge = false)
+	private void ShowError(Exception failure)
 	{
-		bool open = _services.Windows?.IsWindowVisible(windowLabel) ?? false;
-
-		// 两颗点都按名字取用，不按位置：读取端（含测试）此前按 Children 下标取，
-		// 在这一行里插入图标就会静默取到另一个控件。
-		Ellipse dot = new()
-		{
-			Name = LauncherOpenDot,
-			Width = 6, Height = 6,
-			Fill = ChatPalette.Teal,
-			IsVisible = open,
-			VerticalAlignment = VerticalAlignment.Center,
-		};
-
-		Ellipse attention = new()
-		{
-			Name = LauncherBadgeDot,
-			Width = 6, Height = 6,
-			Fill = SidebarBadge,
-			IsVisible = badge,
-			Margin = new Thickness(0, 0, open ? 8 : 0, 0),
-			VerticalAlignment = VerticalAlignment.Center,
-		};
-
-		Button button = new()
-		{
-			Height = 36,
-			Background = Brushes.Transparent,
-			BorderThickness = default,
-			CornerRadius = new CornerRadius(8),
-			Padding = new Thickness(8, 0),
-			Margin = new Thickness(8, 0),
-			HorizontalAlignment = HorizontalAlignment.Stretch,
-			HorizontalContentAlignment = HorizontalAlignment.Stretch,
-			Cursor = new Cursor(StandardCursorType.Hand),
-			// 与「主页」同一套行内几何：高亮条槽位（这里不显示）→ 图标 → 标签 → 状态点。
-			Content = Row(icon, label, active: false, dot, attention),
-		};
-		Hoverable(button);
-		// 收起后标签不显示，名称改由 ToolTip 承担。
-		ToolTip.SetTip(button, _collapsed ? label : null);
-		button.Click += (_, _) =>
-		{
-			_services.Windows?.Show(windowLabel);
-			Refresh();
-		};
-		return button;
+		_error.Text = IsEnglish() ? "Unable to complete this action. Please try again." : "操作未完成，请重试。";
+		_error.IsVisible = true;
+		_services.Logger.Write(LogSource.Backend, "warn", $"主界面操作失败：{failure.GetType().Name}");
 	}
 
-	/// <summary>
-	/// 重画那些会变的部分。
-	///
-	/// 整幅重建而不是绑定：这一页上会变的东西不多（四个窗口的开关状态、首页那几个
-	/// 计数），而绑定要为每一项维护一个通知源，代价比重建大。
-	///
-	/// **但重建要有条件**：这个方法由一个 2 秒的定时器驱动，无条件重建会每 2 秒把
-	/// 侧边栏那五行换成新控件 —— 指针停在某一行上时悬停底色被重置，而且每次都在丢弃
-	/// 并重建一批控件。所以先比一遍状态签名，没变就什么也不做。
-	/// </summary>
-	private void Refresh()
+	private void RefreshChrome(bool english)
 	{
-		bool english = IsEnglish();
-		// 设置项带一个待办标记：模型服务未配置时，对话窗口打开也无法出结果，
-		// 这个条件必须在主界面上可见。
-		bool providerReady = _services.AiSettings.Read().Chat.IsConfigured;
-
-		string signature = string.Join('|',
-			english ? "en" : "zh",
-			_collapsed ? "c" : "e",
-			providerReady ? "ai" : "-",
-			string.Concat(Launchers.Select(entry =>
-				_services.Windows?.IsWindowVisible(entry.Window) == true ? '1' : '0')));
-
-		if (signature != _sidebarSignature)
+		if (_chromeState == (english, _collapsed)) return;
+		_chromeState = (english, _collapsed);
+		_sidebar.Width = _collapsed ? 74 : 174;
+		_homeLabel.Text = english ? "Home" : "主页";
+		_homeLabel.IsVisible = !_collapsed;
+		_groupLabel.Text = english ? "WORKSPACE" : "工作空间";
+		_groupLabel.IsVisible = !_collapsed;
+		_pageTitle.Text = english ? "Home" : "主页";
+		_pageSubtitle.Text = english ? "A little company, always close by." : "一点陪伴，随时在你身边。";
+		_brandCaption.Text = english ? "Desktop companion" : "桌面伴侣";
+		_windowChrome.RefreshLabels();
+		string collapseText = _collapsed ? english ? "Expand sidebar" : "展开侧栏" : english ? "Collapse sidebar" : "折叠侧栏";
+		_collapse.Content = new StackPanel
 		{
-			_sidebarSignature = signature;
-			_launchers.Children.Clear();
-			foreach ((string icon, Func<bool, string> label, string window) in Launchers)
+			Orientation = Orientation.Horizontal, Spacing = 10,
+			Children = {MainVisual.Icon(_collapsed ? "right" : "left", 16), new TextBlock {Text = collapseText, FontSize = 12, IsVisible = !_collapsed}},
+		};
+		NameControl(_collapse, collapseText);
+		foreach (LauncherEntry launcher in _launchers)
+		{
+			string text = launcher.Window switch
 			{
-				_launchers.Children.Add(LauncherEntry(icon, label(english), window,
-					badge: window == WindowLabels.Settings && !providerReady));
-			}
-			FillSidebar(english);
+				WindowLabels.Chat => english ? "Chat" : "对话",
+				WindowLabels.Models => english ? "Models" : "模型",
+				WindowLabels.Memory => english ? "Memory" : "记忆",
+				_ => english ? "Settings" : "设置",
+			};
+			launcher.Label.Text = text;
+			launcher.Label.IsVisible = !_collapsed;
+			launcher.Button.Padding = _collapsed ? new Thickness(6, 8) : new Thickness(12, 8);
+			((Grid)launcher.Button.Content!).ColumnSpacing = _collapsed ? 0 : 8;
+			NameControl(launcher.Button, text + (english ? " · opens a window" : " · 打开独立窗口"));
 		}
+	}
 
-		_home.Refresh(english);
+	private void RefreshFromCache()
+	{
+		if (_closed) return;
+		ApplyMainRefresh(_lastData);
+	}
 
-		// 平台能力缺失时要说出来：托盘不可用的桌面环境里，用户找不到常驻入口。
+	private MainRefreshData ReadMainRefreshData()
+	{
+		bool english = UiLanguage.IsEnglish(_services.Config);
+		bool collapsed = _services.Config.GetStringOr("ui_sidebar_collapsed", "false") is "true" or "1";
+		string modelId = _services.Config.GetStringOr(ConfigStore.KeySelectedModel, ConfigStore.DefaultModel);
+		bool modelReady = false;
+		try
+		{
+			modelReady = SupportedModelIds.Normalize(modelId) is not null
+				&& _services.Resources.IsInstalled(ResourceType.Live2D, modelId);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ResourceException)
+		{
+			modelReady = false;
+		}
+		AiChatSettings chat = _services.AiSettings.Read().Chat;
+		return new MainRefreshData(english, collapsed, new HomeRefreshData(modelId, modelReady, chat.IsConfigured, chat.Model));
+	}
+
+	private void ApplyMainRefresh(MainRefreshData data)
+	{
+		_lastData = data;
+		_english = data.English;
+		if (!_savingSidebar) _collapsed = data.Collapsed;
+		bool english = _english;
+		RefreshChrome(english);
+		foreach (LauncherEntry launcher in _launchers)
+		{
+			launcher.Dot.IsVisible = _services.Windows.IsWindowVisible(launcher.Window);
+			launcher.Badge.IsVisible = launcher.Window == WindowLabels.Settings && !data.Home.ChatConfigured;
+		}
+		_home.Refresh(english, data.Home);
+		bool visible = _services.Windows.IsWindowVisible(WindowLabels.Pet);
+		string model = data.Home.ModelId;
+		string modelName = model switch {"nori" => "Nori", "arg-nori" => "ARG Nori", _ => model};
+		_petStatus.Text = (visible ? english ? "On your desktop" : "伴侣已在桌面" : english ? "Resting" : "伴侣休息中") + "  ·  " + modelName;
+		_petDot.Fill = visible ? ChatPalette.Teal : ChatPalette.Faint;
+		_petToggle.Content = !_home.ModelReady ? english ? "Import appearance" : "导入形象"
+			: visible ? english ? "Hide Nori" : "收起 Nori" : english ? "Summon Nori" : "唤出 Nori";
+		_exit.Content = english ? "Quit" : "退出程序";
+		_exit.IsVisible = _services.Runtime is {TrayAvailable: false};
 		List<string> hints = [];
 		PlatformCapabilities capabilities = PlatformServices.Current.Capabilities;
 		if (_services.Runtime is {TrayAvailable: false})
 			hints.Add(english ? "System tray unavailable; use this window to reach Nori." : "系统托盘不可用，只能从这个窗口找到 Nori。");
 		if (!capabilities.SupportsHitThrough)
 			hints.Add(english ? "Click-through is unavailable on this platform." : "本平台不支持点击穿透。");
-		_hints.Text = hints.Count > 0 ? string.Join("  ", hints) : "";
+		_hints.Text = string.Join("  ", hints);
 		_hints.IsVisible = hints.Count > 0;
 	}
 
-	/// <summary>
-	/// 窗口可见时才轮询。
-	///
-	/// 别的窗口的显隐没有事件通到这里（WindowManager 的 VisibilityChanged 是给快照
-	/// 用的），而侧边栏那几个圆点要跟着变。两秒一次对一个静态页面足够，
-	/// 也不会在窗口收起之后继续空转。
-	/// </summary>
+	private static TextBlock Label(double size, IBrush? foreground = null) => new()
+	{
+		FontSize = size, Foreground = foreground ?? ChatPalette.Muted,
+		TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center,
+	};
+
+
+	private static void NameControl(Control control, string name)
+	{
+		AutomationProperties.SetName(control, name);
+		ToolTip.SetTip(control, name);
+	}
+
 	private void StartRefreshing()
 	{
-		if (_refresh is not null) return;
-		_refresh = new DispatcherTimer {Interval = TimeSpan.FromSeconds(2)};
-		_refresh.Tick += (_, _) => Refresh();
-		_refresh.Start();
-		Refresh();
+		if (_closed || _updatesEnabled) return;
+		_updatesEnabled = true;
+		if (!_stateHooked && _services.Runtime is { } runtime)
+		{
+			runtime.StateChanged += OnRuntimeStateChanged;
+			_stateHooked = true;
+		}
+		_nextAllowed = 0;
+		QueueRefresh();
 	}
 
 	private void StopRefreshing()
 	{
-		_refresh?.Stop();
-		_refresh = null;
+		_updatesEnabled = false;
+		if (!_stateHooked) return;
+		_stateHooked = false;
+		if (_services.Runtime is { } runtime) runtime.StateChanged -= OnRuntimeStateChanged;
+	}
+
+	private void OnRuntimeStateChanged()
+	{
+		if (!_updatesEnabled || _closed) return;
+		QueueRefresh();
+	}
+
+	private void QueueRefresh()
+	{
+		if (!_updatesEnabled || _closed) return;
+		Interlocked.Exchange(ref _dirty, 1);
+		if (Interlocked.CompareExchange(ref _pumpQueued, 1, 0) != 0) return;
+		Dispatcher.UIThread.Post(() => _ = PumpRefreshAsync(), DispatcherPriority.Background);
+	}
+
+	private async Task PumpRefreshAsync()
+	{
+		try
+		{
+			while (_updatesEnabled && !_closed && Volatile.Read(ref _dirty) == 1)
+			{
+				long now = Stopwatch.GetTimestamp();
+				if (now < _nextAllowed)
+				{
+					await Task.Delay(Stopwatch.GetElapsedTime(now, _nextAllowed), _services.ShutdownToken).ConfigureAwait(true);
+					continue;
+				}
+				Interlocked.Exchange(ref _dirty, 0);
+				MainRefreshData data;
+				try
+				{
+					data = await Task.Run(ReadMainRefreshData, _services.ShutdownToken).ConfigureAwait(true);
+				}
+				catch (Exception exception) when (exception is not OperationCanceledException)
+				{
+					_services.Logger.Write(LogSource.Backend, "warn", $"刷新主界面失败：{exception.GetType().Name}");
+					break;
+				}
+				if (!_updatesEnabled || _closed || !IsVisible) break;
+				ApplyMainRefresh(data);
+				_nextAllowed = Stopwatch.GetTimestamp() + RefreshIntervalTicks;
+			}
+		}
+		catch (OperationCanceledException) when (_services.ShutdownToken.IsCancellationRequested)
+		{
+		}
+		finally
+		{
+			Interlocked.Exchange(ref _pumpQueued, 0);
+			if (_updatesEnabled && !_closed && Volatile.Read(ref _dirty) == 1) QueueRefresh();
+		}
 	}
 
 	protected override void OnClosed(EventArgs e)
 	{
+		_closed = true;
 		StopRefreshing();
 		base.OnClosed(e);
 	}
 
-	// ── 测试用 ─────────────────────────────────────────────────────────────
-
-	/// <summary>侧边栏上四个启动器的标签，按顺序。</summary>
-	internal IReadOnlyList<string> LauncherLabelsForTests =>
-		[.. _launchers.Children.OfType<Button>()
-			.Select(button => (button.Content as DockPanel)?.Children.OfType<TextBlock>().FirstOrDefault()?.Text ?? "")];
-
-	/// <summary>哪几个启动器亮着「窗口开着」那颗点。按名字取，不按位置。</summary>
-	internal IReadOnlyList<bool> LauncherDotsForTests =>
-		[.. _launchers.Children.OfType<Button>().Select(button => DotVisible(button, LauncherOpenDot))];
-
-	/// <summary>哪几个启动器亮着待办标记。</summary>
-	internal IReadOnlyList<bool> LauncherBadgesForTests =>
-		[.. _launchers.Children.OfType<Button>().Select(button => DotVisible(button, LauncherBadgeDot))];
-
-	private static bool DotVisible(Button button, string name) =>
-		(button.Content as DockPanel)?.Children
-			.OfType<Ellipse>().FirstOrDefault(shape => shape.Name == name)?.IsVisible ?? false;
-
-	/// <summary>底部那条平台提示；没有提示时为空串。</summary>
-	internal string HintsForTests => _hints.IsVisible ? _hints.Text ?? "" : "";
-
-	/// <summary>侧边栏当前宽度。</summary>
-	internal double SidebarWidthForTests => _sidebar.Width;
-
-	/// <summary>四个启动器的控件实例。用来判断有没有发生重建。</summary>
-	internal IReadOnlyList<Control> LauncherControlsForTests => [.. _launchers.Children.OfType<Control>()];
-
-	/// <summary>首页当前的顶层控件实例。同上。</summary>
-	internal IReadOnlyList<Control> HomeChildrenForTests => _home.ChildrenForTests;
-
-	/// <summary>启动器标签此刻是否显示。收起后只留图标。</summary>
-	internal IReadOnlyList<bool> LauncherLabelsVisibleForTests =>
-		[.. _launchers.Children.OfType<Button>()
-			.Select(button => (button.Content as DockPanel)?.Children
-				.OfType<TextBlock>().FirstOrDefault()?.IsVisible ?? false)];
-
-	/// <summary>手工收起或展开。</summary>
-	internal void SetCollapsedForTests(bool collapsed) => SetCollapsed(collapsed);
-
-	/// <summary>手工触发一次重画。</summary>
-	internal void RefreshForTests() => Refresh();
 }

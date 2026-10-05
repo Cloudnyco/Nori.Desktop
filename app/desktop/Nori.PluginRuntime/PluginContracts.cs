@@ -141,10 +141,9 @@ public sealed class PluginCapabilityAttribute(string id) : Attribute
 		: id;
 }
 
-/// <summary>第一阶段预留的能力 ID。</summary>
+/// <summary>宿主当前没有向插件开放的界面能力。</summary>
 public static class PluginCapabilityIds
 {
-	public const string WebView = "ui.webview";
 }
 
 /// <summary>插件边界错误，Code 是稳定的机器可读错误码。</summary>
@@ -186,73 +185,4 @@ public class PluginException : Exception
 
 	/// <summary>FileLoadException 涉及的程序集文件名 (仅文件名, 非完整路径)。</summary>
 	public string? DiagnosticAssemblyName { get; internal set; }
-}
-
-/// <summary>插件 WebView 能力。</summary>
-[PluginCapability(PluginCapabilityIds.WebView)]
-public interface IWebViewCapability : IPluginCapability
-{
-	Task<IPluginWebViewWindow> CreateWindowAsync(
-		PluginWebViewOptions options,
-		CancellationToken cancellationToken = default);
-}
-
-/// <summary>插件自定义 WebView bridge 命令处理器。插件页面经 bridge invoke 的非白名单命令会转发到此处理器。</summary>
-public interface IPluginWebViewCommandHandler
-{
-	/// <summary>处理页面发起的自定义命令。返回值会被 JSON 序列化后回传给页面。</summary>
-	Task<object?> HandleAsync(string command, JsonElement args, CancellationToken cancellationToken);
-}
-
-/// <summary>插件 WebView 创建参数。</summary>
-public sealed record PluginWebViewOptions
-{
-	/// <summary>插件内窗口 ID。</summary>
-	public required string Id { get; init; }
-
-	/// <summary>窗口标题。</summary>
-	public required string Title { get; init; }
-
-	/// <summary>相对插件 webRoot 的入口路径或由宿主生成的同源 URL。</summary>
-	public required string EntryPoint { get; init; }
-
-	/// <summary>插件自定义 bridge 命令处理器 (可选)。为空时非白名单命令仍被拒绝。</summary>
-	public IPluginWebViewCommandHandler? CommandHandler { get; init; }
-
-	/// <summary>窗口宽度 (DIP)。</summary>
-	public double Width { get; init; } = 800;
-
-	/// <summary>窗口高度 (DIP)。</summary>
-	public double Height { get; init; } = 600;
-
-	/// <summary>最小宽度。</summary>
-	public double? MinWidth { get; init; }
-
-	/// <summary>最小高度。</summary>
-	public double? MinHeight { get; init; }
-
-	/// <summary>是否允许调整尺寸。</summary>
-	public bool CanResize { get; init; } = true;
-
-	/// <summary>是否置顶。</summary>
-	public bool Topmost { get; init; }
-
-	/// <summary>是否显示在任务栏。</summary>
-	public bool ShowInTaskbar { get; init; } = true;
-}
-
-/// <summary>插件 WebView 的生命周期句柄。</summary>
-public interface IPluginWebViewWindow : IAsyncDisposable
-{
-	string PluginId { get; }
-	string Id { get; }
-	string Label { get; }
-	string? Title { get; }
-	bool IsVisible { get; }
-	Task ShowAsync(CancellationToken cancellationToken = default);
-	Task HideAsync(CancellationToken cancellationToken = default);
-	Task CloseAsync(CancellationToken cancellationToken = default);
-
-	/// <summary>向页面推送事件: 页面侧 window.__noriPlugin.dispatch({kind:'event', event, payload})。</summary>
-	Task SendEventAsync(string eventName, JsonNode? payload, CancellationToken cancellationToken = default);
 }

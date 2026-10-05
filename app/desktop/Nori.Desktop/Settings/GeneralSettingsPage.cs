@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace Nori.Desktop.Settings;
 
-/// <summary>界面语言、启动行为与隐私设置页。</summary>
+/// <summary>界面语言、启动行为与诊断设置页。</summary>
 public sealed class GeneralSettingsPage : SettingsPageBase
 {
 	/// <summary>创建常规设置页。</summary>
@@ -19,10 +19,18 @@ public sealed class GeneralSettingsPage : SettingsPageBase
 				new("en-US", new("English", "English")),
 			]);
 
+		SettingsSectionViewModel appearance = AddSection(new("外观", "Appearance"));
+		AddField(appearance, "backgroundBlurEnabled", new("背景模糊", "Background blur"), new("为窗口启用系统背景模糊；不支持时使用深色背景。", "Use system background blur for windows, with a dark background when unavailable."), SettingsEditorKind.Boolean,
+			snapshot => SettingsSnapshotReader.Boolean(snapshot, true, "general", "backgroundBlurEnabled"), true,
+			(value, token) => ExecuteAsync("settings_update_general", new { backgroundBlurEnabled = Convert.ToBoolean(value) }, token));
+
 		SettingsSectionViewModel startup = AddSection(new("启动与窗口", "Startup and window"));
 		AddField(startup, "petAutoSummon", new("启动时显示伴侣", "Show pet on startup"), new("启动后自动显示桌面伴侣窗口。", "Show the desktop pet automatically after startup."), SettingsEditorKind.Boolean,
 			snapshot => SettingsSnapshotReader.Boolean(snapshot, true, "general", "petAutoSummon"), true,
 			(value, token) => ExecuteAsync("settings_update_general", new { petAutoSummon = Convert.ToBoolean(value) }, token));
+		AddField(startup, "quickChatEnabled", new("快捷聊天", "Quick Chat"), new("显示跟随伴侣的快捷输入栏，并使用上半身构图。关闭后恢复普通桌宠。", "Show a quick input bar beside the pet with an upper-body view. Turn off to restore the ordinary pet."), SettingsEditorKind.Boolean,
+			snapshot => SettingsSnapshotReader.Boolean(snapshot, true, "general", "quickChatEnabled"), true,
+			(value, token) => ExecuteAsync("settings_update_general", new { quickChatEnabled = Convert.ToBoolean(value) }, token));
 		AddField(startup, "clickThrough", new("点击穿透", "Click through"), new("启用后可让鼠标穿过伴侣窗口。", "Allow the pointer to pass through the pet window."), SettingsEditorKind.Boolean,
 			snapshot => SettingsSnapshotReader.Boolean(snapshot, false, "behaviors", "clickThrough"), false,
 			(value, token) => ExecuteAsync("model_set_behavior", new { clickThrough = Convert.ToBoolean(value) }, token));
@@ -32,15 +40,12 @@ public sealed class GeneralSettingsPage : SettingsPageBase
 				? "" : Localized(snapshot, "当前桌面环境不支持点击穿透。", "Click through is unavailable in this desktop environment."),
 			"", (_, _) => Task.FromResult(default(JsonElement)), readOnly: true);
 
-		SettingsSectionViewModel privacy = AddSection(new("诊断与更新", "Diagnostics and updates"));
-		AddField(privacy, "telemetryEnabled", new("发送匿名诊断", "Send anonymous diagnostics"), new("只发送经过脱敏的崩溃和性能信息。", "Only redacted crash and performance data is sent."), SettingsEditorKind.Boolean,
+		SettingsSectionViewModel diagnostic = AddSection(new("诊断", "Diagnostics"));
+		AddField(diagnostic, "telemetryEnabled", new("发送匿名诊断", "Send anonymous diagnostics"), new("只发送经过脱敏的崩溃和性能信息。", "Only redacted crash and performance data is sent."), SettingsEditorKind.Boolean,
 			snapshot => SettingsSnapshotReader.Boolean(snapshot, false, "telemetry", "enabled"), false,
 			(value, token) => ExecuteAsync("settings_update_general", new { telemetryEnabled = Convert.ToBoolean(value) }, token));
-		AddField(privacy, "telemetryStatus", new("诊断状态", "Diagnostics status"), new("", ""), SettingsEditorKind.Text,
+		AddField(diagnostic, "telemetryStatus", new("诊断状态", "Diagnostics status"), new("", ""), SettingsEditorKind.Text,
 			TelemetryStatus, "", (_, _) => Task.FromResult(default(JsonElement)), readOnly: true);
-		AddField(privacy, "autoCheckUpdates", new("自动检查更新", "Check for updates automatically"), new("启动后一段时间和每天定期检查稳定版更新。", "Check for stable releases after startup and periodically."), SettingsEditorKind.Boolean,
-			snapshot => SettingsSnapshotReader.Boolean(snapshot, true, "general", "autoCheckUpdates"), true,
-			(value, token) => ExecuteAsync("settings_update_general", new { autoCheckUpdates = Convert.ToBoolean(value) }, token));
 	}
 	/// <inheritdoc />
 	internal override void ApplySnapshot(JsonElement snapshot)

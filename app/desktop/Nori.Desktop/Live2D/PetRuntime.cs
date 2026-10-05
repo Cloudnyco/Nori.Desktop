@@ -1,12 +1,10 @@
-﻿using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Avalonia.Threading;
-using Live2DCSharpSDK.App;
-using Live2DCSharpSDK.Framework;
-using Live2DCSharpSDK.Framework.Math;
-using Live2DCSharpSDK.Framework.Motion;
-using Live2DCSharpSDK.OpenGL;
+using System.Numerics;
+using Nori.Live2D;
+using Nori.Desktop.Live2D.Gl;
 using Nori.Core.Configuration;
 using Nori.Core.Data;
 using Nori.Core.Live2D;
@@ -38,7 +36,6 @@ public sealed class PetRuntime
 	private readonly ModelParameters _modelParams = new();
 	/// <summary>行为上下文逐帧复用, 避免渲染热路径上每帧分配</summary>
 	private readonly BehaviorContext _behaviorContext = new();
-	private readonly Random _random = new();
 	private readonly Lock _qualityGate = new();
 	private readonly Lock _metricsGate = new();
 	private Live2DRenderSettings _renderSettings = Live2DRenderSettings.Normalize("arg-nori");
@@ -53,20 +50,22 @@ public sealed class PetRuntime
 	private bool _offscreenRendering;
 	private bool _renderVisible;
 	private int _appliedMaskBufferSize;
+	private bool _maskResizeFailureLogged;
 
-	private LAppDelegateOpenGL? _app;
+	private readonly Lock _modelGate = new();
 	private AvaloniaGlApi? _gl;
-	private LAppModel? _currentModel;
+	private NativeModelHost? _currentModel;
 	private string _currentModelId = "arg-nori";
 	private string _currentModelDir = "";
 	private List<MotionGroupInfo> _motionGroups = [];
-	private readonly CubismMatrix44 _projectionMatrix = new();
 
 	private double _lastUpdateTime;
 	private double _lastTapTime;
 	private readonly Lock _interactionGate = new();
 	private PetInteractionConfig _interactionConfig = PetInteractionConfig.Empty;
 	private PetViewportMapping? _viewportMapping;
+	private PetDrawableGeometry? _presentationGeometry;
+	private int _presentationMode;
 
 	// ---- 后台模型准备 (世代归属) ----
 	//
@@ -94,6 +93,9 @@ public sealed class PetRuntime
 	public float RenderScale { get; private set; } = Live2DRenderSettings.DefaultRenderScale;
 	public string QualityMode { get; private set; } = Live2DRenderSettings.DefaultQualityMode;
 	public int MaxFps { get; private set; }
+	public PetPresentationMode PresentationMode => (PetPresentationMode)Volatile.Read(ref _presentationMode);
+	public PetPresentationProfile Presentation => PetPresentation.ForModel(_currentModelId);
+	public PetQuickChatLayout QuickChatLayout => PetPresentation.ScaleQuickChatLayout(Presentation.Layout, UserScale);
 
 	/// <summary>当前质量策略的有效目标 FPS。</summary>
 	public int EffectiveFps
@@ -134,6 +136,17 @@ public sealed class PetRuntime
 	/// <summary>缩放变化: 伴侣视窗据此重算窗口尺寸</summary>
 	public event Action? LayoutChanged;
 
+	/// <summary>
+	/// 切换 Quick Chat 固定头像展示。该状态只改变窗口与投影，不改写用户的模型缩放配置。
+	/// </summary>
+	public void SetQuickChatPresentation(bool enabled)
+	{
+		PetPresentationMode next = enabled ? PetPresentationMode.QuickChat : PetPresentationMode.Ordinary;
+		if (Interlocked.Exchange(ref _presentationMode, (int)next) == (int)next) return;
+		lock (_interactionGate) _viewportMapping = null;
+		LayoutChanged?.Invoke();
+	}
+
 	public PetRuntime(AppServices services) : this(services, previewMode: false)
 	{
 	}
@@ -155,7 +168,23 @@ public sealed class PetRuntime
 
 	internal bool IsPreviewMode => _previewMode;
 
-	public LAppModel? CurrentModel => _currentModel;
+	/// <summary>只串行当前实例的模型操作，宠物和预览不再共享 SDK 全局状态。</summary>
+	internal void RunSynchronized(Action action)
+	{
+		lock (_modelGate) action();
+	}
+
+	internal T RunSynchronized<T>(Func<T> action)
+	{
+		lock (_modelGate) return action();
+	}
+
+	internal void RunSynchronized<T>(T argument, Action<T> action)
+	{
+		lock (_modelGate) action(argument);
+	}
+
+	public NativeModelHost? CurrentModel => _currentModel;
 	public string CurrentModelId => _currentModelId;
 	public string? LastModelLoadError { get; private set; }
 	public IReadOnlyList<MotionGroupInfo> MotionGroups => _motionGroups;
@@ -189,16 +218,19 @@ public sealed class PetRuntime
 	}
 
 	/// <summary>
-	/// Cubism SDK 日志落到应用自己的文件日志
+	/// Live2D 日志落到应用自己的文件日志
 	///
 	/// 绝不能用 Console.WriteLine: 宿主是 WinExe 没有控制台, 写控制台会抛 IOException,
-	/// 而 Cubism 的日志是在渲染回调里发出的, 抛出去就是进程崩溃。
+	/// 而渲染日志是在渲染回调里发出的, 抛出去就是进程崩溃。
 	/// </summary>
-	public void WriteCubismLog(string message)
+	public void WriteLive2DLog(string message)
 	{
 		try
 		{
-			_services.Logger.Write(LogSource.Backend, "warn", $"[Live2D] {message}");
+			string level = message.StartsWith("[CSM] [E]", StringComparison.Ordinal) ? "error"
+				: message.StartsWith("[CSM] [W]", StringComparison.Ordinal) ? "warn"
+				: message.StartsWith("[CSM] [I]", StringComparison.Ordinal) ? "info" : "debug";
+			_services.Logger.Write(LogSource.Backend, level, "Live2D 诊断事件", "Live2D", "cubism.diagnostic");
 		}
 		catch
 		{
@@ -251,9 +283,8 @@ public sealed class PetRuntime
 		return Math.Round(ordered[index], 2);
 	}
 
-	public void OnGlInit(LAppDelegateOpenGL app, AvaloniaGlApi gl)
+	public void OnGlInit(AvaloniaGlApi gl)
 	{
-		_app = app;
 		_gl = gl;
 		_services.Logger.Write(LogSource.Backend, "info", "Live2D OpenGL 初始化完成");
 		// 预览实例只响应显式 LoadModelAsync，不读取或改写全局模型选择。
@@ -273,22 +304,44 @@ public sealed class PetRuntime
 	public void OnGlDeinit()
 	{
 		lock (_prepareGate) CancelPendingModelLoadLocked();
-		// 同上: 释放交给 manager, PetGlControl 随后的 _lapp.Dispose() 会走到 ReleaseAllModel()
+		NativeModelHost? previous = _currentModel;
 		_currentModel = null;
+		BindFixedBehaviorParameters(null);
+		_expressionBehavior.UnbindModel();
+		_presentationGeometry = null;
 		lock (_interactionGate) _viewportMapping = null;
-		_app?.Live2dManager.ReleaseAllModel();
-		_app = null;
+		previous?.Dispose();
 		_gl = null;
+	}
+
+	/// <summary>在当前模型绑定时缓存行为和视线动画使用的固定参数索引。</summary>
+	private void BindFixedBehaviorParameters(NativeModelHost? model)
+	{
+		if (model is null)
+		{
+			_modelParams.UnbindModel();
+			return;
+		}
+
+		_modelParams.BindModel(model.Model);
 	}
 
 	public void LoadConfigs()
 	{
-		float userScale = ParseFloatConfig($"l2d_scale_{_currentModelId}", ParseFloatConfig("l2d_scale", 1.0f));
-		float opacity = ParseFloatConfig(ModelConfigKey("l2d_opacity"), ParseFloatConfig("l2d_opacity", Live2DRenderSettings.DefaultOpacity));
-		bool shadow = ParseBoolConfig(ModelConfigKey("l2d_shadow"), ParseBoolConfig("l2d_shadow", true));
-		float renderScale = ParseFloatConfig(ModelConfigKey("l2d_render_scale"), ParseFloatConfig("l2d_render_scale", Live2DRenderSettings.DefaultRenderScale));
-		string qualityMode = ReadModelConfig("l2d_quality_mode", ReadConfig("l2d_quality_mode", Live2DRenderSettings.DefaultQualityMode));
-		int maxFps = (int)ParseFloatConfig(ModelConfigKey("l2d_max_fps"), ParseFloatConfig("l2d_max_fps", Live2DRenderSettings.DefaultMaxFps));
+		string interactionKey = PetInteractionConfig.StorageKey(_currentModelId);
+		IReadOnlyDictionary<string, ConfigValue> values = _services.Config.GetMany(
+		[
+			.. Live2DModelConfig.DisplayKeys(_currentModelId),
+			.. Live2DModelConfig.BehaviorKeys,
+			interactionKey,
+		]);
+
+		float userScale = Live2DModelConfig.ReadFloat(values, Live2DModelConfig.ScaleKey, _currentModelId, 1.0f);
+		float opacity = Live2DModelConfig.ReadFloat(values, Live2DModelConfig.OpacityKey, _currentModelId, Live2DRenderSettings.DefaultOpacity);
+		bool shadow = Live2DModelConfig.ReadBool(values, Live2DModelConfig.ShadowKey, _currentModelId, true);
+		float renderScale = Live2DModelConfig.ReadFloat(values, Live2DModelConfig.RenderScaleKey, _currentModelId, Live2DRenderSettings.DefaultRenderScale);
+		string qualityMode = Live2DModelConfig.ReadPreferredText(values, Live2DModelConfig.QualityModeKey, _currentModelId, Live2DRenderSettings.DefaultQualityMode);
+		int maxFps = (int)Live2DModelConfig.ReadFloat(values, Live2DModelConfig.MaxFpsKey, _currentModelId, Live2DRenderSettings.DefaultMaxFps);
 
 		Live2DRenderSettings settings = Live2DRenderSettings.Normalize(
 			_currentModelId,
@@ -306,23 +359,23 @@ public sealed class PetRuntime
 		MaxFps = settings.MaxFps;
 		lock (_qualityGate) _qualityPolicy.Update(settings, PowerSourceDetector.Detect());
 
-		AutoBlinkEnabled = ParseBoolConfig("l2d_auto_blink", true);
-		EyeTrackingEnabled = ParseBoolConfig("l2d_eye_tracking", true);
-		IdleEyeAnimationEnabled = ParseBoolConfig("l2d_idle_eye_animation", true);
-		IdleAnimationEnabled = ParseBoolConfig("l2d_idle_animation", true);
-		ExpressionEnabled = ParseBoolConfig("l2d_expression_enabled", true);
-		LipSyncEnabled = ParseBoolConfig("l2d_lip_sync", true);
-		BeatSyncEnabled = ParseBoolConfig("l2d_beat_sync", false);
-		ClickInteraction = ParseBoolConfig("l2d_click_interaction", true);
-		ClickThroughEnabled = ParseBoolConfig("l2d_click_through", false);
-		LoadInteractionConfig();
+		AutoBlinkEnabled = Live2DModelConfig.ParseBool(Live2DModelConfig.ReadText(values, "l2d_auto_blink")) ?? true;
+		EyeTrackingEnabled = Live2DModelConfig.ParseBool(Live2DModelConfig.ReadText(values, "l2d_eye_tracking")) ?? true;
+		IdleEyeAnimationEnabled = Live2DModelConfig.ParseBool(Live2DModelConfig.ReadText(values, "l2d_idle_eye_animation")) ?? true;
+		IdleAnimationEnabled = Live2DModelConfig.ParseBool(Live2DModelConfig.ReadText(values, "l2d_idle_animation")) ?? true;
+		ExpressionEnabled = Live2DModelConfig.ParseBool(Live2DModelConfig.ReadText(values, "l2d_expression_enabled")) ?? true;
+		LipSyncEnabled = Live2DModelConfig.ParseBool(Live2DModelConfig.ReadText(values, "l2d_lip_sync")) ?? true;
+		BeatSyncEnabled = Live2DModelConfig.ParseBool(Live2DModelConfig.ReadText(values, "l2d_beat_sync")) ?? false;
+		ClickInteraction = Live2DModelConfig.ParseBool(Live2DModelConfig.ReadText(values, "l2d_click_interaction")) ?? true;
+		ClickThroughEnabled = Live2DModelConfig.ParseBool(Live2DModelConfig.ReadText(values, "l2d_click_through")) ?? false;
+		LoadInteractionConfig(values.TryGetValue(interactionKey, out ConfigValue? interaction) ? interaction : null);
 	}
 
 	/// <summary>读取当前模型的自定义互动配置；损坏配置按空配置处理。</summary>
-	private void LoadInteractionConfig()
+	private void LoadInteractionConfig(ConfigValue? stored)
 	{
 		PetInteractionConfig config = PetInteractionConfig.Empty;
-		if (_services.Config.Get(PetInteractionConfig.StorageKey(_currentModelId)) is ConfigValue.Json {Value: JsonNode node})
+		if (stored is ConfigValue.Json {Value: JsonNode node})
 		{
 			try
 			{
@@ -330,7 +383,7 @@ public sealed class PetRuntime
 			}
 			catch (Exception exception)
 			{
-				WriteCubismLog($"互动配置无效 [{_currentModelId}]: {exception.Message}");
+				WriteLive2DLog($"互动配置无效 [{_currentModelId}]: {exception.Message}");
 			}
 		}
 		lock (_interactionGate) _interactionConfig = config;
@@ -344,62 +397,11 @@ public sealed class PetRuntime
 		lock (_interactionGate) _interactionConfig = config;
 	}
 
-	/// <summary>
-	/// 读数值配置
-	///
-	/// ConfigValue 是 record, 直接 ToString() 会得到 "Integer { Value = 30 }" 这种调试字符串,
-	/// 必须走 AsStringOr. 另外 ConfigStore 读取时会重新推断类型, 存进去的 "1" / "0" 会变成
-	/// 布尔再还原成 "true" / "false", 所以这里要一并接住 (与前端 parseNumber 的处境相同).
-	/// </summary>
-	private string ModelConfigKey(string baseKey) => $"{baseKey}_{_currentModelId}";
+	private string ModelConfigKey(string baseKey) => Live2DModelConfig.ModelKey(baseKey, _currentModelId);
 
-	private string ReadConfig(string key, string fallback) => _services.Config.GetStringOr(key, fallback);
+	private static bool? ParseBool(string raw) => Live2DModelConfig.ParseBool(raw);
 
-	private string ReadModelConfig(string baseKey, string fallback)
-	{
-		string modelValue = _services.Config.GetStringOr(ModelConfigKey(baseKey), "");
-		return modelValue.Length > 0 ? modelValue : fallback;
-	}
-
-	private float ParseFloatConfig(string key, float fallback)
-	{
-		string raw = _services.Config.GetStringOr(key, "");
-		if (raw.Length == 0) return fallback;
-		if (raw.Equals("true", StringComparison.OrdinalIgnoreCase)) return 1.0f;
-		if (raw.Equals("false", StringComparison.OrdinalIgnoreCase)) return 0.0f;
-		return float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out float value) ? value : fallback;
-	}
-
-	/// <summary>
-	/// 读布尔配置 (同样要走 AsStringOr, 并接住 "1" / "0")
-	/// </summary>
-	private bool ParseBoolConfig(string key, bool fallback)
-	{
-		string raw = _services.Config.GetStringOr(key, "");
-		return ParseBool(raw) ?? fallback;
-	}
-
-	/// <summary>
-	/// 解析布尔文本: 与前端 parseBoolean 同口径
-	/// </summary>
-	private static bool? ParseBool(string raw) => raw switch
-	{
-		"1" => true,
-		"0" => false,
-		_ when raw.Equals("true", StringComparison.OrdinalIgnoreCase) => true,
-		_ when raw.Equals("false", StringComparison.OrdinalIgnoreCase) => false,
-		_ => null,
-	};
-
-	/// <summary>
-	/// 解析数值文本: 与 ParseFloatConfig 同口径, 供配置热更新使用
-	/// </summary>
-	private static float? ParseFloat(string raw)
-	{
-		if (raw.Equals("true", StringComparison.OrdinalIgnoreCase)) return 1.0f;
-		if (raw.Equals("false", StringComparison.OrdinalIgnoreCase)) return 0.0f;
-		return float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out float value) ? value : null;
-	}
+	private static float? ParseFloat(string raw) => Live2DModelConfig.ParseFloat(raw);
 
 	/// <summary>
 	/// 请求切换模型 (线程安全): 递增世代并在后台开始元数据准备.
@@ -596,7 +598,7 @@ public sealed class PetRuntime
 
 		try
 		{
-			_services.Logger.Write(LogSource.Backend, "error", $"加载 Live2D 模型失败 [{operation.ModelId}]: {error.Message}");
+			_services.Logger.Write(LogSource.Backend, "error", $"加载 Live2D 模型失败 [{operation.ModelId}]: {error.GetType().Name}");
 		}
 		catch
 		{
@@ -637,13 +639,13 @@ public sealed class PetRuntime
 	private void NotifyModelLoadRequested()
 	{
 		try { ModelLoadRequested?.Invoke(); }
-		catch (Exception exception) { WriteCubismLog($"模型切换取消互动请求失败: {exception.Message}"); }
+		catch (Exception exception) { WriteLive2DLog($"模型切换取消互动请求失败: {exception.Message}"); }
 	}
 
 	private void NotifyModelLoadFailed()
 	{
 		try { ModelLoadFailed?.Invoke(); }
-		catch (Exception exception) { WriteCubismLog($"模型失败事件处理异常: {exception.Message}"); }
+		catch (Exception exception) { WriteLive2DLog($"模型失败事件处理异常: {exception.Message}"); }
 	}
 
 	private void CancelPendingModelLoadLocked()
@@ -679,21 +681,22 @@ public sealed class PetRuntime
 	/// GL 线程专属: 候选模型可先创建, 但提交前必须再次校验操作世代;
 	/// 过期候选只移除, 不得改变当前模型或持久化选择。
 	/// </summary>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "模型切换清理失败不能阻断渲染线程的后续收尾。")]
 	private void ApplyPreparedOnGlThread(ModelLoadOperation operation, PreparedModel prepared)
 	{
-		LAppDelegateOpenGL? app = _app;
-		if (app is null || _gl is null) return;
+		AvaloniaGlApi? gl = _gl;
+		if (gl is null) return;
 		lock (_prepareGate)
 		{
 			if (!IsCurrentOperationLocked(operation)) return;
 		}
 
-		LAppModel candidate;
+		NativeModelHost candidate;
 		try
 		{
 			// 文件读取、JSON 解析与纹理解码已由当前世代的后台准备完成。
-			// 此处只创建 Cubism 原生对象、renderer 并上传模型独占纹理。
-			candidate = app.Live2dManager.LoadModel(prepared.Assets);
+			// 此处只创建 原生模型与宿主渲染器 并上传模型独占纹理。
+			candidate = new NativeModelHost(gl, prepared.Assets);
 		}
 		catch (Exception exception)
 		{
@@ -701,7 +704,7 @@ public sealed class PetRuntime
 			return;
 		}
 
-		LAppModel? previousModel = null;
+		NativeModelHost? previousModel = null;
 		bool committed = false;
 		bool stale = false;
 		Exception? failure = null;
@@ -735,6 +738,8 @@ public sealed class PetRuntime
 				string previousQualityMode = QualityMode;
 				int previousMaxFps = MaxFps;
 				Live2DRenderSettings previousRenderSettings = _renderSettings;
+				int previousMaskBufferSize = _appliedMaskBufferSize;
+				bool previousMaskResizeFailureLogged = _maskResizeFailureLogged;
 				PetInteractionConfig previousInteraction;
 				lock (_interactionGate) previousInteraction = _interactionConfig;
 				string previousExpressionModelId = _expressionStore.ModelId;
@@ -744,15 +749,17 @@ public sealed class PetRuntime
 				try
 				{
 					_currentModel = candidate;
+					BindFixedBehaviorParameters(candidate);
+					_presentationGeometry = null;
 					_currentModelId = prepared.ModelId;
 					_currentModelDir = prepared.ModelDir;
-					candidate.CustomValueUpdate = true;
-					candidate.ValueUpdate = OnModelValueUpdate;
-					candidate.FinalValueUpdate = OnModelFinalValueUpdate;
+					candidate.Animation.BeforeEffects = () => OnModelValueUpdate(candidate);
+					candidate.Animation.AfterEffects = () => OnModelFinalValueUpdate(candidate);
 
-					// UseHighPrecisionMask 必须保持关闭: 打开后 SDK 会对每一个被蒙版裁剪的部件
+					// UseHighPrecisionMask 必须保持关闭: 打开后渲染器会对每一个被蒙版裁剪的部件
 					// 单独把整张蒙版缓冲清空并重画一遍, 质量策略只调整缓冲尺寸与过滤等级。
 					_appliedMaskBufferSize = 0;
+					_maskResizeFailureLogged = false;
 					ApplyRenderQualityOnGlThread();
 					_expressionBehavior.ApplyPrepared(prepared, candidate.Model);
 					_motionGroups = [.. prepared.MotionGroups];
@@ -761,8 +768,8 @@ public sealed class PetRuntime
 					// 候选模型已经可用后才释放旧对象; 旧对象清理异常不能反向销毁新模型。
 					if (previousModel is not null)
 					{
-						try { app.Live2dManager.RemoveModel(previousModel); }
-						catch (Exception exception) { WriteCubismLog($"释放旧模型失败: {exception.Message}"); }
+						try { previousModel.Dispose(); }
+						catch (Exception exception) { WriteLive2DLog($"释放旧模型失败: {exception.Message}"); }
 					}
 					lock (_interactionGate) _viewportMapping = null;
 					LastModelLoadError = null;
@@ -773,6 +780,7 @@ public sealed class PetRuntime
 				{
 					failure = exception;
 					_currentModel = previousModel;
+					_presentationGeometry = null;
 					_currentModelId = previousModelId;
 					_currentModelDir = previousModelDir;
 					_motionGroups = previousMotionGroups;
@@ -798,42 +806,43 @@ public sealed class PetRuntime
 						previousExpressionModelId,
 						previousExpressionGroups,
 						previousExpressions);
-					_appliedMaskBufferSize = 0;
-					if (previousModel is not null)
-					{
-						try { ApplyRenderQualityOnGlThread(); } catch { }
-					}
+					BindFixedBehaviorParameters(previousModel);
+					if (previousModel is null) _expressionBehavior.UnbindModel();
+					else _expressionBehavior.BindModel(previousModel.Model);
+					// 旧渲染器从未参与候选初始化，回滚只恢复它的质量应用状态。
+					_appliedMaskBufferSize = previousMaskBufferSize;
+					_maskResizeFailureLogged = previousMaskResizeFailureLogged;
 				}
 			}
 		}
 
 		if (stale)
 		{
-			RemoveCandidateModel(app, candidate);
+			RemoveCandidateModel(candidate);
 			return;
 		}
 		if (!committed)
 		{
-			RemoveCandidateModel(app, candidate);
+			RemoveCandidateModel(candidate);
 			if (failure is not null) CommitModelLoadFailure(operation, failure);
 			return;
 		}
 
 		try { _services.Logger.Write(LogSource.Backend, "info", $"成功加载 Live2D 模型: {prepared.ModelId}"); } catch { }
 		try { ModelChanged?.Invoke(); }
-		catch (Exception exception) { WriteCubismLog($"模型变更事件处理异常: {exception.Message}"); }
+		catch (Exception exception) { WriteLive2DLog($"模型变更事件处理异常: {exception.Message}"); }
 	}
 
-	private void RemoveCandidateModel(LAppDelegateOpenGL app, LAppModel candidate)
+	private void RemoveCandidateModel(NativeModelHost candidate)
 	{
-		try { app.Live2dManager.RemoveModel(candidate); }
-		catch (Exception exception) { WriteCubismLog($"释放过期 Live2D 候选模型失败: {exception.Message}"); }
+		try { candidate.Dispose(); }
+		catch (Exception exception) { WriteLive2DLog($"释放过期 Live2D 候选模型失败: {exception.Message}"); }
 	}
 
-	/// <summary>在 GL 上下文中应用质量策略到 Cubism renderer。</summary>
+	/// <summary>在 GL 上下文中应用质量策略到宿主渲染器。</summary>
 	public void ApplyRenderQualityOnGlThread()
 	{
-		if (_currentModel?.Renderer is not CubismRenderer_OpenGLES2 renderer) return;
+		if (_currentModel?.Renderer is not NativeGlRenderer renderer) return;
 		RenderQualityDecision decision = QualityDecision;
 		int maskSize = decision.QualityLevel switch
 		{
@@ -844,29 +853,54 @@ public sealed class PetRuntime
 		maskSize = Math.Clamp((int)Math.Round(maskSize * Math.Min(1.0f, decision.EffectiveRenderScale)), 512, 2048);
 		if (_appliedMaskBufferSize != maskSize)
 		{
-			renderer.SetClippingMaskBufferSize(maskSize, maskSize);
+			try
+			{
+				renderer.SetClippingMaskBufferSize(maskSize, maskSize);
+			}
+			catch (Exception exception) when (_appliedMaskBufferSize > 0)
+			{
+				// 热调整失败仍使用旧遮罩与过滤等级；首次候选应用失败必须交给模型回滚。
+				if (!_maskResizeFailureLogged)
+				{
+					_maskResizeFailureLogged = true;
+					try
+					{
+						_services.Logger.Write(LogSource.Backend, "warn", "Live2D 遮罩质量调整失败，继续使用旧质量",
+							"Live2D", "live2d.mask_resize_failed", exception);
+					}
+					catch
+					{
+						// 日志失败也不能阻断已经清空场景后的模型绘制。
+					}
+				}
+				return;
+			}
 			_appliedMaskBufferSize = maskSize;
+			_maskResizeFailureLogged = false;
 		}
 		renderer.Anisotropy = decision.QualityLevel >= 2 ? 16.0f : decision.QualityLevel == 1 ? 8.0f : 4.0f;
 		renderer.UseHighPrecisionMask = false;
-		renderer.SetModelColor(1.0f, 1.0f, 1.0f, Opacity);
+		float opacity = float.IsFinite(Opacity)
+			? Math.Clamp(Opacity, Live2DRenderSettings.MinOpacity, Live2DRenderSettings.MaxOpacity)
+			: Live2DRenderSettings.DefaultOpacity;
+		renderer.SetModelColor(1.0f, 1.0f, 1.0f, opacity);
 	}
 
-	private void OnModelValueUpdate(LAppModel model)
+	private void OnModelValueUpdate(NativeModelHost model)
 	{
 		double now = (DateTime.UtcNow - DateTime.UnixEpoch).TotalSeconds;
 		double timeDelta = _lastUpdateTime > 0 ? now - _lastUpdateTime : 0.016;
 		_lastUpdateTime = now;
 
-		// "空闲" = 没有动作在播, 或播的是待机组。LAppModel.Update() 会在动作播完时
+		// "空闲" = 没有动作在播, 或播的是待机组。NativeModelHost.Update() 会在动作播完时
 		// 自动补一个随机 Idle, 所以只判 IsMotionFinished() 会让 isIdleMotion 几乎永远为 false,
 		// 自动眨眼 / 空闲眼神微动 / idle-disable 三个行为都不会触发。
-		bool isIdleMotion = model.IsMotionFinished()
-			|| string.Equals(model.CurrentMotionGroup, LAppDefine.MotionGroupIdle, StringComparison.OrdinalIgnoreCase);
+		bool isIdleMotion = model.Animation.IsMotionFinished
+			|| string.Equals(model.Animation.CurrentMotionGroup, "Idle", StringComparison.OrdinalIgnoreCase);
 
 		var ctx = _behaviorContext;
 		ctx.ResetFrame();
-		ctx.Model = model;
+		ctx.Model = model.Animation;
 		ctx.Now = now;
 		ctx.TimeDelta = timeDelta;
 		ctx.IsIdleMotion = isIdleMotion;
@@ -884,27 +918,32 @@ public sealed class PetRuntime
 		// 运行 pre 插件（如 IdleDisable、BeatSync）
 		_pipeline.RunPre(ctx);
 
-		// 如果未短路且开启了眼部追踪，补回 SDK 拖拽角度
-		if (EyeTrackingEnabled)
+		// 如果未短路且开启了眼部追踪，补回 指针平滑角度
+		if (EyeTrackingEnabled && _modelParams.IsBound)
 		{
-			float dragX = model.DragX;
-			float dragY = model.DragY;
-			model.Model.AddParameterValue(model.IdParamAngleX, dragX * 30);
-			model.Model.AddParameterValue(model.IdParamAngleY, dragY * 30);
-			model.Model.AddParameterValue(model.IdParamAngleZ, dragX * dragY * -30);
-			model.Model.AddParameterValue(model.IdParamBodyAngleX, dragX * 10);
-			model.Model.AddParameterValue(model.IdParamEyeBallX, dragX);
-			model.Model.AddParameterValue(model.IdParamEyeBallY, dragY);
+			float dragX = model.Pointer.X;
+			float dragY = model.Pointer.Y;
+			AddDrag(_modelParams.AngleXIndex, dragX * 30);
+			AddDrag(_modelParams.AngleYIndex, dragY * 30);
+			AddDrag(_modelParams.AngleZIndex, dragX * dragY * -30);
+			AddDrag(_modelParams.BodyAngleXIndex, dragX * 10);
+			AddDrag(_modelParams.EyeBallXIndex, dragX);
+			AddDrag(_modelParams.EyeBallYIndex, dragY);
+		}
+
+		void AddDrag(int index, float value)
+		{
+			if (index >= 0) model.Model.AddParameterValue(index, value);
 		}
 
 		// 运行 post 插件（如 EyeFocus 眼神微动）
 		_pipeline.RunPost(ctx);
 	}
 
-	/// <summary>在 SDK 的物理、姿势等最终参数处理之后运行伴侣 Final 行为。</summary>
-	private void OnModelFinalValueUpdate(LAppModel model)
+	/// <summary>在原生物理、姿势等最终参数处理之后运行伴侣 Final 行为。</summary>
+	private void OnModelFinalValueUpdate(NativeModelHost model)
 	{
-		if (!ReferenceEquals(model, _behaviorContext.Model)) return;
+		if (!ReferenceEquals(model.Animation, _behaviorContext.Model)) return;
 		_pipeline.RunFinal(_behaviorContext);
 	}
 
@@ -931,62 +970,111 @@ public sealed class PetRuntime
 			|| clientViewportWidth <= 0 || clientViewportHeight <= 0) return;
 		ApplyRenderQualityOnGlThread();
 
-		// LAppModel.Update() 读的是 LAppPal.DeltaTime。这里没有走 LAppDelegate.Run(),
-		// 不显式写入的话它永远是 0, 动作队列 / 物理 / 呼吸会全部冻结在首帧。
-		LAppPal.DeltaTime = deltaTime;
 
 		// 投影: 先做纵横比校正, 再按需等比缩小到窗口内
 		//
-		// 模型没有 Layout 时 CubismModelMatrix 的构造函数会 SetHeight(2.0), 也就是把模型高度
+		// 模型没有 Layout 时 ModelTransforms 将高度设为 2.0，也就是把模型高度
 		// 规范化成整个 NDC 高度, 宽度则是 2 x 模型宽高比。NDC 的 x 覆盖 viewportWidth、
 		// y 覆盖 viewportHeight, 所以校正量只跟窗口有关: scaleX = viewportHeight / viewportWidth。
 		// 之前这里乘的是 aspectModel / aspectWindow, 等于多乘了一个模型宽高比,
 		// 竖长模型 (宽高比 < 1) 会被按这个比例横向压扁。
-		_projectionMatrix.LoadIdentity();
-		float canvasPixelW = _currentModel.Model.GetCanvasWidthPixel();
-		float canvasPixelH = _currentModel.Model.GetCanvasHeightPixel();
-		float canvasUnitW = _currentModel.Model.GetCanvasWidth();
-		float canvasUnitH = _currentModel.Model.GetCanvasHeight();
+		float canvasPixelW = _currentModel.Model.CanvasSize.X;
+		float canvasPixelH = _currentModel.Model.CanvasSize.Y;
+		float canvasUnitW = (_currentModel.Model.CanvasSize.X / _currentModel.Model.PixelsPerUnit);
+		float canvasUnitH = (_currentModel.Model.CanvasSize.Y / _currentModel.Model.PixelsPerUnit);
 
-		float aspectWindow = (float)viewportWidth / viewportHeight;
-		float aspectModel = canvasPixelW > 0 && canvasPixelH > 0 ? canvasPixelW / canvasPixelH : 1.0f;
+		_currentModel.Animation.RandomMotion = IdleAnimationEnabled;
+		_currentModel.Update(deltaTime);
 
-		float scaleX = (float)viewportHeight / viewportWidth;
-		float scaleY = 1.0f;
-
-		// 此时模型正好占满窗口高度; 只有模型比窗口更宽时才需要整体缩小,
-		// 保证任何窗口比例下模型都完整可见 (安全基准尺寸的上下限收口会让两者略有出入)
-		if (aspectModel > aspectWindow)
+		float modelScaleX = _currentModel.ModelMatrix.M11;
+		float modelScaleY = _currentModel.ModelMatrix.M22;
+		float modelTranslateX = _currentModel.ModelMatrix.M41;
+		float modelTranslateY = _currentModel.ModelMatrix.M42;
+		PetViewportProjection projection;
+		if (!_previewMode && PresentationMode == PetPresentationMode.QuickChat)
 		{
-			float fit = aspectWindow / aspectModel;
-			scaleX *= fit;
-			scaleY *= fit;
+			_presentationGeometry ??= MeasureDrawableGeometry(_currentModel, canvasUnitW, canvasUnitH);
+			PetPresentationProfile presentation = Presentation with {Layout = QuickChatLayout};
+			projection = PetPresentation.CalculateQuickChatProjection(
+				canvasUnitW,
+				canvasUnitH,
+				modelScaleX,
+				modelScaleY,
+				modelTranslateX,
+				modelTranslateY,
+				_presentationGeometry.Value,
+				presentation);
 		}
-		if (_previewMode)
+		else
 		{
-			scaleX *= UserScale;
-			scaleY *= UserScale;
+			projection = PetViewportMapping.CalculateFitProjection(
+				viewportWidth,
+				viewportHeight,
+				canvasPixelW,
+				canvasPixelH,
+				_previewMode ? UserScale : 1);
 		}
 
-		_projectionMatrix.Scale(scaleX, scaleY);
+		Matrix4x4 projectionMatrix = Matrix4x4.CreateScale((float)projection.ScaleX, (float)projection.ScaleY, 1)
+			* Matrix4x4.CreateTranslation((float)projection.TranslateX, (float)projection.TranslateY, 0);
 		// 绘制使用物理像素，但 Avalonia 指针和叠加层使用 DIP；最终变换相同，
 		// 映射视口必须保存逻辑尺寸，否则高 DPI 下点击区域会缩到左上角。
-		PetViewportMapping mapping = PetViewportMapping.FromFinalTransform(
+		PetViewportMapping mapping = PetViewportMapping.FromProjection(
 			clientViewportWidth,
 			clientViewportHeight,
-			// ModelMatrix 由 Cubism 的 Unit 画布尺寸构造；这里必须使用同一单位。
+			// ModelMatrix 由原生模型的 Unit 画布尺寸构造；这里必须使用同一单位。
 			canvasUnitW,
 			canvasUnitH,
-			scaleX * _currentModel.ModelMatrix.GetScaleX(),
-			scaleY * _currentModel.ModelMatrix.GetScaleY(),
-			scaleX * _currentModel.ModelMatrix.GetTranslateX(),
-			scaleY * _currentModel.ModelMatrix.GetTranslateY());
+			projection,
+			modelScaleX,
+			modelScaleY,
+			modelTranslateX,
+			modelTranslateY);
 		lock (_interactionGate) _viewportMapping = mapping;
 
-		_currentModel.RandomMotion = IdleAnimationEnabled;
-		_currentModel.Update();
-		_currentModel.Draw(_projectionMatrix);
+		_currentModel.Draw(projectionMatrix);
 		FrameRendered?.Invoke();
+	}
+
+	/// <summary>从当前 Drawable 顶点提取实际可见范围，过滤全透明图层。</summary>
+	private static unsafe PetDrawableGeometry MeasureDrawableGeometry(
+		NativeModelHost model,
+		float canvasWidth,
+		float canvasHeight)
+	{
+		if (canvasWidth <= 0 || canvasHeight <= 0) return PetDrawableGeometry.FullCanvas;
+		double minX = double.PositiveInfinity;
+		double minY = double.PositiveInfinity;
+		double maxX = double.NegativeInfinity;
+		double maxY = double.NegativeInfinity;
+		for (int drawableIndex = 0; drawableIndex < model.Model.DrawableCount; drawableIndex++)
+		{
+			if (model.Model.GetDrawableOpacity(drawableIndex) <= 0.001f) continue;
+			int count = model.Model.GetDrawableVertexCount(drawableIndex);
+			float* vertices = (float*)model.Model.GetDrawableVertexPositions(drawableIndex);
+			for (int vertexIndex = 0; vertexIndex < count; vertexIndex++)
+			{
+				double x = vertices[vertexIndex * 2];
+				double y = vertices[vertexIndex * 2 + 1];
+				if (!double.IsFinite(x) || !double.IsFinite(y)) continue;
+				minX = Math.Min(minX, x);
+				maxX = Math.Max(maxX, x);
+				minY = Math.Min(minY, y);
+				maxY = Math.Max(maxY, y);
+			}
+		}
+
+		if (!double.IsFinite(minX) || !double.IsFinite(minY)
+			|| maxX <= minX || maxY <= minY)
+		{
+			return PetDrawableGeometry.FullCanvas;
+		}
+
+		double left = (minX + canvasWidth / 2) / canvasWidth;
+		double top = (canvasHeight / 2 - maxY) / canvasHeight;
+		double width = (maxX - minX) / canvasWidth;
+		double height = (maxY - minY) / canvasHeight;
+		return new PetDrawableGeometry(new PetNormalizedRect(left, top, width, height));
 	}
 
 	/// <summary>获取最新一帧完整模型画布的 Avalonia 逻辑像素矩形。</summary>
@@ -1014,18 +1102,47 @@ public sealed class PetRuntime
 	}
 
 	public void LookAt(float clientX, float clientY, float windowW, float windowH) =>
-		CubismFramework.RunSynchronized(() => LookAtCore(clientX, clientY, windowW, windowH));
+		RunSynchronized(() => LookAtCore(clientX, clientY, windowW, windowH));
 
 	private void LookAtCore(float clientX, float clientY, float windowW, float windowH)
 	{
 		if (_currentModel is null || !EyeTrackingEnabled || windowW <= 0 || windowH <= 0) return;
-		float normX = Math.Clamp((clientX / windowW) * 2.0f - 1.0f, -1.0f, 1.0f);
-		float normY = Math.Clamp(-((clientY / windowH) * 2.0f - 1.0f), -1.0f, 1.0f);
+		PetViewportMapping? mapping;
+		lock (_interactionGate) mapping = _viewportMapping;
+		float normX;
+		float normY;
+		if (mapping is { } current
+			&& current.TryMapClientToModelPlane(clientX, clientY, out double modelX, out double modelY))
+		{
+			if (!_previewMode
+				&& PresentationMode == PetPresentationMode.QuickChat
+				&& _presentationGeometry is { } geometry)
+			{
+				PetPresentationProfile presentation = Presentation with {Layout = QuickChatLayout};
+				(double x, double y) = PetPresentation.NormalizeQuickChatLookAt(
+					modelX,
+					modelY,
+					geometry,
+					presentation);
+				normX = (float)x;
+				normY = (float)y;
+			}
+			else
+			{
+				normX = Math.Clamp((float)((modelX - 0.5) * 2), -1, 1);
+				normY = Math.Clamp((float)((0.5 - modelY) * 2), -1, 1);
+			}
+		}
+		else
+		{
+			normX = Math.Clamp(clientX / windowW * 2 - 1, -1, 1);
+			normY = Math.Clamp(1 - clientY / windowH * 2, -1, 1);
+		}
 		_currentModel.SetDragging(normX, normY);
 	}
 
 	public void HandleTap(float clientX, float clientY, float windowW, float windowH) =>
-		CubismFramework.RunSynchronized(() => HandleTapCore(clientX, clientY, windowW, windowH));
+		RunSynchronized(() => HandleTapCore(clientX, clientY, windowW, windowH));
 
 	private void HandleTapCore(float clientX, float clientY, float windowW, float windowH)
 	{
@@ -1064,7 +1181,7 @@ public sealed class PetRuntime
 					try { handler(trigger); }
 					catch (Exception exception)
 					{
-						WriteCubismLog($"AI 互动调度失败: {exception.Message}");
+						WriteLive2DLog($"AI 互动调度失败: {exception.Message}");
 						ApplyLocalInteraction(hit.Region);
 					}
 				}
@@ -1082,17 +1199,17 @@ public sealed class PetRuntime
 		float hitY;
 		if (mappedToModel)
 		{
-			float canvasX = ((float)modelX - 0.5f) * _currentModel.Model.GetCanvasWidth();
-			float canvasY = (0.5f - (float)modelY) * _currentModel.Model.GetCanvasHeight();
-			hitX = canvasX * _currentModel.ModelMatrix.GetScaleX() + _currentModel.ModelMatrix.GetTranslateX();
-			hitY = canvasY * _currentModel.ModelMatrix.GetScaleY() + _currentModel.ModelMatrix.GetTranslateY();
+			float canvasX = ((float)modelX - 0.5f) * (_currentModel.Model.CanvasSize.X / _currentModel.Model.PixelsPerUnit);
+			float canvasY = (0.5f - (float)modelY) * (_currentModel.Model.CanvasSize.Y / _currentModel.Model.PixelsPerUnit);
+			hitX = canvasX * _currentModel.ModelMatrix.M11 + _currentModel.ModelMatrix.M41;
+			hitY = canvasY * _currentModel.ModelMatrix.M22 + _currentModel.ModelMatrix.M42;
 		}
 		else
 		{
 			hitX = (clientX / windowW) * 2.0f - 1.0f;
 			hitY = -((clientY / windowH) * 2.0f - 1.0f);
 		}
-		if (_currentModel.HitTest(LAppDefine.HitAreaNameHead, hitX, hitY)
+		if (_currentModel.HitTest("Head", hitX, hitY)
 			&& ExpressionEnabled
 			&& ToggleRandomExpression())
 		{
@@ -1103,7 +1220,7 @@ public sealed class PetRuntime
 
 	/// <summary>执行一个区域配置的本地 Motion/Expression 反应。</summary>
 	public void ApplyLocalInteraction(PetInteractionRegion region) =>
-		CubismFramework.RunSynchronized(() => ApplyLocalInteractionCore(region));
+		RunSynchronized(() => ApplyLocalInteractionCore(region));
 
 	private void ApplyLocalInteractionCore(PetInteractionRegion region)
 	{
@@ -1115,6 +1232,8 @@ public sealed class PetRuntime
 			case PetInteractionActionMode.Selected:
 				PlayMotionExact(region.Motion.Group ?? "", region.Motion.Name ?? "");
 				break;
+			default:
+				break;
 		}
 
 		if (!ExpressionEnabled) return;
@@ -1125,6 +1244,8 @@ public sealed class PetRuntime
 				break;
 			case PetInteractionActionMode.Selected:
 				PlayExpression(region.Expression.Name ?? "");
+				break;
+			default:
 				break;
 		}
 	}
@@ -1140,7 +1261,7 @@ public sealed class PetRuntime
 	/// <summary>
 	/// 播放点击互动动作。动作组按语义优先级选择，同组从随机位置开始逐项尝试。
 	/// </summary>
-	public bool PlayTapBodyOrRandomMotion() => CubismFramework.RunSynchronized(() =>
+	public bool PlayTapBodyOrRandomMotion() => RunSynchronized(() =>
 	{
 		foreach (MotionGroupInfo group in MotionSelector.GetInteractionCandidates(_motionGroups))
 		{
@@ -1153,7 +1274,7 @@ public sealed class PetRuntime
 	{
 		if (_currentModel is null || group.Names.Count == 0) return false;
 
-		int start = _random.Next(group.Names.Count);
+		int start = RandomNumberGenerator.GetInt32(group.Names.Count);
 		for (int offset = 0; offset < group.Names.Count; offset++)
 		{
 			int index = (start + offset) % group.Names.Count;
@@ -1162,16 +1283,16 @@ public sealed class PetRuntime
 		return false;
 	}
 
-	private CubismMotionQueueEntry? TryStartMotion(string group, int index)
+	private MotionPlayback? TryStartMotion(string group, int index)
 	{
 		if (_currentModel is null) return null;
 		try
 		{
-			return _currentModel.StartMotion(group, index, MotionPriority.PriorityForce);
+			return _currentModel.Animation.StartMotion(group, index, MotionPriority.Force);
 		}
 		catch (Exception ex)
 		{
-			WriteCubismLog($"动作播放异常 [{group}_{index}]: {ex.Message}");
+			WriteLive2DLog($"动作播放异常 [{group}_{index}]: {ex.Message}");
 			return null;
 		}
 	}
@@ -1182,7 +1303,7 @@ public sealed class PetRuntime
 		return _motionGroups.FirstOrDefault(item => item.Group.Equals(group, StringComparison.OrdinalIgnoreCase));
 	}
 
-	public bool PlayMotionByName(string name) => CubismFramework.RunSynchronized(() =>
+	public bool PlayMotionByName(string name) => RunSynchronized(() =>
 	{
 		if (_currentModel is null || string.IsNullOrWhiteSpace(name)) return false;
 		string? resolved = PetActionResolver.ResolveMotion(_motionGroups, name);
@@ -1195,19 +1316,19 @@ public sealed class PetRuntime
 		return false;
 	});
 
-	public bool PlayMotionByIndex(string group, int no) => CubismFramework.RunSynchronized(() =>
+	public bool PlayMotionByIndex(string group, int no) => RunSynchronized(() =>
 	{
 		MotionGroupInfo? matched = FindMotionGroup(group);
 		if (matched is null || no < 0 || no >= matched.Names.Count) return false;
 		return TryStartMotion(matched.Group, no) is not null;
 	});
 
-	public bool PlayRandomMotion() => CubismFramework.RunSynchronized(() =>
+	public bool PlayRandomMotion() => RunSynchronized(() =>
 	{
 		IReadOnlyList<MotionGroupInfo> candidates = MotionSelector.GetInteractionCandidates(_motionGroups);
 		if (candidates.Count == 0) return false;
 
-		int start = _random.Next(candidates.Count);
+		int start = RandomNumberGenerator.GetInt32(candidates.Count);
 		for (int offset = 0; offset < candidates.Count; offset++)
 		{
 			MotionGroupInfo group = candidates[(start + offset) % candidates.Count];
@@ -1216,24 +1337,24 @@ public sealed class PetRuntime
 		return false;
 	});
 
-	public bool PlayExpression(string name) => CubismFramework.RunSynchronized(() =>
+	public bool PlayExpression(string name) => RunSynchronized(() =>
 	{
 		string? resolved = PetActionResolver.ResolveExpression(Expressions, name);
 		return resolved is not null && _expressionStore.Play(resolved);
 	});
 
-	public void StopExpression() => CubismFramework.RunSynchronized(_expressionStore.Stop);
+	public void StopExpression() => RunSynchronized(_expressionStore.Stop);
 
 	public void ToggleExpression(string name) =>
-		CubismFramework.RunSynchronized(() => _expressionStore.Toggle(name));
+		RunSynchronized(() => _expressionStore.Toggle(name));
 
-	public bool ToggleRandomExpression() => CubismFramework.RunSynchronized(() =>
+	public bool ToggleRandomExpression() => RunSynchronized(() =>
 	{
 		IReadOnlyList<string> names = _expressionStore.AllGroupNames();
 		if (names.Count == 0) names = _expressionStore.AllNames();
 		if (names.Count == 0) return false;
 
-		string randomName = names[_random.Next(names.Count)];
+		string randomName = names[RandomNumberGenerator.GetInt32(names.Count)];
 		return _expressionStore.Toggle(randomName);
 	});
 

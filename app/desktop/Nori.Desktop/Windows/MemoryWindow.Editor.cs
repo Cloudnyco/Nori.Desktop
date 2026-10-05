@@ -5,6 +5,9 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Styling;
 using Avalonia.Markup.Xaml.Styling;
+using Nori.Core.Configuration;
+using Nori.Desktop.Settings.Pages;
+using static Nori.Desktop.SnapshotJson;
 
 namespace Nori.Desktop.Windows;
 
@@ -15,7 +18,6 @@ public sealed partial class MemoryWindow
 	private bool _editorSaving;
 	private Action? _discardEditor;
 	private Action? _editorLocalize;
-	private readonly Dictionary<Window, Action> _confirmationLocalizers = [];
 	private long _detailRequest;
 
 	internal async Task OpenEditorAsync(long? id)
@@ -178,6 +180,7 @@ public sealed partial class MemoryWindow
 			finally { confirmClosing = false; }
 		};
 		dialog.Closed += (_, _) => { _editor = null; _editorDirty = null; _discardEditor = null; _editorLocalize = null; };
+		NativeWindowChrome.Attach(dialog, () => UiLanguage.IsEnglish(_language));
 		_ = dialog.ShowDialog(this);
 		Success();
 	}
@@ -190,13 +193,13 @@ public sealed partial class MemoryWindow
 			MaxHeight = Math.Max(360, Height - 30), WindowStartupLocation = WindowStartupLocation.CenterOwner,
 			RequestedThemeVariant = ThemeVariant.Dark, ShowInTaskbar = false,
 		};
+		dialog.CanMinimize = false;
 		dialog.Styles.Add(new StyleInclude(new Uri("avares://Nori.Desktop/")) { Source = new Uri("avares://Nori.Desktop/Settings/SettingsTheme.axaml") });
 		return dialog;
 	}
 
-	private async Task<bool> ConfirmAsync(string titleKey, string descriptionKey, Window? owner = null)
+	private Task<bool> ConfirmAsync(string titleKey, string descriptionKey, Window? owner = null)
 	{
-		var dialog = Dialog(L(titleKey), 440, 250); dialog.Name = "MemoryConfirmation";
 		string actionKey = titleKey switch
 		{
 			"detail.unsavedTitle" => "detail.discardChanges",
@@ -207,20 +210,14 @@ public sealed partial class MemoryWindow
 			"list.deleteThis" => "list.delete",
 			_ => titleKey,
 		};
-		var confirm = new Button { Content = L(actionKey), Name = "MemoryConfirmAccept", MinHeight = 34 };
-		confirm.Classes.Add(titleKey is "list.clearAll" or "list.deleteThis" ? "danger" : "accent");
-		var cancel = new Button { Content = L(titleKey == "detail.unsavedTitle" ? "detail.keepEditing" : "common.cancel"), Name = "MemoryConfirmCancel", MinHeight = 34 };
-		confirm.Click += (_, _) => dialog.Close(true); cancel.Click += (_, _) => dialog.Close(false);
-		var title = Text(L(titleKey), 20, true);
-		var description = Text(L(descriptionKey));
-		_confirmationLocalizers[dialog] = () =>
-		{
-			dialog.Title = L(titleKey); title.Text = L(titleKey); description.Text = L(descriptionKey);
-			confirm.Content = L(actionKey); cancel.Content = L(titleKey == "detail.unsavedTitle" ? "detail.keepEditing" : "common.cancel");
-		};
-		dialog.Closed += (_, _) => _confirmationLocalizers.Remove(dialog);
-		dialog.Content = new Border { Padding = new Thickness(24), Child = Stack(title, description, Row(cancel, confirm)) };
-		return await dialog.ShowDialog<bool>(owner ?? this);
+		return NativeSettingsDialogs.ConfirmAsync(
+			owner ?? this,
+			L(titleKey),
+			L(descriptionKey),
+			titleKey is "list.clearAll" or "list.deleteThis",
+			L(actionKey),
+			L(titleKey == "detail.unsavedTitle" ? "detail.keepEditing" : "common.cancel"),
+			() => UiLanguage.IsEnglish(_language));
 	}
 
 	internal async Task<bool> ChangeMemoryAsync(long id, string operation, Window? owner = null)

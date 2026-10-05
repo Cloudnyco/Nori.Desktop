@@ -13,9 +13,6 @@ namespace Nori.Desktop.Telemetry;
 /// </summary>
 public sealed class SentryTelemetry : ITelemetry
 {
-	/// <summary>生产构建禁止故意崩溃测试, 防止调试入口进入正式包。</summary>
-	public static bool IsProductionBuild => string.Equals(SentryBuildConfig.Environment, "production", StringComparison.OrdinalIgnoreCase);
-
 	private readonly object _gate = new();
 	private readonly string _dsn;
 	private readonly string _release;
@@ -68,6 +65,30 @@ public sealed class SentryTelemetry : ITelemetry
 	}
 
 	/// <summary>
+	/// 设置匿名用户标识,用于统计独立用户数量。
+	/// 使用机器 ID 或随机持久化 ID,不包含任何个人身份信息。
+	/// </summary>
+	public void SetUser(string anonymousId)
+	{
+		if (string.IsNullOrWhiteSpace(anonymousId)) return;
+		lock (_gate)
+		{
+			if (!_enabled || _disposed) return;
+			try
+			{
+				SentrySdk.ConfigureScope(scope =>
+				{
+					scope.User = new SentryUser { Id = anonymousId };
+				});
+			}
+			catch
+			{
+				// 用户标识设置失败不影响遥测功能。
+			}
+		}
+	}
+
+	/// <summary>
 	/// 测试观测缝: 在 BeforeSend 边界观察最终事件, 返回 null 即丢弃 (不会出网)。
 	/// 仅测试代码允许设置; 生产路径保持 null。
 	/// </summary>
@@ -115,6 +136,7 @@ public sealed class SentryTelemetry : ITelemetry
 		}
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "遥测刷新失败不能阻断应用关闭。")]
 	public async Task FlushAsync(TimeSpan timeout)
 	{
 		try
@@ -152,7 +174,7 @@ public sealed class SentryTelemetry : ITelemetry
 		options.ProfilesSampleRate = 0.0;
 		options.EnableLogs = false;
 		options.EnableMetrics = false;
-		options.AutoSessionTracking = false;
+		options.AutoSessionTracking = true;
 		options.DisableAppDomainUnhandledExceptionCapture();
 		options.DisableUnobservedTaskExceptionCapture();
 		options.DisableAppDomainProcessExitFlush();
@@ -170,8 +192,14 @@ public sealed class SentryTelemetry : ITelemetry
 
 	private SentryEvent? ScrubEvent(SentryEvent current, SentryHint hint)
 	{
+		if (TelemetryNoise.IsNoise(current.Exception)) return null;
 		current.Request = null!;
-		current.User = null!;
+		// 保留匿名用户 ID 用于统计,清除其他 PII 字段
+		if (current.User is not null)
+		{
+			string? userId = current.User.Id;
+			current.User = new SentryUser { Id = userId };
+		}
 		current.Contexts?.Clear();
 		if (current.Extra is IDictionary<string, object> extra) extra.Clear();
 		current.Message = null!;
@@ -190,7 +218,8 @@ public sealed class SentryTelemetry : ITelemetry
 				{
 					foreach (SentryStackFrame frame in frames)
 					{
-						frame.FileName = ScrubPath(frame.FileName);
+						// 这里只清洗遥测帧字段，不执行任何命令。
+						frame.FileName = ScrubPath(frame.FileName); // nosemgrep
 						frame.AbsolutePath = null;
 						frame.ContextLine = null;
 					}
@@ -247,6 +276,7 @@ public sealed class SentryTelemetry : ITelemetry
 		return trimmed.Length > 240 ? trimmed[..240] : trimmed;
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "遥测关闭失败不能阻断应用资源释放。")]
 	private void CloseLocked()
 	{
 		_enabled = false;
@@ -285,6 +315,7 @@ public sealed class SentryTelemetry : ITelemetry
 	{
 		private int _finished;
 
+		[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "遥测事务结束失败不能阻断调用方资源释放。")]
 		public void Dispose()
 		{
 			if (Interlocked.Exchange(ref _finished, 1) != 0) return;

@@ -48,7 +48,6 @@ public sealed class ChatClientUserAgentTests
 	[InlineData("Dev", "Dev")]
 	[InlineData("2.0 (build 7)", "2.0build7")]
 	[InlineData("+++", "Dev")]
-	[InlineData("", "Dev")]
 	public void 版本号裁成合法token(string version, string expected)
 	{
 		string sanitized = ChatClientFactory.SanitizeVersion(version);

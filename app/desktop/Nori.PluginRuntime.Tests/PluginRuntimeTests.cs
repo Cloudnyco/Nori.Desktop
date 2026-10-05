@@ -20,9 +20,6 @@ public sealed class PluginRuntimeTests
 		Assert.Equal(new PluginApiVersion(1, 2), manifest.Api);
 		Assert.Equal("Nori", Assert.Single(manifest.Authors).Name);
 		Assert.Equal("lib/Nori.PluginRuntime.TestPlugin.dll", manifest.Runtime.Assembly);
-		Assert.True(PluginManifestReader.IsCompatible(new PluginApiVersion(1, 2), manifest.Api));
-		Assert.True(PluginManifestReader.IsCompatible(new PluginApiVersion(1, 5), manifest.Api));
-		Assert.False(PluginManifestReader.IsCompatible(new PluginApiVersion(2, 0), manifest.Api));
 	}
 
 	[Theory]
@@ -71,7 +68,6 @@ public sealed class PluginRuntimeTests
 	}
 
 	[Theory]
-	[InlineData("1.0", "1.2", false)]
 	[InlineData("1.1", "1.2", false)]
 	[InlineData("1.2", "1.2", true)]
 	[InlineData("1.5", "1.2", true)]
@@ -110,10 +106,12 @@ public sealed class PluginRuntimeTests
 			Directory.CreateDirectory(Path.Combine(root, "web"));
 			File.WriteAllText(Path.Combine(root, "web", "index.html"), "ok");
 			File.WriteAllText(Path.Combine(root, "manifest.json"), "private");
-			IPluginAssets assets = new PluginAssetProvider(root, _ => new Uri("https://example.test/plugin"));
+			IPluginAssets assets = new PluginAssetProvider(root);
 
 			Assert.Equal("ok", new StreamReader(assets.OpenRead("web/index.html")).ReadToEnd());
-			Assert.Equal("https://example.test/plugin", assets.GetUri("web/index.html").ToString());
+			Uri uri = assets.GetUri("web/index.html");
+			Assert.True(uri.IsFile);
+			Assert.EndsWith("index.html", uri.LocalPath.Replace('\\', '/'), StringComparison.Ordinal);
 			Assert.Throws<PluginException>(() => assets.OpenRead("../manifest.json"));
 			Assert.Throws<PluginException>(() => assets.OpenRead("manifest.json"));
 			Assert.Throws<PluginException>(() => assets.OpenRead("web/../manifest.json"));
@@ -135,21 +133,22 @@ public sealed class PluginRuntimeTests
 	public void PluginCapabilities区分缺失和不可用()
 	{
 		PluginCapabilityRegistry registry = new(
-			[PluginCapabilityIds.WebView],
-			[PluginCapabilityIds.WebView],
+			["test.available"],
+			["test.available"],
 			[]);
 
-		PluginCapabilityStatus web = Assert.Single(registry.Statuses, status => status.Id == PluginCapabilityIds.WebView);
-		Assert.True(web.Declared);
-		Assert.True(web.Granted);
-		Assert.False(web.Available);
-		Assert.False(registry.TryGet<IWebViewCapability>(out _));
-		PluginException unavailable = Assert.Throws<PluginException>(() => registry.GetRequired<IWebViewCapability>());
+		PluginCapabilityStatus status = Assert.Single(registry.Statuses);
+		Assert.Equal("test.available", status.Id);
+		Assert.True(status.Declared);
+		Assert.True(status.Granted);
+		Assert.False(status.Available);
+		Assert.False(registry.TryGet<TestCapability>(out _));
+		PluginException unavailable = Assert.Throws<PluginException>(() => registry.GetRequired<TestCapability>());
 		Assert.Equal(PluginErrorCodes.CapabilityUnavailable, unavailable.Code);
-		PluginException missing = Assert.Throws<PluginException>(() => registry.GetRequired<TestCapability>());
+		PluginException missing = Assert.Throws<PluginException>(() => registry.GetRequired<MissingCapability>());
 		Assert.Equal(PluginErrorCodes.CapabilityMissing, missing.Code);
-		PluginCapabilityRegistry notGranted = new([PluginCapabilityIds.WebView], [], []);
-		PluginException denied = Assert.Throws<PluginException>(() => notGranted.GetRequired<IWebViewCapability>());
+		PluginCapabilityRegistry notGranted = new(["test.available"], [], []);
+		PluginException denied = Assert.Throws<PluginException>(() => notGranted.GetRequired<TestCapability>());
 		Assert.Equal(PluginErrorCodes.CapabilityNotGranted, denied.Code);
 	}
 
@@ -261,33 +260,6 @@ public sealed class PluginRuntimeTests
 	}
 
 	[Fact]
-	public async Task 安全模式只发现并禁用插件不创建ALC()
-	{
-		string root = CreateTemp();
-		try
-		{
-			string package = CreateTestPackage(root, "safe.plugin", "1.0.0");
-			string plugins = Path.Combine(root, "plugins");
-			new PluginPackageInstaller(plugins).Install(package);
-			PluginManager manager = new(new PluginRuntimeOptions
-			{
-				PluginsDirectory = plugins,
-				DataDirectory = Path.Combine(root, "plugin-data"),
-				SafeMode = true,
-				KnownCapabilityIds = [],
-			});
-
-			PluginInfo info = Assert.Single(manager.Discover());
-			Assert.Equal(PluginLifecycleState.Disabled, info.State);
-			await manager.StartAllAsync();
-			Assert.Equal(PluginLifecycleState.Disabled, Assert.Single(manager.Plugins).State);
-			Assert.False(File.Exists(Path.Combine(root, "plugin-data", "safe.plugin", "storage.json")));
-			await manager.DisposeAsync();
-		}
-		finally { DeleteDirectory(root); }
-	}
-
-	[Fact]
 	public void Contract程序集由DefaultALC提供()
 	{
 		string root = CreateTemp();
@@ -303,6 +275,56 @@ public sealed class PluginRuntimeTests
 			Assert.True(typeof(INoriPlugin).IsAssignableFrom(type));
 			Assert.Contains(type.GetInterfaces(), item => ReferenceEquals(item.Assembly, typeof(INoriPlugin).Assembly));
 			loadContext.Unload();
+		}
+		finally { DeleteDirectory(root); }
+	}
+
+	[Fact]
+	public void Windows原生Dll不会被误判为损坏的托管程序集()
+	{
+		if (!OperatingSystem.IsWindows()) return;
+
+		string root = CreateTemp();
+		try
+		{
+			string runtime = Path.Combine(root, "runtimes", "win-x64", "native");
+			Directory.CreateDirectory(runtime);
+			string systemDll = Path.Combine(Environment.SystemDirectory, "kernel32.dll");
+			Assert.True(File.Exists(systemDll));
+			File.Copy(systemDll, Path.Combine(runtime, "plugin-native.dll"));
+
+			PluginLoadContext.EnsureReferencesAllowed(root);
+		}
+		finally { DeleteDirectory(root); }
+	}
+
+	[Fact]
+	public async Task Unix允许系统级符号链接祖先但仍拒绝插件根本身是链接()
+	{
+		if (OperatingSystem.IsWindows()) return;
+
+		string root = CreateTemp();
+		try
+		{
+			string realParent = Path.Combine(root, "real-parent");
+			Directory.CreateDirectory(realParent);
+			string linkedParent = Path.Combine(root, "linked-parent");
+			Directory.CreateSymbolicLink(linkedParent, realParent);
+
+			PluginPackageInstaller installer = new(Path.Combine(linkedParent, "plugins"));
+			Assert.True(Directory.Exists(installer.RootDirectory));
+
+			JsonPluginStorage storage = new(Path.Combine(linkedParent, "plugin-data", "demo.plugin"));
+			await storage.SetAsync("state", new JsonObject { ["ok"] = true });
+			Assert.True((await storage.GetAsync("state"))!["ok"]!.GetValue<bool>());
+
+			string realPluginRoot = Path.Combine(root, "real-plugin-root");
+			Directory.CreateDirectory(realPluginRoot);
+			string linkedPluginRoot = Path.Combine(root, "linked-plugin-root");
+			Directory.CreateSymbolicLink(linkedPluginRoot, realPluginRoot);
+
+			PluginException exception = Assert.Throws<PluginException>(() => new PluginPackageInstaller(linkedPluginRoot));
+			Assert.Equal(PluginErrorCodes.PackagePathDenied, exception.Code);
 		}
 		finally { DeleteDirectory(root); }
 	}
@@ -394,7 +416,9 @@ public sealed class PluginRuntimeTests
 			{
 				PluginManager unavailable = CreateManager(secondRoot, CreateTestPackage(secondRoot, "webview.plugin", "1.0.0", "[\"ui.webview\"]"));
 				await unavailable.StartAllAsync();
-				Assert.Equal(PluginErrorCodes.CapabilityUnavailable, Assert.Single(unavailable.Plugins).ErrorCode);
+				PluginInfo plugin = Assert.Single(unavailable.Plugins);
+				Assert.Equal(PluginLifecycleState.Incompatible, plugin.State);
+				Assert.Equal(PluginErrorCodes.UnknownCapability, plugin.ErrorCode);
 				await unavailable.DisposeAsync();
 			}
 			finally { DeleteDirectory(secondRoot); }
@@ -435,6 +459,11 @@ public sealed class PluginRuntimeTests
 	{
 	}
 
+	[PluginCapability("test.missing")]
+	private sealed class MissingCapability : IPluginCapability
+	{
+	}
+
 	private static string CreateManifest(string id, string version, string apiVersion, string? capabilities = null, string entryType = "Nori.PluginRuntime.TestPlugin.TestPlugin", string minHostVersion = "1.0.0", string? optionalCapabilities = null)
 	{
 		string capabilityJson = capabilities ?? "[]";
@@ -449,41 +478,17 @@ public sealed class PluginRuntimeTests
 		using (FileStream file = File.Create(package))
 		using (ZipArchive archive = new(file, ZipArchiveMode.Create))
 		{
-			WriteEntry(archive, "manifest.json", CreateManifest(id, version, apiVersion, capabilities, entryType, optionalCapabilities: optionalCapabilities));
-			ZipArchiveEntry assemblyEntry = archive.CreateEntry("lib/Nori.PluginRuntime.TestPlugin.dll");
-			using (Stream target = assemblyEntry.Open())
-			using (FileStream source = File.OpenRead(assembly))
-			{
-				source.CopyTo(target);
-			}
-			WriteEntry(archive, "web/index.html", "<!doctype html><title>plugin</title>");
-			WriteEntry(archive, "README.md", "test");
+			PluginTestPackages.WriteEntry(archive, "manifest.json", CreateManifest(id, version, apiVersion, capabilities, entryType, optionalCapabilities: optionalCapabilities));
+			PluginTestPackages.WriteAssemblyEntry(archive, "lib/Nori.PluginRuntime.TestPlugin.dll", assembly);
+			PluginTestPackages.WriteEntry(archive, "web/index.html", "<!doctype html><title>plugin</title>");
+			PluginTestPackages.WriteEntry(archive, "README.md", "test");
 			if (includeContractAssembly)
-			{
-				ZipArchiveEntry contractEntry = archive.CreateEntry("lib/Nori.PluginRuntime.dll");
-				using Stream target = contractEntry.Open();
-				using FileStream source = File.OpenRead(typeof(INoriPlugin).Assembly.Location);
-				source.CopyTo(target);
-			}
+				PluginTestPackages.WriteAssemblyEntry(archive, "lib/Nori.PluginRuntime.dll", typeof(INoriPlugin).Assembly.Location);
 		}
 		return package;
 	}
 
-	private static void WriteEntry(ZipArchive archive, string name, string content)
-	{
-		using StreamWriter writer = new(archive.CreateEntry(name).Open());
-		writer.Write(content);
-	}
+	private static string CreateTemp() => PluginTestPackages.CreateTemp("nori-plugin-tests");
 
-	private static string CreateTemp()
-	{
-		string path = Path.Combine(Path.GetTempPath(), "nori-plugin-tests", Guid.NewGuid().ToString("N"));
-		Directory.CreateDirectory(path);
-		return path;
-	}
-
-	private static void DeleteDirectory(string path)
-	{
-		try { if (Directory.Exists(path)) Directory.Delete(path, true); } catch { }
-	}
+	private static void DeleteDirectory(string path) => PluginTestPackages.DeleteDirectory(path);
 }

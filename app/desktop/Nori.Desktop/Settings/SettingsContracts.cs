@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Windows.Input;
 using Avalonia.Controls;
+using Nori.Core.Configuration;
 
 namespace Nori.Desktop.Settings;
 
@@ -25,7 +26,7 @@ public enum SettingsEditorKind
 public readonly record struct SettingsText(string Chinese, string English)
 {
 	/// <summary>按当前语言解析文案。</summary>
-	public string Resolve(string language) => language.StartsWith("en", StringComparison.OrdinalIgnoreCase) ? English : Chinese;
+	public string Resolve(string language) => UiLanguage.IsEnglish(language) ? English : Chinese;
 }
 
 /// <summary>设置页选项。</summary>
@@ -181,7 +182,7 @@ public abstract class SettingsPageBase : SettingsObservableObject, ISettingsPage
 	/// 面向子类：<see cref="SettingsText"/> 覆盖不了「取值本身随快照变化」的只读字段 ——
 	/// 那类文案要在读取时才能定，子类需要知道该出哪一种语言。
 	/// </summary>
-	protected bool IsEnglish => _language.StartsWith("en", StringComparison.OrdinalIgnoreCase);
+	protected bool IsEnglish => UiLanguage.IsEnglish(_language);
 
 	/// <summary>创建设置页面。</summary>
 	protected SettingsPageBase(
@@ -330,11 +331,14 @@ public abstract class SettingsPageBase : SettingsObservableObject, ISettingsPage
 
 	internal void ReportSaveFailure(SettingsFieldViewModel field, Exception exception)
 	{
-		ErrorMessage = field.Label + ": " + exception.Message;
+		ErrorMessage = field.Label + ": " + SettingsErrorText.Resolve(exception);
 	}
 
-	/// <summary>更新页面操作状态。</summary>
-	protected void SetStatus(string message) => StatusMessage = message;
+	/// <summary>设置页面操作状态。</summary>
+	protected void SetStatus(string message) => StatusMessage = SettingsErrorText.Resolve(message);
+
+	/// <summary>设置页面操作状态并按当前语言转换异常。</summary>
+	protected void SetStatus(Exception exception) => StatusMessage = SettingsErrorText.Resolve(exception);
 
 	/// <inheritdoc />
 	public void Dispose()
@@ -683,7 +687,7 @@ public sealed class SettingsFieldViewModel : SettingsObservableObject, IDisposab
 			lock (_saveSync)
 			{
 				if (revision != _editRevision) return false;
-				_errorText = exception.Message;
+				_errorText = SettingsErrorText.Resolve(exception);
 			}
 			OnPropertyChanged(nameof(ErrorText));
 			_page.ReportSaveFailure(this, exception);

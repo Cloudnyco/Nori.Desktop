@@ -12,6 +12,7 @@ using Nori.Core.Memory;
 using Nori.Core.Proactive;
 using Nori.Core.Skills;
 using Nori.Core.Tools;
+using Nori.Core.Tests.TestSupport;
 using Nori.Core.Voice;
 
 namespace Nori.Core.Tests;
@@ -21,15 +22,17 @@ namespace Nori.Core.Tests;
 /// </summary>
 public class BackendRuntimeModuleTests : IDisposable
 {
-	private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"nori-runtime-{Guid.NewGuid():N}.db");
+	private readonly TempDatabase _tempDatabase = new("nori-runtime");
 	private readonly string _tempDir = Path.Combine(Path.GetTempPath(), $"nori-runtime-{Guid.NewGuid():N}");
 	private readonly NoriDatabase _database;
 	private readonly ConfigStore _config;
+	private readonly FileLogger _logger;
 
 	public BackendRuntimeModuleTests()
 	{
 		Directory.CreateDirectory(_tempDir);
-		_database = NoriDatabase.Open(_dbPath);
+		_logger = new FileLogger(Path.Combine(_tempDir, "logs"));
+		_database = NoriDatabase.Open(_tempDatabase.Path);
 		_config = new ConfigStore(_database);
 		_config.InitDefaults("0.1.0");
 	}
@@ -37,9 +40,10 @@ public class BackendRuntimeModuleTests : IDisposable
 	public void Dispose()
 	{
 		_database.Dispose();
+		_logger.Dispose();
 		try
 		{
-			File.Delete(_dbPath);
+			_tempDatabase.Dispose();
 			Directory.Delete(_tempDir, true);
 		}
 		catch (IOException)
@@ -63,6 +67,23 @@ public class BackendRuntimeModuleTests : IDisposable
 		Category = category,
 		Execute = (_, _) => execute(),
 	};
+
+	private ToolRegistry CreateBuiltinRegistry()
+	{
+		ToolRegistry registry = new();
+		BuiltinTools.RegisterAll(registry, new BuiltinToolDeps
+		{
+			Memory = new MemoryService(new MemoryStore(_database), new EmbeddingStub(), _config),
+			Emotion = new EmotionManager(_config),
+			Proactive = new ProactiveScheduler(new ReminderStore(_database), _config,
+				_logger, () => null),
+			SystemInfo = new StubSystemInfo(),
+			Fetcher = new StubFetcher(),
+			Http = new HttpClient(),
+			Config = _config,
+		});
+		return registry;
+	}
 
 	[Fact]
 	public async Task safe工具直接执行无需授权()
@@ -295,18 +316,7 @@ public class BackendRuntimeModuleTests : IDisposable
 	[InlineData("searchWeb", "tag", "string", false)]
 	public void 内置工具的参数契约不变(string tool, string parameter, string type, bool required)
 	{
-		ToolRegistry registry = new();
-		BuiltinTools.RegisterAll(registry, new BuiltinToolDeps
-		{
-			Memory = new MemoryService(new MemoryStore(_database), new EmbeddingStub(), _config),
-			Emotion = new EmotionManager(_config),
-			Proactive = new ProactiveScheduler(new ReminderStore(_database), _config,
-				new FileLogger(Path.Combine(_tempDir, "logs")), () => null),
-			SystemInfo = new StubSystemInfo(),
-			Fetcher = new StubFetcher(),
-			Http = new HttpClient(),
-			Config = _config,
-		});
+		ToolRegistry registry = CreateBuiltinRegistry();
 
 		System.Text.Json.Nodes.JsonObject schema = registry.Get(tool)!.Parameters.AsObject();
 		Assert.Equal(type, schema["properties"]![parameter]!["type"]!.GetValue<string>());
@@ -318,18 +328,7 @@ public class BackendRuntimeModuleTests : IDisposable
 	[Fact]
 	public void 内置工具全部注册且别名生效()
 	{
-		ToolRegistry registry = new();
-		BuiltinTools.RegisterAll(registry, new BuiltinToolDeps
-		{
-			Memory = new MemoryService(new MemoryStore(_database), new EmbeddingStub(), _config),
-			Emotion = new EmotionManager(_config),
-			Proactive = new ProactiveScheduler(new ReminderStore(_database), _config,
-				new FileLogger(Path.Combine(_tempDir, "logs")), () => null),
-			SystemInfo = new StubSystemInfo(),
-			Fetcher = new StubFetcher(),
-			Http = new HttpClient(),
-			Config = _config,
-		});
+		ToolRegistry registry = CreateBuiltinRegistry();
 
 		foreach (string name in new[]
 		         {
@@ -351,18 +350,7 @@ public class BackendRuntimeModuleTests : IDisposable
 	[Fact]
 	public async Task calculate工具执行安全求值()
 	{
-		ToolRegistry registry = new();
-		BuiltinTools.RegisterAll(registry, new BuiltinToolDeps
-		{
-			Memory = new MemoryService(new MemoryStore(_database), new EmbeddingStub(), _config),
-			Emotion = new EmotionManager(_config),
-			Proactive = new ProactiveScheduler(new ReminderStore(_database), _config,
-				new FileLogger(Path.Combine(_tempDir, "logs")), () => null),
-			SystemInfo = new StubSystemInfo(),
-			Fetcher = new StubFetcher(),
-			Http = new HttpClient(),
-			Config = _config,
-		});
+		ToolRegistry registry = CreateBuiltinRegistry();
 
 		ToolResult result = await registry.ExecuteAsync("calculate",
 			JsonNode.Parse("{\"expression\": \"128 * 64\"}"));
@@ -424,44 +412,22 @@ public class BackendRuntimeModuleTests : IDisposable
 		Assert.Throws<InvalidOperationException>(() => skills.ImportJson(builtinJson));
 	}
 
-	[Fact]
-	public void SKILL_md解析()
-	{
-		string content = """
-			---
-			name: My Skill
-			description: 测试技能说明
-			version: 2.0.0
-			tags: a, b
-			---
-			指令正文第一段。
-			""";
-
-		SkillService skills = new(_config, new HttpClient());
-		IReadOnlyList<SkillRecord> marketplace = SkillPresets.All;
-
-		// 通过反射调用私有方法不优雅; 直接走公开解析入口的等价校验:
-		// InstallFromUrl 需要网络, 这里仅验证市场数据完整性与 frontmatter 解析器行为由集成覆盖。
-		Assert.Equal(8, marketplace.Count);
-		Assert.Contains("---", content, StringComparison.Ordinal);
-	}
-
 	// ---- 情绪管理器 ----
 
 	[Fact]
 	public void 情绪设置持久化并自然衰减回中性()
 	{
-		EmotionManager emotion = new(_config);
+		using MutableTimeProvider time = new();
+		EmotionManager emotion = new(_config, time);
 		emotion.Initialize();
 		emotion.SetEmotion("happy", 0.9);
 		Assert.Equal("happy", emotion.CurrentType);
 
 		// 衰减到阈值以下回到 neutral @0.5
-		for (int i = 0; i < 10; i++) emotion.TickDecayForTests();
+		for (int i = 0; i < 10; i++) emotion.TickDecay();
 		Assert.Equal("neutral", emotion.CurrentType);
 
-		// 持久化防抖 400ms 后可读回
-		Thread.Sleep(600);
+		time.Advance(TimeSpan.FromMilliseconds(500));
 		EmotionManager reloaded = new(_config);
 		reloaded.Initialize();
 		Assert.Equal("neutral", reloaded.CurrentType);
@@ -491,12 +457,13 @@ public class BackendRuntimeModuleTests : IDisposable
 	{
 		ChatService chat = new(new HttpClient(), _database, _config);
 		chat.SaveMessage("assistant", "{\"type\": \"message\", \"text\": \"协议回复\"}");
+		chat.SaveMessage("assistant", "```json\n{\"type\": \"message\", \"text\": \"旧版回复\"}\n```");
 		chat.SaveMessage("user", "【系统工具执行反馈 - getTime】:\n{}");
 		chat.SaveMessage("user", "普通输入");
 
 		var normalized = AgentHistory.NormalizeRecent(chat.GetHistory(10, 0));
 
-		Assert.Equal([("assistant", "协议回复"), ("user", "普通输入")], normalized);
+		Assert.Equal([("assistant", "协议回复"), ("assistant", "旧版回复"), ("user", "普通输入")], normalized);
 	}
 
 	// ---- 模型元数据 ----

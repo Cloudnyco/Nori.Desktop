@@ -1,11 +1,11 @@
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
-using Avalonia.Platform.Storage;
 using Nori.Core.Configuration;
 using Nori.Core.FirstRun;
 using Nori.Core.Live2D;
@@ -25,19 +25,10 @@ namespace Nori.Desktop.FirstRun;
 /// 每一步通过 <c>onStepChanged</c> 把「我这一步现在能不能过」抬给壳：给一句话就是
 /// 挡住并显示它，给空串就是解除。选形象那一步靠它挡住「一个形象都没有就往下走」。
 /// </summary>
-public sealed class FirstRunSteps(AppServices services, Action<string> onGate, Action onRebuild, Window? owner = null)
+public sealed class FirstRunSteps(AppServices services, Action<string> onGate, Action onRebuild,
+	Func<string, Task<string?>> pickModel, CancellationToken lifetimeToken)
 {
 	private readonly AppServices _services = services;
-
-	/// <summary>文件选择框要挂的窗口。为 null 时导入不可用（测试装配走这一条）。</summary>
-	private readonly Window? _owner = owner;
-
-	/// <summary>正在导入哪一种（"zip" / "folder"）；空串表示没在导。</summary>
-	private string _importing = "";
-
-	/// <summary>导入那一行提示，以及它是不是一条失败。</summary>
-	private string _importNote = "";
-	private bool _importFailed;
 
 	/// <summary>报一句阻断原因（空串=解除）。**只刷底部**，不重建舞台。</summary>
 	private readonly Action<string> _onGate = onGate;
@@ -54,6 +45,10 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 	public string Gate { get; private set; } = "";
 
 	private AiDraft _draft = new();
+	private string _importError = "";
+
+	/// <summary>选择文件或导入期间禁止重复操作和离开当前步骤。</summary>
+	public bool IsImporting { get; private set; }
 
 	/// <summary>选中的形象 id。空串表示一个都没装。</summary>
 	public string SelectedModel { get; private set; } = "";
@@ -63,9 +58,6 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 
 	/// <summary>AI 那一步实际存进去了没有。末步的摘要据此说话。</summary>
 	public bool AiSaved { get; private set; }
-
-	/// <summary>指定选中的形象。**只给测试用** —— 测试环境里一个模型都没装。</summary>
-	internal void SelectModelForTests(string modelId) => SelectedModel = modelId;
 
 	/// <summary>步骤标题，画在顶部指示条旁边。</summary>
 	public static string Title(WizardStep step, bool english) => step switch
@@ -143,7 +135,7 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 			list.Children.Add(Choice(name, sub, code == current, () =>
 			{
 				_services.Config.Set(ConfigStore.KeyLanguage, new ConfigValue.Text(code));
-				_services.Runtime?.InvalidateSnapshot("general");
+				_services.Runtime?.InvalidateSnapshot();
 				// 整幅重画：标题、按钮、以及这一页自己的文案都要跟着换。
 				_onRebuild();
 			}));
@@ -164,7 +156,7 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 		string configured = _services.Config.GetStringOr(ConfigStore.KeySelectedModel, "");
 
 		List<string> installed = [.. catalog.Where(IsInstalled)];
-		if (SelectedModel.Length == 0)
+		if (!installed.Contains(SelectedModel))
 			SelectedModel = installed.Contains(configured) ? configured : installed.FirstOrDefault() ?? "";
 
 		foreach (string id in catalog)
@@ -175,10 +167,11 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 				id,
 				ready ? english ? "Installed" : "已安装" : english ? "Not installed" : "未安装",
 				id == SelectedModel,
-				ready
+				ready && !IsImporting
 					? () =>
 					{
 						SelectedModel = captured;
+						_importError = "";
 						_onRebuild();
 					}
 					: null));
@@ -186,153 +179,71 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 
 		// 一个都没装就挡住：带着空配置进主界面，伴侣窗口会是一片空白。
 		// 写 Gate 而不是回调 —— 构建过程中回调会递归。
-		Gate = SelectedModel.Length > 0
-			? ""
-			: english ? "No appearance installed" : "未安装形象，无法继续";
+		Gate = IsImporting
+			? english ? "Importing appearance..." : "正在导入形象..."
+			: _importError.Length > 0 ? _importError
+			: SelectedModel.Length > 0 ? ""
+			: english ? "Import an appearance to continue" : "先导入一个形象才能继续";
 
-		/*
-		 * ── 导入入口 ──────────────────────────────────────────────────────
-		 *
-		 * 形象资源**不随安装包发行**（README：仅支持本地 ZIP/目录导入，不提供远程
-		 * 下载），全新安装时已安装列表为空。而本步骤在 SelectedModel 为空时阻断
-		 * CanNext，末步 CompleteFirstRun 又要求非空 modelId —— 三者叠加导致初始化
-		 * 流程无法完成。
-		 *
-		 * 原因是迁移遗漏：Vue 版 ModelSelect 提供 importModel("zip"|"folder")，
-		 * 原生版只迁移了选择，未迁移导入，阻断条件保留。此处补回导入入口。
-		 *
-		 * 正文原为「之后可以在模型窗口里添加」，与本步骤的阻断条件矛盾，一并修正。
-		 */
-		StackPanel importRow = new()
+		StackPanel imports = new()
 		{
-			Orientation = Orientation.Horizontal, Spacing = 8,
+			Orientation = Orientation.Horizontal, Spacing = 12,
 			HorizontalAlignment = HorizontalAlignment.Center,
 		};
-		importRow.Children.Add(ImportButton(english ? "Import .zip" : "导入 ZIP", "zip", english));
-		importRow.Children.Add(ImportButton(english ? "Import folder" : "导入文件夹", "folder", english));
-
-		TextBlock note = new()
+		foreach (string kind in new[] {"zip", "folder"})
 		{
-			Text = _importNote,
-			FontSize = 11,
-			Foreground = _importFailed ? ChatPalette.Danger : ChatPalette.Faint,
-			TextWrapping = TextWrapping.Wrap, MaxWidth = 340,
-			TextAlignment = TextAlignment.Center,
-			HorizontalAlignment = HorizontalAlignment.Center,
-			IsVisible = _importNote.Length > 0,
-		};
+			Button import = new()
+			{
+				Name = kind == "zip" ? "FirstRunImportZip" : "FirstRunImportFolder",
+				Content = kind == "zip"
+					? english ? "Import ZIP" : "导入 ZIP"
+					: english ? "Import folder" : "导入文件夹",
+				Padding = new Thickness(16, 6), CornerRadius = new CornerRadius(8),
+				Background = ChatPalette.Panel, Foreground = ChatPalette.Body,
+				BorderThickness = default, IsEnabled = !IsImporting,
+			};
+			import.Click += async (_, _) => await ImportModelAsync(kind, english);
+			imports.Children.Add(import);
+		}
 
 		return Stage(
 			Heading(english ? "Choose an appearance" : "选择形象", 19),
 			Muted(english
-				? "The companion window requires a Live2D appearance. Import a ZIP archive or a model directory."
-				: "伴侣窗口需要一个 Live2D 形象。支持导入 ZIP 压缩包或模型目录。", 340),
-			list,
-			importRow,
-			note);
+				? "Import a local ZIP or folder, then choose an installed appearance."
+				: "导入本地 ZIP 或文件夹，再选择已安装的形象。", 340),
+			imports, list);
 	}
 
-	/// <summary>导入按钮。导入期间两个都禁用 —— 同时点会并发写同一个资源目录。</summary>
-	private Control ImportButton(string label, string kind, bool english)
+	/// <summary>直接复用资源服务的校验与原子导入，不借用其他窗口的桥接身份。</summary>
+	internal async Task ImportModelAsync(string sourceKind, bool english)
 	{
-		Button button = new()
-		{
-			Content = _importing == kind ? english ? "Importing…" : "正在导入…" : label,
-			Padding = new Thickness(14, 7),
-			Background = Brushes.Transparent,
-			Foreground = ChatPalette.Accent,
-			BorderBrush = ChatPalette.Panel,
-			BorderThickness = new Thickness(1),
-			CornerRadius = new CornerRadius(6),
-			FontSize = 12,
-			IsEnabled = _importing.Length == 0,
-			Cursor = new Cursor(StandardCursorType.Hand),
-		};
-		// 显式压暗：这些按钮设了自己的 Background/Foreground，主题给禁用态准备的画刷
-		// 被盖掉了，只设 IsEnabled 的话看起来还是能点的。
-		button.Opacity = button.IsEnabled ? 1 : 0.45;
-		button.Click += (_, _) => _ = ImportAsync(kind, english);
-		return button;
-	}
-
-	/// <summary>
-	/// 选一份本地资源导入。
-	///
-	/// 复用 <c>ResourceManager.Import</c>（沙盒解压 + 模型 id 校验），不另写一套 ——
-	/// 那里面的校验正是「别把任意 zip 解进数据目录」的防线。
-	/// </summary>
-	private async Task ImportAsync(string kind, bool english)
-	{
-		if (_importing.Length > 0) return;
-		_importing = kind;
-		_importFailed = false;
-		_importNote = english ? "Selecting…" : "正在选择文件…";
+		if (IsImporting || lifetimeToken.IsCancellationRequested) return;
+		IsImporting = true;
+		_importError = "";
 		_onRebuild();
-
 		try
 		{
-			string? path = await PickAsync(kind);
-			if (string.IsNullOrWhiteSpace(path))
-			{
-				// 在文件框里按了取消。这不是错误，不留话。
-				_importNote = "";
-				return;
-			}
-
-			_importNote = english ? "Importing…" : "正在导入…";
-			_onRebuild();
-
+			string? path = await pickModel(sourceKind).WaitAsync(lifetimeToken);
+			if (string.IsNullOrWhiteSpace(path)) return;
+			lifetimeToken.ThrowIfCancellationRequested();
 			IReadOnlyList<string> imported = await Task.Run(
-				() => _services.Resources.Import(ResourceType.Live2D, path, CancellationToken.None));
-
-			if (imported.Count == 0)
-			{
-				_importFailed = true;
-				_importNote = english
-					? "No importable appearance found. Select a Live2D model directory or ZIP archive containing model3.json."
-					: "未识别到可导入的形象。请选择包含 model3.json 的 Live2D 模型目录或 ZIP 压缩包。";
-				return;
-			}
-
-			// 导进来的直接选上：用户刚做的动作就是「我要这个」，再让他点一次是多余的。
-			SelectedModel = imported.FirstOrDefault(SupportedModelIds.IsSupported) ?? SelectedModel;
-			_services.Logger.Write(LogSource.Backend, "info",
-				$"首次运行导入形象: {string.Join(", ", imported)}");
-			_importNote = (english ? "Imported: " : "已导入：") + string.Join("、", imported);
+				() => _services.Resources.Import(ResourceType.Live2D, path, lifetimeToken),
+				lifetimeToken);
+			lifetimeToken.ThrowIfCancellationRequested();
+			SelectedModel = imported.FirstOrDefault() ?? SelectedModel;
+			_services.Runtime?.InvalidateSnapshot();
 		}
-		catch (Exception failure) when (failure is ResourceException or IOException
-			or UnauthorizedAccessException or InvalidOperationException)
+		catch (OperationCanceledException) when (lifetimeToken.IsCancellationRequested) { }
+		catch (Exception failure)
 		{
-			_importFailed = true;
-			// 原样给出原因：ResourceManager 的消息是写给人看的（不支持的模型 id、
-			// 解压越界等），统一换成「导入失败」反而让人无从下手。
-			_importNote = (english ? "Import failed: " : "导入失败：") + failure.Message;
-			_services.Logger.Write(LogSource.Backend, "warn", $"首次运行导入形象失败: {failure.Message}");
+			_importError = (english ? "Import failed, please retry: " : "导入失败，请重试：") + failure.Message;
+			_services.Logger.Write(LogSource.Backend, "warn", $"首次运行导入模型失败：{failure.GetType().Name}");
 		}
 		finally
 		{
-			_importing = "";
+			IsImporting = false;
 			_onRebuild();
 		}
-	}
-
-	private async Task<string?> PickAsync(string kind)
-	{
-		if (_owner is null) return null;
-		if (kind == "folder")
-		{
-			IReadOnlyList<IStorageFolder> folders = await _owner.StorageProvider.OpenFolderPickerAsync(
-				new FolderPickerOpenOptions {Title = "选择 Live2D 模型文件夹", AllowMultiple = false});
-			return folders.Count > 0 ? folders[0].Path.LocalPath : null;
-		}
-		IReadOnlyList<IStorageFile> files = await _owner.StorageProvider.OpenFilePickerAsync(
-			new FilePickerOpenOptions
-			{
-				Title = "选择 Live2D 资源文件 (.zip)",
-				AllowMultiple = false,
-				FileTypeFilter = [new FilePickerFileType("Live2D 压缩包 (*.zip)") {Patterns = ["*.zip"]}],
-			});
-		return files.Count > 0 ? files[0].Path.LocalPath : null;
 	}
 
 	private bool IsInstalled(string modelId)
@@ -343,7 +254,7 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ResourceException)
 		{
-			_services.Logger.Write(LogSource.Backend, "warn", $"检查模型资源失败 [{modelId}]: {exception.Message}");
+			_services.Logger.Write(LogSource.Backend, "warn", $"检查模型资源失败 [{modelId}]: {exception.GetType().Name}");
 			return false;
 		}
 	}
@@ -494,7 +405,7 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 				ApiKey: patch.ApiKey,
 				Model: patch.Model,
 				ApiKeySpecified: patch.ApiKey is not null));
-			_services.Runtime?.InvalidateSnapshot("ai");
+			_services.Runtime?.InvalidateSnapshot();
 			AiSaved = true;
 			return true;
 		}
@@ -579,20 +490,24 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 		HorizontalAlignment = HorizontalAlignment.Center,
 	};
 
-	private static Control Field(string label, Control editor) => new StackPanel
+	private static Control Field(string label, Control editor)
 	{
-		Spacing = 4, HorizontalAlignment = HorizontalAlignment.Center,
-		Children =
+		AutomationProperties.SetName(editor, label);
+		return new StackPanel
 		{
-			new TextBlock {Text = label, FontSize = 11, Foreground = ChatPalette.Faint},
-			editor,
-		},
-	};
+			Spacing = 4, HorizontalAlignment = HorizontalAlignment.Center,
+			Children =
+			{
+				new TextBlock {Text = label, FontSize = 11, Foreground = ChatPalette.Faint},
+				editor,
+			},
+		};
+	}
 
 	/// <summary>一张可选卡片。<paramref name="onPick"/> 为 null 表示这一项不可选。</summary>
 	private static Control Choice(string title, string subtitle, bool selected, Action? onPick)
 	{
-		Border card = new()
+		Button card = new()
 		{
 			Width = 320,
 			Padding = new Thickness(14, 10),
@@ -601,8 +516,9 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 			BorderBrush = selected ? ChatPalette.Teal : ChatPalette.Faint,
 			BorderThickness = new Thickness(selected ? 2 : 1),
 			Opacity = onPick is null ? 0.45 : 1,
-			Cursor = onPick is null ? null : new Cursor(StandardCursorType.Hand),
-			Child = new StackPanel
+			IsEnabled = onPick is not null,
+			HorizontalContentAlignment = HorizontalAlignment.Stretch,
+			Content = new StackPanel
 			{
 				Spacing = 2,
 				Children =
@@ -612,7 +528,8 @@ public sealed class FirstRunSteps(AppServices services, Action<string> onGate, A
 				},
 			},
 		};
-		if (onPick is not null) card.PointerPressed += (_, _) => onPick();
+		AutomationProperties.SetName(card, $"{title}. {subtitle}");
+		if (onPick is not null) card.Click += (_, _) => onPick();
 		return card;
 	}
 

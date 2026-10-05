@@ -4,6 +4,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Nori.Core.Live2D;
 using Nori.Desktop.Memory;
+using static Nori.Desktop.SnapshotJson;
 
 namespace Nori.Desktop.Windows;
 
@@ -89,8 +90,10 @@ public sealed partial class ModelsWindow
 	private void BuildRegionEditor()
 	{
 		if (_regionEditor is null) return;
-		foreach (Action action in _regionBindings) _adjustBindings.Remove(action); _regionBindings.Clear();
-		foreach (Action action in _regionLocalize) _adjustLocalize.Remove(action); _regionLocalize.Clear();
+		foreach (Action action in _regionBindings) _adjustBindings.Remove(action);
+		_regionBindings.Clear();
+		foreach (Action action in _regionLocalize) _adjustLocalize.Remove(action);
+		_regionLocalize.Clear();
 		bool previous = _buildingAdjust; _buildingAdjust = true;
 		int bindingStart = _adjustBindings.Count, localStart = _adjustLocalize.Count;
 		try

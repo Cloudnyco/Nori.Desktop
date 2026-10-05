@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Avalonia.Input.Platform;
 using Avalonia.Threading;
+using Nori.Core.Data;
 using Nori.Core.Tools;
 
 namespace Nori.Desktop.Runtime;
@@ -12,6 +13,7 @@ namespace Nori.Desktop.Runtime;
 public sealed class DesktopSystemInfo(Nori.Core.Configuration.ConfigStore config) : ISystemInfoProvider
 {
 	[StructLayout(LayoutKind.Sequential)]
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3898", Justification = "原生 ABI 结构体仅用于互操作，不参与相等比较。")]
 	private struct SystemPowerStatus
 	{
 		public byte ACLineStatus;
@@ -114,10 +116,25 @@ public static class ShellOpen
 {
 	public static void OpenUrl(string url)
 	{
-		if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed) || parsed.Scheme is not ("http" or "https"))
+		if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed)
+			|| (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+			|| !string.IsNullOrEmpty(parsed.UserInfo))
 		{
-			throw new InvalidOperationException($"不允许打开的链接: {url}");
+			throw new InvalidOperationException("不允许打开该链接");
 		}
-		Process.Start(new ProcessStartInfo(parsed.ToString()) {UseShellExecute = true});
+		// URI 已限定为无凭据的绝对 HTTP(S) 地址。
+		Process.Start(new ProcessStartInfo(parsed.AbsoluteUri) {UseShellExecute = true}); // nosemgrep
+	}
+
+	/// <summary>使用系统文件管理器打开数据目录内的固定路径。</summary>
+	public static void OpenDataDirectory(string directory, string dataRoot)
+	{
+		string fullDirectory = Path.GetFullPath(directory);
+		string fullDataRoot = Path.GetFullPath(dataRoot);
+		if (!AppStoragePaths.IsContained(fullDirectory, fullDataRoot))
+			throw new InvalidOperationException("不允许打开数据目录之外的路径");
+		AppStoragePaths.EnsureNoReparsePoints(fullDirectory, fullDataRoot);
+		// 目录已完成 data 根边界和 reparse point 校验。
+		Process.Start(new ProcessStartInfo(fullDirectory) {UseShellExecute = true}); // nosemgrep
 	}
 }

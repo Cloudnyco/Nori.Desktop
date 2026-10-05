@@ -19,40 +19,12 @@ public partial class BridgeCommandsTests
 	}
 
 	[Theory]
-	[InlineData("overview")]
-	[InlineData("memories")]
-	[InlineData("atoms")]
-	[InlineData("knowledge")]
-	[InlineData("archive")]
-	[InlineData("transfer")]
-	[InlineData("debugger")]
-	[InlineData("advanced")]
-	[InlineData(null)]
-	public async Task WindowOpenMemoryAcceptsVisibleMainAndKnownPages(string? page)
-	{
-		await CreateCommands().InvokeAsync(new FakeBridgeSource(WindowLabels.Main), "window_open_memory", Args(new {page}));
-		Assert.Equal([page], _windows.MemoryPages);
-	}
-
-	[Fact]
-	public async Task WindowOpenMemoryRejectsHiddenForeignAndRecursiveSources()
-	{
-		BridgeCommands commands = CreateCommands();
-		IBridgeSource[] rejected = [new FakeBridgeSource(WindowLabels.Main, false), new FakeBridgeSource(WindowLabels.Init), new NativeMemoryTestSource(), new NativeMemoryTestSource(label: WindowLabels.Main)];
-		foreach (IBridgeSource source in rejected)
-			await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(source, "window_open_memory", Args(new { })));
-		await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(new FakeBridgeSource(WindowLabels.Main), "window_open_memory", Args(new {page = "unknown"})));
-		Assert.Empty(_windows.MemoryPages);
-	}
-
-	[Theory]
 	[InlineData("chat_clear")]
 	[InlineData("settings_update_general")]
 	[InlineData("plugin_list")]
 	[InlineData("automation_get_snapshot")]
 	[InlineData("memory_future_command")]
 	[InlineData("ui_get_snapshot")]
-	[InlineData("write_log")]
 	public async Task NativeMemoryPolicyCannotBeBypassedAtEitherHostEntry(string command)
 	{
 		NativeMemoryTestSource source = new();
@@ -64,12 +36,99 @@ public partial class BridgeCommandsTests
 	}
 
 	[Fact]
+	public async Task memory_transfer只允许可见main窗口()
+	{
+		BridgeCommands commands = CreateCommands();
+		string[] commandsToCheck = ["memory_export", "memory_import_preview", "memory_import_commit"];
+		foreach (string command in commandsToCheck)
+		{
+			await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(
+				new FakeBridgeSource(WindowLabels.Init), command, Args(new {fileContent = "{}"})));
+			await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(
+				new FakeBridgeSource(WindowLabels.Main, false), command, Args(new {fileContent = "{}"})));
+		}
+	}
+
+	[Fact]
+	public async Task memory_transfer桥接使用服务端预览并返回既有前端DTO()
+	{
+		BridgeCommands commands = CreateCommands();
+		FakeBridgeSource main = new(WindowLabels.Main);
+		string content = $"bridge-transfer-{Guid.NewGuid():N}";
+		string transfer = JsonSerializer.Serialize(new
+		{
+			version = "nori-memory-v1",
+			format = "nori-memory-v1",
+			memories = new[]
+			{
+				new
+				{
+					content,
+					canonical_summary = content,
+					kind = "preference",
+					importance = 0.9,
+					confidence = 0.8,
+					tags = "coffee",
+				},
+			},
+		});
+		int snapshotBefore = _runtime.SnapshotVersion;
+		Assert.Empty(_services.Memory.GetAll());
+
+		object? previewObject = await commands.InvokeAsync(main, "memory_import_preview", Args(new
+		{
+			fileContent = transfer,
+			fileName = "memory.json",
+			fileSize = 1,
+		}));
+		using JsonDocument preview = JsonDocument.Parse(JsonSerializer.Serialize(previewObject, BridgeJson.Options));
+		Assert.True(preview.RootElement.GetProperty("valid").GetBoolean());
+		Assert.Equal(1, preview.RootElement.GetProperty("newCount").GetInt32());
+		Assert.Equal("none", preview.RootElement.GetProperty("items")[0].GetProperty("conflictType").GetString());
+		string token = preview.RootElement.GetProperty("previewToken").GetString()!;
+
+		object? commitObject = await commands.InvokeAsync(main, "memory_import_commit", Args(new
+		{
+			previewToken = token,
+			conflictStrategy = "skip",
+			items = new[] {new {content = "客户端伪造内容", kind = "identity"}},
+		}));
+		using JsonDocument commit = JsonDocument.Parse(JsonSerializer.Serialize(commitObject, BridgeJson.Options));
+		Assert.True(commit.RootElement.GetProperty("success").GetBoolean());
+		Assert.Equal(1, commit.RootElement.GetProperty("importedCount").GetInt32());
+		Assert.Equal(0, commit.RootElement.GetProperty("updatedCount").GetInt32());
+		Assert.Equal(0, commit.RootElement.GetProperty("skippedCount").GetInt32());
+		Assert.True(_runtime.SnapshotVersion > snapshotBefore);
+		Nori.Core.Memory.MemoryItem imported = Assert.Single(_services.Memory.GetAll());
+		Assert.Equal(content, imported.Content);
+		Assert.Equal("memory_transfer", imported.Source);
+		Assert.Single(_services.Memory.GetAtoms(imported.Id));
+
+		object? exportObject = await commands.InvokeAsync(main, "memory_export", Args(new { }));
+		using JsonDocument export = JsonDocument.Parse(JsonSerializer.Serialize(exportObject, BridgeJson.Options));
+		Assert.Equal(1, export.RootElement.GetProperty("totalCount").GetInt32());
+		string exportContent = export.RootElement.GetProperty("content").GetString()!;
+		using JsonDocument exportDocument = JsonDocument.Parse(exportContent);
+		JsonElement exported = Assert.Single(exportDocument.RootElement.GetProperty("memories").EnumerateArray());
+		Assert.False(exported.TryGetProperty("embedding", out _));
+		Assert.False(exported.TryGetProperty("status", out _));
+
+		const string secret = "bridge-secret-must-not-leak";
+		object? invalidObject = await commands.InvokeAsync(main, "memory_import_preview", Args(new
+		{
+			fileContent = $"{{\"version\":\"nori-memory-v1\",\"memories\":[{{\"content\":\"安全\",\"kind\":\"general\",\"embedding\":\"{secret}\"}}]}}",
+		}));
+		string invalidJson = JsonSerializer.Serialize(invalidObject, BridgeJson.Options);
+		Assert.DoesNotContain(secret, invalidJson, StringComparison.Ordinal);
+		Assert.Contains("记忆传输条目不符合安全格式", invalidJson, StringComparison.Ordinal);
+	}
+	[Fact]
 	public async Task NativeMemoryReadsRequireTrustedMarkerAndPreserveWebSourceRules()
 	{
 		BridgeCommands commands = CreateCommands();
-		Assert.NotNull(await commands.InvokeAsync(new NativeMemoryTestSource(), "memory_overview", Args(new { })));
-		await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(new FakeBridgeSource(WindowLabels.Memory), "memory_overview", Args(new { })));
-		await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(new FakeBridgeSource(WindowLabels.Pet), "memory_list", Args(new { })));
+		Assert.NotNull(await commands.InvokeAsync(new NativeMemoryTestSource(), "memory_list_page", Args(new { })));
+		await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(new FakeBridgeSource(WindowLabels.Memory), "memory_list_page", Args(new { })));
+		await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(new FakeBridgeSource(WindowLabels.Pet), "memory_list_page", Args(new { })));
 	}
 
 	[Theory]
@@ -102,7 +161,7 @@ public partial class BridgeCommandsTests
 		BridgeCommands commands = fixture.CreateCommands();
 		NativeMemoryTestSource source = new();
 		Assert.NotNull(await commands.InvokeAsync(source, "memory_list_page", Args(new { })));
-		foreach (string command in new[] {"memory_search_hybrid", "memory_reembed_all", "memory_recall_debug", "memory_knowledge_reindex"})
+		foreach (string command in new[] {"memory_reembed_all", "memory_recall_debug", "memory_knowledge_reindex"})
 		{
 			InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(() => commands.InvokeAsync(source, command, Args(new { })));
 			Assert.Contains("安全模式", exception.Message);
@@ -152,8 +211,9 @@ public partial class BridgeCommandsTests
 		}
 		finally { fixture._runtime.StateChanged -= CancelWhenIndexStarts; }
 		await service.WaitForPendingOperationsAsync();
-		JsonElement overview = await service.ExecuteAsync("memory_overview");
-		Assert.True(overview.TryGetProperty("activeMemories", out _));
+		JsonElement page = await service.ExecuteAsync("memory_list_page");
+		Assert.True(page.TryGetProperty("items", out _));
+		Assert.True(page.TryGetProperty("total", out _));
 	});
 
 	[Fact]
@@ -171,9 +231,9 @@ public partial class BridgeCommandsTests
 		await service.WaitForPendingOperationsAsync();
 		service.Dispose();
 		int before = changes;
-		_runtime.InvalidateSnapshot("memory");
+		_runtime.InvalidateSnapshot();
 		Assert.Equal(before, changes);
-		await Assert.ThrowsAsync<ObjectDisposedException>(() => service.ExecuteAsync("memory_overview"));
+		await Assert.ThrowsAsync<ObjectDisposedException>(() => service.ExecuteAsync("memory_list_page"));
 	});
 
 	[Fact]

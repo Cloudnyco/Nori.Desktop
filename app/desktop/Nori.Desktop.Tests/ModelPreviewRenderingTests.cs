@@ -1,12 +1,8 @@
-using System.Runtime.CompilerServices;
-using Live2DCSharpSDK.App;
-using Live2DCSharpSDK.Framework;
-using Live2DCSharpSDK.Framework.Model;
-using Live2DCSharpSDK.Framework.Rendering;
 using Nori.Core.Configuration;
 using Nori.Core.Live2D;
 using Nori.Desktop.Live2D;
 using Nori.Desktop.Models;
+using Nori.Live2D;
 
 namespace Nori.Desktop.Tests;
 
@@ -14,89 +10,43 @@ namespace Nori.Desktop.Tests;
 public sealed class ModelPreviewRenderingTests
 {
 	[Fact]
-	public void CubismFramework引用计数避免一个预览关闭另一个实例()
+	public void 宿主与GL留在Desktop而模型动画属于独立数据层()
 	{
-		int baseline = CubismFramework.ActiveLeaseCount;
-		bool baselineStarted = CubismFramework.IsStarted;
-		int acquired = 0;
-		var allocator = new LAppAllocator();
-		var option = new CubismOption {LogFunction = _ => { }, LoggingLevel = LogLevel.Off};
-		try
-		{
-			Assert.True(CubismFramework.StartUp(allocator, option));
-			acquired++;
-			Assert.True(CubismFramework.StartUp(allocator, option));
-			acquired++;
-			Assert.Equal(baseline + 2, CubismFramework.ActiveLeaseCount);
-
-			CubismFramework.CleanUp();
-			acquired--;
-			Assert.True(CubismFramework.IsStarted);
-			Assert.Equal(baseline + 1, CubismFramework.ActiveLeaseCount);
-
-			CubismFramework.CleanUp();
-			acquired--;
-			Assert.Equal(baselineStarted, CubismFramework.IsStarted);
-			Assert.Equal(baseline, CubismFramework.ActiveLeaseCount);
-		}
-		finally
-		{
-			while (acquired-- > 0) CubismFramework.CleanUp();
-		}
-	}
-
-	[Fact]
-	public async Task Cubism全局操作不会在两个渲染上下文间并发()
-	{
-		using ManualResetEventSlim firstEntered = new();
-		using ManualResetEventSlim secondAttempted = new();
-		using ManualResetEventSlim secondEntered = new();
-		using ManualResetEventSlim releaseFirst = new();
-
-		Task first = Task.Run(() => CubismFramework.RunSynchronized(() =>
-		{
-			firstEntered.Set();
-			releaseFirst.Wait();
-		}));
-		Assert.True(firstEntered.Wait(TimeSpan.FromSeconds(2)));
-
-		Task second = Task.Run(() =>
-		{
-			secondAttempted.Set();
-			CubismFramework.RunSynchronized(secondEntered.Set);
-		});
-		Assert.True(secondAttempted.Wait(TimeSpan.FromSeconds(2)));
-		try
-		{
-			Assert.False(secondEntered.Wait(TimeSpan.FromMilliseconds(100)));
-		}
-		finally
-		{
-			releaseFirst.Set();
-		}
-
-		await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(2));
-		Assert.True(secondEntered.IsSet);
+		var desktop = typeof(PetRuntime).Assembly;
+		var live2D = typeof(NativeModel).Assembly;
+		Assert.NotEqual(desktop, live2D);
+		Assert.Same(desktop, typeof(NativeModelHost).Assembly);
+		Assert.Same(desktop, typeof(NativeGlRenderer).Assembly);
+		Assert.Same(live2D, typeof(AnimatedModel).Assembly);
+		Assert.Contains(desktop.GetReferencedAssemblies(), reference => reference.Name == live2D.GetName().Name);
+		foreach (var assembly in new[] { desktop, live2D })
+			Assert.DoesNotContain(assembly.GetReferencedAssemblies(),
+				reference => reference.Name!.StartsWith("Live2DCSharpSDK", StringComparison.Ordinal));
+		Assert.DoesNotContain(live2D.GetReferencedAssemblies(), reference =>
+			reference.Name == desktop.GetName().Name || reference.Name!.StartsWith("Avalonia", StringComparison.Ordinal));
+		Assert.Equal(typeof(object), typeof(NativeModelHost).BaseType);
+		Assert.Equal(typeof(object), typeof(NativeGlRenderer).BaseType);
+		Assert.Equal(typeof(NativeModel), typeof(NativeModelHost).GetProperty("Model")!.PropertyType);
+		Assert.Equal(typeof(AnimatedModel), typeof(NativeModelHost).GetProperty("Animation")!.PropertyType);
+		Assert.Equal(typeof(AnimatedModel), typeof(Nori.Desktop.Live2D.Behaviors.BehaviorContext).GetProperty("Model")!.PropertyType);
 	}
 
 	[Fact]
 	public void 同路径模型纹理由各模型独占并分别释放()
 	{
-		var app = new FakeDelegate();
-		LAppModel firstModel = (LAppModel)RuntimeHelpers.GetUninitializedObject(typeof(LAppModel));
-		LAppModel secondModel = (LAppModel)RuntimeHelpers.GetUninitializedObject(typeof(LAppModel));
-
-		TextureInfo first = app.TextureManager.CreateTextureFromPngFile(firstModel, 0, "same.png");
-		TextureInfo second = app.TextureManager.CreateTextureFromPngFile(secondModel, 0, "same.png");
-
-		Assert.NotSame(first, second);
-		Assert.Equal(2, app.CreatedTextures.Count);
-		app.TextureManager.ReleaseTexture(first);
-		Assert.True(((FakeTexture)first).Disposed);
-		Assert.False(((FakeTexture)second).Disposed);
-		app.TextureManager.ReleaseTexture(second);
-		Assert.True(((FakeTexture)second).Disposed);
-		app.Dispose();
+		var gl = new RecordingGlApi { CreateResources = true };
+		using var first = new NativeTextureOwner(gl);
+		using var second = new NativeTextureOwner(gl);
+		var texture = new PreparedTexture(0, "same.png", new(1, 1, [255, 255, 255, 255]));
+		first.Upload(texture);
+		second.Upload(texture);
+		Assert.NotEqual(first[0], second[0]);
+		int secondHandle = second[0];
+		first.Dispose();
+		Assert.Single(gl.DeletedTextures);
+		Assert.DoesNotContain(secondHandle, gl.DeletedTextures);
+		second.Dispose();
+		Assert.Equal(gl.CreatedTextures.Order(), gl.DeletedTextures.Order());
 	}
 
 	[Fact]
@@ -149,36 +99,59 @@ public sealed class ModelPreviewRenderingTests
 		cancellation,
 		Task.FromResult(ModelLoadOutcome.Canceled()));
 
-	private sealed class FakeDelegate : LAppDelegate
-	{
-		public FakeDelegate()
-		{
-			InitApp();
-		}
-
-		public List<FakeTexture> CreatedTextures { get; } = [];
-
-		public override CubismRenderer CreateRenderer(CubismModel model) => throw new NotSupportedException();
-
-		public override TextureInfo CreateTexture(LAppModel model, int index, int width, int height, nint data)
-		{
-			var texture = new FakeTexture {Id = CreatedTextures.Count + 1};
-			CreatedTextures.Add(texture);
-			return texture;
-		}
-
-		public override TexturePixels DecodeTexture(string fileName) => new(1, 1, [255, 255, 255, 255]);
-	}
-
-	private sealed class FakeTexture : TextureInfo
-	{
-		public bool Disposed { get; private set; }
-		public override void Dispose() => Disposed = true;
-	}
 }
 
 public partial class BridgeCommandsTests
 {
+	[Fact]
+	public async Task 同一运行时串行而宠物预览不共享全局锁()
+	{
+		using var fixture = new BridgeCommandsTests();
+		var pet = new PetRuntime(fixture._services);
+		var preview = new PetRuntime(fixture._services, previewMode: true);
+		using ManualResetEventSlim entered = new(), release = new(), sameEntered = new(), previewEntered = new();
+		Task first = Task.Run(() => pet.RunSynchronized(() =>
+		{
+			entered.Set();
+			release.Wait();
+		}));
+		try
+		{
+			Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+			Task same = Task.Run(() => pet.RunSynchronized(sameEntered.Set));
+			Task other = Task.Run(() => preview.RunSynchronized(previewEntered.Set));
+			Assert.True(previewEntered.Wait(TimeSpan.FromSeconds(2)));
+			Assert.False(sameEntered.Wait(TimeSpan.FromMilliseconds(100)));
+			release.Set();
+			await Task.WhenAll(first, same, other).WaitAsync(TimeSpan.FromSeconds(2));
+		}
+		finally { release.Set(); }
+	}
+
+	[Fact]
+	public void QuickChat展示切换不改写用户缩放并发布布局变化()
+	{
+		using BridgeCommandsTests fixture = new(safeMode: true);
+		var runtime = new PetRuntime(fixture._services);
+		runtime.UserScale = 1.75f;
+		int layoutChanges = 0;
+		runtime.LayoutChanged += () => layoutChanges++;
+
+		runtime.SetQuickChatPresentation(true);
+		runtime.SetQuickChatPresentation(true);
+
+		Assert.Equal(PetPresentationMode.QuickChat, runtime.PresentationMode);
+		Assert.Equal(1.75f, runtime.UserScale);
+		Assert.Equal(282, runtime.QuickChatLayout.ViewportHeight, 8);
+		Assert.Equal(82, runtime.QuickChatLayout.VisualCenterX);
+		Assert.Equal(1, layoutChanges);
+
+		runtime.SetQuickChatPresentation(false);
+		Assert.Equal(PetPresentationMode.Ordinary, runtime.PresentationMode);
+		Assert.Equal(1.75f, runtime.UserScale);
+		Assert.Equal(2, layoutChanges);
+	}
+
 	[Fact]
 	public void 预览运行时忽略全局模型选择热更新()
 	{

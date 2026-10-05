@@ -29,7 +29,8 @@ internal static class Program
 			startInfo.Environment["NORI_DEPLOYMENT_ROOT"] = selection.DeploymentRoot;
 			startInfo.Environment["NORI_LAUNCHER_PATH"] = Environment.ProcessPath ?? selection.Entrypoint;
 			startInfo.Environment["NORI_EXECUTABLE_PATH"] = selection.Entrypoint;
-			using Process child = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 Nori 宿主");
+			// Entrypoint 已由 DeploymentSelector 限定在签名部署槽内并验证为普通文件。
+			using Process child = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 Nori 宿主"); // nosemgrep
 			child.WaitForExit();
 			return child.ExitCode;
 		}
@@ -68,33 +69,36 @@ internal static class Program
 		return $"{os}-{architecture}";
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S127", Justification = "命令行解析消费选项值时必须推进同一个索引。")]
 	private static void WaitPid(string[] args, out int? waitPid, out long? waitStartTicks, out List<string> forwarded)
 	{
 		waitPid = null;
 		waitStartTicks = null;
 		forwarded = [];
-		for (int index = 0; index < args.Length; index++)
+		for (int index = 0; index < args.Length;)
 		{
-			if (args[index].Equals(WaitPidArgument, StringComparison.Ordinal))
+			string argument = args[index++];
+			if (argument.Equals(WaitPidArgument, StringComparison.Ordinal))
 			{
-				if (waitPid is not null || index + 1 >= args.Length || !int.TryParse(args[++index], out int pid) || pid <= 0)
+				if (waitPid is not null || index >= args.Length || !int.TryParse(args[index++], out int pid) || pid <= 0)
 					throw new ArgumentException("--launcher-wait-pid 必须带一个正整数 PID 且只能指定一次");
 				waitPid = pid;
 				continue;
 			}
-			if (args[index].Equals("--launcher-wait-start-ticks", StringComparison.Ordinal))
+			if (argument.Equals("--launcher-wait-start-ticks", StringComparison.Ordinal))
 			{
-				if (waitStartTicks is not null || index + 1 >= args.Length || !long.TryParse(args[++index], out long ticks) || ticks <= 0)
+				if (waitStartTicks is not null || index >= args.Length || !long.TryParse(args[index++], out long ticks) || ticks <= 0)
 					throw new ArgumentException("--launcher-wait-start-ticks 必须带一个正整数且只能指定一次");
 				waitStartTicks = ticks;
 				continue;
 			}
-			forwarded.Add(args[index]);
+			forwarded.Add(argument);
 		}
 		if (waitStartTicks is not null && waitPid is null) throw new ArgumentException("--launcher-wait-start-ticks 必须配合 --launcher-wait-pid");
 		if (waitPid is not null && waitStartTicks is null) throw new ArgumentException("--launcher-wait-pid 必须同时带 --launcher-wait-start-ticks");
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "等待进程的查询或退出异常不能遮蔽启动失败。")]
 	private static void WaitForProcess(int pid, long? expectedStartTicks)
 	{
 		try
@@ -133,17 +137,18 @@ internal static class Program
 			{
 				ProcessStartInfo alert = new("osascript") { UseShellExecute = false };
 				alert.ArgumentList.Add("-e");
-				alert.ArgumentList.Add($"display alert {AppleScriptString(title)} message {AppleScriptString(message)}");
-				using Process process = Process.Start(alert)!;
+				alert.ArgumentList.Add("display alert (system attribute \"NORI_ALERT_TITLE\") message (system attribute \"NORI_ALERT_MESSAGE\")");
+				alert.Environment["NORI_ALERT_TITLE"] = title;
+				alert.Environment["NORI_ALERT_MESSAGE"] = message;
+				// 可执行文件和脚本均为固定字面量，动态文本只通过环境变量传值。
+				using Process process = Process.Start(alert)!; // nosemgrep
 				process.WaitForExit(5000);
 				return;
 			}
-			catch { }
+			catch { /* 进程已退出或无法查询时，启动器仍需输出原始错误。 */ }
 		}
 		Console.Error.WriteLine($"{title}: {message}");
 	}
-
-	private static string AppleScriptString(string value) => "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal).Replace("\r", " ", StringComparison.Ordinal).Replace("\n", " ", StringComparison.Ordinal) + "\"";
 
 	[DllImport("user32.dll", CharSet = CharSet.Unicode)]
 	private static extern int MessageBox(nint hWnd, string text, string caption, uint type);

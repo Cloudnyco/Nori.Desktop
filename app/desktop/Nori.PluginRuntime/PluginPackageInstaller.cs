@@ -73,6 +73,7 @@ internal sealed class PluginPackageInstaller
 		string pluginDirectory = CurrentDirectory(manifest.Id);
 		string versionDirectory = VersionDirectory(manifest.Id, manifest.Version);
 		string pointerPath = Path.Combine(pluginDirectory, CurrentFileName);
+		bool versionMoved = false;
 		try
 		{
 			cancellationToken.ThrowIfCancellationRequested();
@@ -91,17 +92,20 @@ internal sealed class PluginPackageInstaller
 			EnsureNoReparsePoints(pluginDirectory);
 			if (Directory.Exists(versionDirectory)) throw new PluginException(PluginErrorCodes.InvalidPackage, "插件版本已经安装");
 			Directory.Move(staging, versionDirectory);
+			versionMoved = true;
 			WriteCurrentPointer(pointerPath, extracted.Version);
 			return extracted;
 		}
 		catch (PluginException)
 		{
 			TryDelete(staging);
+			if (versionMoved) TryDelete(versionDirectory);
 			throw;
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or ResourceException)
 		{
 			TryDelete(staging);
+			if (versionMoved) TryDelete(versionDirectory);
 			throw new PluginException(PluginErrorCodes.InvalidPackage, "插件包安装失败", exception);
 		}
 	}
@@ -164,12 +168,12 @@ internal sealed class PluginPackageInstaller
 			try { path = ZipExtractor.SanitizePath(entry.FullName); }
 			catch (ResourceException exception) { throw new PluginException(PluginErrorCodes.PackagePathDenied, exception.Message, exception); }
 			if (path.Length == 0) continue;
-			if (!entry.IsDirectory() && (entry.Length < 0 || entry.Length > ZipExtractor.DefaultLimits.MaxSingleFileBytes))
+			if (!ZipExtractor.IsDirectoryEntry(entry) && (entry.Length < 0 || entry.Length > ZipExtractor.DefaultLimits.MaxSingleFileBytes))
 				throw new PluginException(PluginErrorCodes.InvalidPackage, "插件包单文件过大");
 			sanitized.Add((entry, path));
 		}
 
-		string? commonTop = ZipExtractor.FindCommonTopDirectory(sanitized.Where(item => !item.Entry.IsDirectory()).Select(item => item.Path));
+		string? commonTop = ZipExtractor.FindCommonTopDirectory(sanitized.Where(item => !ZipExtractor.IsDirectoryEntry(item.Entry)).Select(item => item.Path));
 		HashSet<string> paths = new(StringComparer.OrdinalIgnoreCase);
 		List<PackageEntry> entries = [];
 		bool hasManifest = false;
@@ -179,7 +183,7 @@ internal sealed class PluginPackageInstaller
 			if (path.Length == 0) continue;
 			if (!paths.Add(path)) throw new PluginException(PluginErrorCodes.InvalidPackage, $"插件包包含重复路径: {path}");
 			if (path.Equals(ManifestFileName, StringComparison.Ordinal)) hasManifest = true;
-			if (entry.IsDirectory()) continue;
+			if (ZipExtractor.IsDirectoryEntry(entry)) continue;
 			if (PluginAssemblyPolicy.IsContractAssemblyFile(path)) throw new PluginException(PluginErrorCodes.ContractAssemblyDenied, "插件包不得携带 contract DLL");
 			bool allowed = path.Equals(ManifestFileName, StringComparison.Ordinal) ||
 				path.Equals("README.md", StringComparison.OrdinalIgnoreCase) ||
@@ -230,6 +234,7 @@ internal sealed class PluginPackageInstaller
 		return path[prefix.Length..];
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "临时安装包清理失败不能覆盖安装结果。")]
 	private static void WriteCurrentPointer(string pointerPath, string version)
 	{
 		string temporary = pointerPath + ".tmp-" + Guid.NewGuid().ToString("N");
@@ -251,6 +256,7 @@ internal sealed class PluginPackageInstaller
 	private static void EnsureNoReparsePoints(string path) =>
 		PluginPathSafety.EnsureNoReparsePoint(path, PluginErrorCodes.PackagePathDenied, "插件包路径包含符号链接");
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "回滚清理只能尽力执行，必须保留原始安装错误。")]
 	private static void TryDelete(string path)
 	{
 		try { if (Directory.Exists(path)) Directory.Delete(path, true); } catch { }
@@ -258,9 +264,4 @@ internal sealed class PluginPackageInstaller
 
 	private sealed record PackageEntry(ZipArchiveEntry Entry, string Path);
 	private sealed record CurrentPointer(string Version);
-}
-
-internal static class ZipArchiveEntryExtensions
-{
-	public static bool IsDirectory(this ZipArchiveEntry entry) => entry.Name.Length == 0;
 }

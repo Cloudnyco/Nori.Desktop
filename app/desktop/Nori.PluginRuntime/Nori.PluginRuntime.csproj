@@ -13,7 +13,6 @@
 
 	<ItemGroup>
 		<PackageReference Include="Avalonia" Version="12.1.1" />
-		<PackageReference Include="Avalonia.Controls.WebView" Version="12.1.0" />
 	</ItemGroup>
 
 	<ItemGroup>

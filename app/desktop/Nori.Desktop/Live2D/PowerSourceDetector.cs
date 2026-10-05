@@ -7,6 +7,7 @@ namespace Nori.Desktop.Live2D;
 internal static class PowerSourceDetector
 {
 	[StructLayout(LayoutKind.Sequential)]
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3898", Justification = "原生 ABI 结构体仅用于互操作，不参与相等比较。")]
 	private struct SystemPowerStatus
 	{
 		public byte ACLineStatus;

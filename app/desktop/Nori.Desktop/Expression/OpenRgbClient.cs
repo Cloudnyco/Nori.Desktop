@@ -70,7 +70,11 @@ public sealed class OpenRgbClient : IDisposable
 		try
 		{
 			// 回环上连接被拒是立刻返回的，不会走满超时。
-			if (!tcp.ConnectAsync("127.0.0.1", port).Wait(Timeout) || !tcp.Connected)
+			// 使用 CancellationTokenSource 实现超时控制，避免 .Wait() 产生 unobserved task exception。
+			using CancellationTokenSource cts = new(Timeout);
+			tcp.ConnectAsync("127.0.0.1", port, cts.Token).GetAwaiter().GetResult();
+
+			if (!tcp.Connected)
 			{
 				tcp.Dispose();
 				return null;
@@ -82,7 +86,7 @@ public sealed class OpenRgbClient : IDisposable
 			client.Send(0, SetClientName, Encoding.ASCII.GetBytes("Nori\0"));
 			return client;
 		}
-		catch (Exception exception) when (exception is SocketException or IOException or AggregateException)
+		catch (Exception exception) when (exception is SocketException or IOException or AggregateException or OperationCanceledException)
 		{
 			tcp.Dispose();
 			return null;
@@ -151,13 +155,13 @@ public sealed class OpenRgbClient : IDisposable
 			int offset = 4;                       // 跳过 data_size
 			offset += 4;                          // 跳过 type
 			string name = ReadString(payload, ref offset);
-			ReadString(payload, ref offset);      // description
-			ReadString(payload, ref offset);      // version
-			ReadString(payload, ref offset);      // serial
-			ReadString(payload, ref offset);      // location
+			ReadString(payload, ref offset);      // 描述 (description)
+			ReadString(payload, ref offset);      // 版本 (version)
+			ReadString(payload, ref offset);      // 序列号 (serial)
+			ReadString(payload, ref offset);      // 位置 (location)
 
 			int modes = ReadUInt16(payload, ref offset);
-			offset += 4;                          // active_mode
+			offset += 4;                          // 当前活跃模式 (active_mode)
 			for (int mode = 0; mode < modes; mode++) SkipMode(payload, ref offset);
 
 			int zones = ReadUInt16(payload, ref offset);
@@ -177,17 +181,17 @@ public sealed class OpenRgbClient : IDisposable
 
 	private static void SkipMode(byte[] payload, ref int offset)
 	{
-		ReadString(payload, ref offset);          // name
-		offset += 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4;  // value flags speed_min speed_max colors_min colors_max speed direction
-		offset += 4;                              // color_mode
+		ReadString(payload, ref offset);          // 模式名称 (name)
+		offset += 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4;  // 跳过模式参数：value flags speed_min speed_max colors_min colors_max speed direction
+		offset += 4;                              // 颜色模式 (color_mode)
 		int colors = ReadUInt16(payload, ref offset);
 		offset += colors * 4;
 	}
 
 	private static void SkipZone(byte[] payload, ref int offset)
 	{
-		ReadString(payload, ref offset);          // name
-		offset += 4 + 4 + 4 + 4;                  // type leds_min leds_max leds_count
+		ReadString(payload, ref offset);          // 分区名称 (name)
+		offset += 4 + 4 + 4 + 4;                  // 跳过分区参数：type leds_min leds_max leds_count
 		int matrix = ReadUInt16(payload, ref offset);
 		offset += matrix;
 	}

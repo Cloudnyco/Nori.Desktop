@@ -37,6 +37,7 @@ public sealed class ReflectionWorker : IAsyncDisposable
 
 	public bool TryEnqueue() => _channel.Writer.TryWrite(Signal);
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "后台反思任务失败需记录并继续调度。")]
 	private async Task RunAsync()
 	{
 		try

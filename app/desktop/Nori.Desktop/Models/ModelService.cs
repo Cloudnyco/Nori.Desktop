@@ -11,7 +11,7 @@ public sealed class ModelService : IDisposable
 {
 	private static readonly FrozenSet<string> AllowedCommands = new[]
 	{
-		"model_list", "model_select", "model_import_local", "model_get_meta",
+		"model_select", "model_import_local", "model_get_meta",
 		"model_set_display", "model_set_behavior", "model_set_interactions",
 	}.ToFrozenSet(StringComparer.Ordinal);
 
@@ -154,7 +154,7 @@ public sealed class ModelService : IDisposable
 	internal static bool IsStateChangingCommand(string command) => command is
 		"model_select" or "model_import_local" or "model_set_display" or "model_set_behavior" or "model_set_interactions";
 
-	internal static bool IsBackgroundCommand(string command) => command is "model_list" or "model_get_meta";
+	internal static bool IsBackgroundCommand(string command) => command is "model_get_meta";
 
 	private void DisposeContext()
 	{
@@ -169,6 +169,7 @@ public sealed class ModelService : IDisposable
 		_retiredBackgroundCts.Clear();
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "状态订阅者异常必须隔离，不能阻断模型操作。")]
 	private void RaiseStateChanged()
 	{
 		if (Volatile.Read(ref _disposed) != 0 || StateChanged is not { } handlers) return;

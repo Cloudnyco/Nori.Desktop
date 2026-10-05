@@ -139,6 +139,7 @@ public sealed class ModelPreviewControl : UserControl, IDisposable
 	public bool IsPointerInteractionEnabled { get; set; } = true;
 
 	/// <summary>固定舞台内的模型显示倍率。</summary>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S1244", Justification = "渲染缩放值用于避免重复刷新，精确相等比较保持现有行为。")]
 	public float PreviewScale
 	{
 		get { lock (_stateGate) return _previewScale; }
@@ -173,6 +174,7 @@ public sealed class ModelPreviewControl : UserControl, IDisposable
 	}
 
 	/// <summary>预览离屏渲染倍率。</summary>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S1244", Justification = "渲染缩放值用于避免重复刷新，精确相等比较保持现有行为。")]
 	public float RenderScale
 	{
 		get { lock (_stateGate) return _renderScale; }

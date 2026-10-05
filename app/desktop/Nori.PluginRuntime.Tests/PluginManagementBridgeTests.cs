@@ -98,11 +98,12 @@ public sealed class PluginManagementBridgeTests : IAsyncDisposable
 		string directory = Path.Combine(_root, "plugins", id, version);
 		Directory.CreateDirectory(directory);
 		File.WriteAllText(Path.Combine(_root, "plugins", id, PluginPackageInstaller.CurrentFileName), JsonSerializer.Serialize(new {Version = version}));
-		File.WriteAllText(Path.Combine(directory, PluginPackageInstaller.ManifestFileName), $"{{\"schemaVersion\":1,\"id\":\"{id}\",\"name\":\"Bridge Test\",\"description\":\"Plugin DTO test\",\"version\":\"{version}\",\"authors\":[{{\"name\":\"Nori Test\"}}],\"homepage\":\"https://example.test\",\"repository\":\"https://example.test/repo\",\"license\":\"MIT\",\"apiVersion\":\"2.0\",\"minHostVersion\":\"1.0.0\",\"runtime\":{{\"kind\":\"dotnet\",\"assembly\":\"lib/missing.dll\",\"entryType\":\"Missing.Entry\"}},\"ui\":{{\"webRoot\":\"web\"}},\"capabilities\":[\"ui.webview\"],\"optionalCapabilities\":[],\"platforms\":[],\"dependencies\":[]}}");
+		File.WriteAllText(Path.Combine(directory, PluginPackageInstaller.ManifestFileName), $"{{\"schemaVersion\":1,\"id\":\"{id}\",\"name\":\"Bridge Test\",\"description\":\"Plugin DTO test\",\"version\":\"{version}\",\"authors\":[{{\"name\":\"Nori Test\"}}],\"homepage\":\"https://example.test\",\"repository\":\"https://example.test/repo\",\"license\":\"MIT\",\"apiVersion\":\"2.0\",\"minHostVersion\":\"1.0.0\",\"runtime\":{{\"kind\":\"dotnet\",\"assembly\":\"lib/missing.dll\",\"entryType\":\"Missing.Entry\"}},\"ui\":{{\"webRoot\":\"web\"}},\"capabilities\":[],\"optionalCapabilities\":[],\"platforms\":[],\"dependencies\":[]}}");
 	}
 
 	private static JsonElement Args(object value) => JsonSerializer.SerializeToElement(value, JsonOptions);
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "测试夹具销毁只能尽力清理，不能让清理异常覆盖测试结果。")]
 	public async ValueTask DisposeAsync()
 	{
 		try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { }

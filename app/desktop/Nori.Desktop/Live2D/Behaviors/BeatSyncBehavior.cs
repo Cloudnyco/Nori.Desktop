@@ -6,7 +6,7 @@ public sealed record BeatStyleConfig
 	public required float TopRoll { get; init; }
 	public required float BottomDip { get; init; }
 	public float? SwingLift { get; init; }
-	public required string Pattern { get; init; } // "v", "sway", "swing"
+	public required string Pattern { get; init; } // 律动模式: "v"、"sway" 或 "swing"
 }
 
 public sealed class BeatSyncSegment
@@ -81,6 +81,7 @@ public sealed class BeatSyncBehavior : IBehaviorPlugin
 		return (_baseY, _baseZ - cfg.BottomDip);
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S1244", Justification = "节拍目标使用精确零值表示未初始化，近似比较会改变动画基线。")]
 	public void UpdateTargets(double now)
 	{
 		float currentY = TargetY != 0 ? TargetY : _baseY;
@@ -273,14 +274,20 @@ public sealed class BeatSyncBehavior : IBehaviorPlugin
 
 	public void Execute(BehaviorContext ctx)
 	{
-		if (!ctx.BeatSyncEnabled || !ctx.IdleAnimationEnabled) return;
+		if (!ctx.BeatSyncEnabled || !ctx.IdleAnimationEnabled || !ctx.ModelParameters.IsBound) return;
+		int angleXIndex = ctx.ModelParameters.AngleXIndex;
+		int angleYIndex = ctx.ModelParameters.AngleYIndex;
+		int angleZIndex = ctx.ModelParameters.AngleZIndex;
+		if (angleXIndex < 0 || angleYIndex < 0 || angleZIndex < 0) return;
+
+		var model = ctx.Model.Model;
 
 		UpdateTargets(ctx.Now);
 		float dt = (float)(ctx.TimeDelta > 0 ? ctx.TimeDelta : 0.016);
 
-		float angleX = ctx.Model.Model.GetParameterValue("ParamAngleX");
-		float angleY = ctx.Model.Model.GetParameterValue("ParamAngleY");
-		float angleZ = ctx.Model.Model.GetParameterValue("ParamAngleZ");
+		float angleX = model.GetParameterValue(angleXIndex);
+		float angleY = model.GetParameterValue(angleYIndex);
+		float angleZ = model.GetParameterValue(angleZIndex);
 
 		// X
 		{
@@ -327,8 +334,8 @@ public sealed class BeatSyncBehavior : IBehaviorPlugin
 			}
 		}
 
-		ctx.Model.Model.SetParameterValue("ParamAngleX", angleX);
-		ctx.Model.Model.SetParameterValue("ParamAngleY", angleY);
-		ctx.Model.Model.SetParameterValue("ParamAngleZ", angleZ);
+		model.SetParameterValue(angleXIndex, angleX);
+		model.SetParameterValue(angleYIndex, angleY);
+		model.SetParameterValue(angleZIndex, angleZ);
 	}
 }

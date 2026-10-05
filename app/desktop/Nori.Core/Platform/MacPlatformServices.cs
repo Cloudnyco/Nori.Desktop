@@ -19,6 +19,7 @@ public sealed class MacPlatformServices : IPlatformServices
 	private const string AppKit = "/System/Library/Frameworks/AppKit.framework/AppKit";
 
 	[StructLayout(LayoutKind.Sequential)]
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3898", Justification = "原生 ABI 结构体仅用于互操作，不参与相等比较。")]
 	private struct CGPoint
 	{
 		public double X;
@@ -26,6 +27,7 @@ public sealed class MacPlatformServices : IPlatformServices
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3898", Justification = "原生 ABI 结构体仅用于互操作，不参与相等比较。")]
 	private struct CGRect
 	{
 		public double X;
@@ -42,6 +44,10 @@ public sealed class MacPlatformServices : IPlatformServices
 
 	[DllImport(ObjC, EntryPoint = "objc_msgSend")]
 	private static extern nint SendPtr(nint receiver, nint selector);
+
+	[DllImport(ObjC, EntryPoint = "objc_msgSend")]
+	[return: MarshalAs(UnmanagedType.I1)]
+	private static extern bool SendBool(nint receiver, nint selector);
 
 	[DllImport(ObjC, EntryPoint = "objc_msgSend")]
 	private static extern void SendVoidBool(nint receiver, nint selector, [MarshalAs(UnmanagedType.I1)] bool value);
@@ -62,7 +68,7 @@ public sealed class MacPlatformServices : IPlatformServices
 	[DllImport(AppKit, EntryPoint = "NSApplicationLoad")]
 	private static extern void EnsureAppKitLoaded();
 
-	/// <summary>NSFloatingWindowLevel</summary>
+	/// <summary>NSFloatingWindowLevel 浮动窗口层级常数</summary>
 	private const long FloatingWindowLevel = 3;
 
 	/// <inheritdoc />
@@ -72,13 +78,31 @@ public sealed class MacPlatformServices : IPlatformServices
 	public PlatformCapabilities Capabilities { get; } = new()
 	{
 		SupportsGlobalCursor = true,
-		// performWindowDragWithEvent: 需要一个当前事件; 拿不到时退化为不支持, 前端会显示拖动手柄
+		// performWindowDragWithEvent: 需要一个当前事件; 拿不到时退化为不支持, 界面会显示拖动手柄
 		SupportsWindowDrag = true,
 		// 按光标是否位于模型交互矩形内，在「整窗可点」与「整窗穿透」之间切换
 		SupportsHitThrough = true,
 		SupportsTopmost = true,
 		SupportsTray = true,
 	};
+
+	/// <inheritdoc />
+	public bool PrefersReducedMotion
+	{
+		get
+		{
+			try
+			{
+				EnsureAppKitLoaded();
+				nint workspace = SendPtr(GetClass("NSWorkspace"), GetSelector("sharedWorkspace"));
+				return workspace == 0 || SendBool(workspace, GetSelector("accessibilityDisplayShouldReduceMotion"));
+			}
+			catch (DllNotFoundException)
+			{
+				return true;
+			}
+		}
+	}
 
 	/// <inheritdoc />
 	public (double X, double Y) GetCursorPosition()
@@ -100,7 +124,7 @@ public sealed class MacPlatformServices : IPlatformServices
 		nint window = ResolveWindow(windowHandle);
 		if (window == 0) throw new InvalidOperationException("无法解析 NSWindow");
 
-		// 用当前事件发起系统拖动; 没有当前事件 (例如事件已被 WebView 吞掉) 时抛错由调用方降级
+		// 用当前事件发起系统拖动; 没有当前事件时抛错由调用方降级
 		nint app = SendPtr(GetClass("NSApplication"), GetSelector("sharedApplication"));
 		nint currentEvent = app == 0 ? 0 : SendPtr(app, GetSelector("currentEvent"));
 		if (currentEvent == 0) throw new InvalidOperationException("没有可用的当前事件, 无法发起窗口拖动");

@@ -4,6 +4,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
 using Nori.Core.Memory;
+using static Nori.Desktop.SnapshotJson;
 
 namespace Nori.Desktop.Windows;
 
@@ -88,7 +89,7 @@ public sealed partial class MemoryWindow
 		return button;
 	}
 
-	private async Task ExecuteTransferActionAsync(Func<Task> action, string errorKey)
+	internal async Task ExecuteTransferActionAsync(Func<Task> action, string errorKey)
 	{
 		try { await action(); }
 		catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
@@ -304,8 +305,6 @@ public sealed partial class MemoryWindow
 		await RefreshAsync();
 		Success($"{L("transfer.importSuccess")} · {T("新增", "Added")}: {N(result, "importedCount")} · {T("更新", "Updated")}: {N(result, "updatedCount")} · {T("跳过", "Skipped")}: {N(result, "skippedCount")}");
 	}
-
-	internal Task RunTransferForTestingAsync(Func<Task> action, string errorKey) => ExecuteTransferActionAsync(action, errorKey);
 
 	private async Task CommitImportAsync()
 	{

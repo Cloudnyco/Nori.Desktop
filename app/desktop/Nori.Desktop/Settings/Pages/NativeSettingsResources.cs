@@ -8,6 +8,13 @@ public static class NativeSettingsResources
 	private static readonly IReadOnlyDictionary<string, SettingsText> Values = new Dictionary<string, SettingsText>(StringComparer.Ordinal)
 	{
 		["common.all"] = new("全部", "All"),
+		["debug.allSources"] = new("全部来源", "All sources"),
+		["debug.category"] = new("模块筛选", "Filter module"),
+		["debug.search"] = new("搜索日志", "Search logs"),
+		["debug.autoRefresh"] = new("自动刷新", "Auto refresh"),
+		["debug.minimumLevel"] = new("记录级别（重启恢复 Info）", "Record level (Info after restart)"),
+		["debug.dropped"] = new("未写入磁盘", "Dropped disk entries"),
+		["debug.writeFailures"] = new("写盘失败次数", "Write failures"),
 		["common.cancel"] = new("取消", "Cancel"),
 		["common.close"] = new("关闭", "Close"),
 		["common.confirm"] = new("确认", "Confirm"),
@@ -97,7 +104,6 @@ public static class NativeSettingsResources
 		["plugins.deleteData"] = new("同时删除插件数据吗？", "Delete the plugin data too?"),
 		["plugins.restart"] = new("插件已卸载，重启应用后会完成清理。", "The plugin was uninstalled; restart the app to finish cleanup."),
 
-		["debug.warning"] = new("调试操作可能影响应用运行，请谨慎使用。", "Debug actions may affect the application; use them carefully."),
 		["debug.diagnostic"] = new("诊断信息", "Diagnostics"),
 		["debug.refresh"] = new("刷新", "Refresh"),
 		["debug.export"] = new("导出诊断", "Export diagnostics"),
@@ -107,18 +113,6 @@ public static class NativeSettingsResources
 		["debug.clear"] = new("清空日志", "Clear logs"),
 		["debug.clearConfirm"] = new("确定要清空最近日志吗？", "Clear recent logs?"),
 		["debug.noLogs"] = new("暂无日志", "No logs"),
-		["debug.danger"] = new("危险操作 · 崩溃与异常测试", "Danger zone · crash and exception tests"),
-		["debug.settingsError"] = new("测试设置页异常", "Test settings exception"),
-		["debug.settingsErrorResult"] = new("设置页异常测试：原生错误反馈链路正常。", "Settings exception test: native error feedback is working."),
-		["debug.crash"] = new("调试工具", "Debug tools"),
-		["debug.gc"] = new("回收内存", "Collect garbage"),
-		["debug.released"] = new("已释放字节", "Bytes released"),
-		["debug.testLog"] = new("写入测试日志", "Write test log"),
-		["debug.uiCrash"] = new("测试 UI 崩溃", "Test UI crash"),
-		["debug.backgroundCrash"] = new("测试后台崩溃", "Test background crash"),
-		["debug.taskCrash"] = new("测试任务崩溃", "Test task crash"),
-		["debug.crashConfirm"] = new("确定要触发崩溃测试吗？", "Trigger the crash test?"),
-		["debug.exitConfirm"] = new("此操作可能退出应用，确定继续吗？", "This may exit the app. Continue?"),
 	};
 
 	/// <summary>按当前界面语言读取资源；未知键返回键名以保持界面可诊断。</summary>

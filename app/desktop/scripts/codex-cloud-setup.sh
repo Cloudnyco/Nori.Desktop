@@ -17,18 +17,22 @@ install_linux_dependencies() {
 	local sudo_cmd=()
 	if [[ "$(id -u)" -ne 0 ]]; then
 		if ! command -v sudo >/dev/null 2>&1; then
-			echo "需要 root 或 sudo 才能安装 WebKitGTK/GTK 依赖。" >&2
+			echo "需要 root 或 sudo 才能安装 GTK 与 ALSA 依赖。" >&2
 			exit 1
 		fi
 		sudo_cmd=(sudo)
 	fi
 
-	log "安装 Linux WebView/GTK 依赖。"
+	log "安装 Linux GTK 与 ALSA 依赖。"
 	"${sudo_cmd[@]}" apt-get update
+	local alsa_package="libasound2"
+	if apt-cache show libasound2t64 >/dev/null 2>&1; then
+		alsa_package="libasound2t64"
+	fi
 	"${sudo_cmd[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 		ca-certificates \
 		libgtk-3-0 \
-		libwebkit2gtk-4.1-0
+		"$alsa_package"
 }
 
 activate_node24() {
@@ -165,7 +169,7 @@ EOF
 restore_dependencies() {
 	cd "$DESKTOP_DIR"
 
-	log "安装前端依赖。"
+	log "安装主题检查依赖。"
 	pnpm install --frozen-lockfile
 
 	log "还原 .NET solution 依赖。"

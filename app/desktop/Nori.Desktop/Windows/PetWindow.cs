@@ -1,4 +1,5 @@
-﻿using System.Runtime.InteropServices;
+using Nori.Desktop.Appearance;
+using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -46,6 +47,10 @@ public sealed class PetWindow : Window
 	private ContextMenu? _contextMenu;
 	/// <summary>上一次推给系统的穿透状态, 避免重复调用</summary>
 	private bool? _lastClickThrough;
+	/// <summary>上一次提交的输入形状；显示、隐藏或尺寸变化后清空以强制重设。</summary>
+	private PetHitMask.InputShapeSignature _inputShape = PetHitMask.InputShapeSignature.Unspecified;
+	private readonly (int X, int Y, int Width, int Height)[] _hitRegion = new (int, int, int, int)[1];
+	private static readonly (int X, int Y, int Width, int Height)[] EmptyHitRegions = [];
 
 	// 拖拽状态
 	private bool _isDragPending;
@@ -56,6 +61,7 @@ public sealed class PetWindow : Window
 	private PixelPoint _dragStartWinPos;
 	private bool _isNativeDragPending;
 	private PixelPoint _nativeDragStartWinPos;
+	private bool _closed;
 
 	public bool AllowClose { get; set; }
 
@@ -127,6 +133,7 @@ public sealed class PetWindow : Window
 		base.OnPropertyChanged(change);
 		if (change.Property != Visual.IsVisibleProperty) return;
 
+		_inputShape = PetHitMask.InputShapeSignature.Unspecified;
 		if (change.GetNewValue<bool>())
 		{
 			_glControl.ResumeRenderLoop();
@@ -146,6 +153,11 @@ public sealed class PetWindow : Window
 	/// <summary>显示伴侣短句气泡。</summary>
 	/// <summary>语音气泡。情绪表达通道要改它的描边色。</summary>
 	public PetSpeechOverlay SpeechOverlay => _speechOverlay;
+	public PetQuickChatLayout QuickChatLayout => _runtime.QuickChatLayout;
+	public Point QuickChatComposerAnchor => new(QuickChatLayout.ComposerAnchor.X, QuickChatLayout.ComposerAnchor.Y);
+
+	/// <summary>切换固定的 Quick Chat 头像视口。</summary>
+	public void SetQuickChatPresentation(bool enabled) => _runtime.SetQuickChatPresentation(enabled);
 
 	public void ShowSpeech(string text)
 	{
@@ -160,9 +172,18 @@ public sealed class PetWindow : Window
 	/// <summary>清除伴侣短句气泡。</summary>
 	public void ClearSpeech() => _speechOverlay.ClearText();
 
-	private void OnRuntimeModelChanged() => Dispatcher.UIThread.Post(ApplyWindowSize);
+	private void OnRuntimeModelChanged() => QueueWindowSizeUpdate();
 
-	private void OnRuntimeLayoutChanged() => Dispatcher.UIThread.Post(ApplyWindowSize);
+	private void OnRuntimeLayoutChanged() => QueueWindowSizeUpdate();
+
+	private void QueueWindowSizeUpdate()
+	{
+		if (_closed) return;
+		Dispatcher.UIThread.Post(() =>
+		{
+			if (!_closed) ApplyWindowSize();
+		});
+	}
 
 	private void OnOpened(object? sender, EventArgs e)
 	{
@@ -193,7 +214,7 @@ public sealed class PetWindow : Window
 			}
 			catch (Exception exception) when (exception is PlatformNotSupportedException or InvalidOperationException or EntryPointNotFoundException)
 			{
-				_services.Logger.Write(LogSource.Backend, "warn", $"设置伴侣窗口置顶层级失败: {exception.Message}");
+				_services.Logger.Write(LogSource.Backend, "warn", $"设置伴侣窗口置顶层级失败: {exception.GetType().Name}");
 			}
 		}
 	}
@@ -213,7 +234,22 @@ public sealed class PetWindow : Window
 		{
 			if (OperatingSystem.IsLinux() && PlatformServices.Current is LinuxPlatformServices linux)
 			{
-				linux.SetInputShape(handle, _runtime.ClickThroughEnabled ? [] : _glControl.BuildHitRegions(Bounds.Width, Bounds.Height));
+				PetHitMask.InputShapeSignature next = new(
+					_glControl.MaskBounds,
+					Bounds.Width,
+					Bounds.Height,
+					RenderScaling,
+					_runtime.ClickThroughEnabled,
+					IsSpecified: true);
+				if (PetHitMask.SameInputShape(_inputShape, next)) return;
+				if (next.ClickThrough || !PetHitMask.TryGetHitRegion(next.Mask, next.ClientWidth, next.ClientHeight, out (int X, int Y, int Width, int Height) region))
+					linux.SetInputShape(handle, EmptyHitRegions);
+				else
+				{
+					_hitRegion[0] = region;
+					linux.SetInputShape(handle, _hitRegion);
+				}
+				_inputShape = next;
 				return;
 			}
 
@@ -235,12 +271,13 @@ public sealed class PetWindow : Window
 		{
 			// 穿透是增强项: 失败就停掉同步并保持整窗可点, 绝不打断渲染
 			_hitShapeTimer?.Stop();
-			_services.Logger.Write(LogSource.Backend, "warn", $"伴侣窗口穿透同步失败, 已降级为整窗可点: {exception.Message}");
+			_services.Logger.Write(LogSource.Backend, "warn", $"伴侣窗口穿透同步失败, 已降级为整窗可点: {exception.GetType().Name}");
 		}
 	}
 
 	private void OnClosed(object? sender, EventArgs e)
 	{
+		_closed = true;
 		_glControl.PauseRenderLoop();
 		_speechOverlay.ClearText();
 		_cursorTrackingTimer.Stop();
@@ -267,10 +304,11 @@ public sealed class PetWindow : Window
 	/// </summary>
 	public void ApplyWindowSize()
 	{
+		if (_closed) return;
 		var model = _runtime.CurrentModel;
 		// GetCanvasWidth() 返回的是 Unit (通常 2.0), 尺寸计算要的是像素画布
-		double rawW = model?.Model.GetCanvasWidthPixel() ?? PetSizing.DefaultPetWidth;
-		double rawH = model?.Model.GetCanvasHeightPixel() ?? PetSizing.DefaultPetHeight;
+		double rawW = model?.CanvasSize.X ?? PetSizing.DefaultPetWidth;
+		double rawH = model?.CanvasSize.Y ?? PetSizing.DefaultPetHeight;
 		if (rawW <= 0 || rawH <= 0)
 		{
 			rawW = PetSizing.DefaultPetWidth;
@@ -284,7 +322,9 @@ public sealed class PetWindow : Window
 		double screenDipW = screen is not null ? screen.WorkingArea.Width / screenScale : 1920;
 		double screenDipH = screen is not null ? screen.WorkingArea.Height / screenScale : 1080;
 
-		var (targetPhysW, targetPhysH) = PetSizing.CalculateWindowSize(rawW, rawH, _runtime.UserScale, screenDipW, screenDipH, scale);
+		(int targetPhysW, int targetPhysH) = _runtime.PresentationMode == PetPresentationMode.QuickChat
+			? PetSizing.CalculatePresentationWindowSize(_runtime.QuickChatLayout, screenDipW, screenDipH, scale)
+			: PetSizing.CalculateWindowSize(rawW, rawH, _runtime.UserScale, screenDipW, screenDipH, scale);
 
 		// 首次显示时 Bounds 还是 0, 此时不做居中换算, 否则窗口会整体偏移半个身位
 		double oldPhysW = Bounds.Width > 0 ? Bounds.Width * scale : targetPhysW;
@@ -374,31 +414,51 @@ public sealed class PetWindow : Window
 
 	private void OnCursorTrackingTick(object? sender, EventArgs e)
 	{
-		if (_runtime.EyeTrackingEnabled)
+		bool needsCursorForInput = !_runtime.ClickThroughEnabled
+			&& !_isDragPending
+			&& !_isDragging
+			&& _contextMenu is not {IsOpen: true};
+		bool needsCursor = _runtime.EyeTrackingEnabled || needsCursorForInput;
+		bool cursorSnapshotResolved = !needsCursor;
+		(double X, double Y)? clientCursor = null;
+		if (needsCursor)
 		{
+			cursorSnapshotResolved = true;
 			try
 			{
-				if (PlatformServices.Current.Capabilities.SupportsGlobalCursor)
+				var platform = PlatformServices.Current;
+				if (platform.Capabilities.SupportsGlobalCursor)
 				{
-					var (screenCursorX, screenCursorY) = PlatformServices.Current.GetCursorPosition();
-					double scale = RenderScaling > 0 ? RenderScaling : 1.0;
-					double clientX = (screenCursorX - Position.X) / scale;
-					double clientY = (screenCursorY - Position.Y) / scale;
-
-					_runtime.LookAt((float)clientX, (float)clientY, (float)Bounds.Width, (float)Bounds.Height);
+					var (screenCursorX, screenCursorY) = platform.GetCursorPosition();
+					clientCursor = ConvertScreenCursorToClient(screenCursorX, screenCursorY);
 				}
 			}
-			catch
+			catch (Exception exception)
 			{
-				// 忽略追踪异常
+				if (OperatingSystem.IsWindows() && needsCursorForInput)
+					_services.Logger.Write(LogSource.Backend, "warn", $"读取伴侣窗口穿透状态失败: {exception.GetType().Name}");
+			}
+
+			if (_runtime.EyeTrackingEnabled && clientCursor is { } position)
+			{
+				try
+				{
+					_runtime.LookAt((float)position.X, (float)position.Y, (float)Bounds.Width, (float)Bounds.Height);
+				}
+				catch
+				{
+					// 忽略追踪异常；输入状态刷新仍复用本次光标结果
+				}
 			}
 		}
 
-		RefreshInputState();
+		RefreshInputStateCore(cursorSnapshotResolved, clientCursor);
 	}
 
 	/// <summary>刷新 Windows 伴侣窗口的点击穿透状态 (窗口保持置顶)。</summary>
-	public void RefreshInputState()
+	public void RefreshInputState() => RefreshInputStateCore(cursorSnapshotResolved: false, clientCursor: null);
+
+	private void RefreshInputStateCore(bool cursorSnapshotResolved, (double X, double Y)? clientCursor)
 	{
 		if (!OperatingSystem.IsWindows() || PlatformServices.Current is not WindowsPlatformServices windows) return;
 		nint handle = TryGetPlatformHandle()?.Handle ?? 0;
@@ -407,21 +467,27 @@ public sealed class PetWindow : Window
 		bool through = _runtime.ClickThroughEnabled;
 		if (!through && !_isDragPending && !_isDragging && _contextMenu is not {IsOpen: true})
 		{
-			try
+			if (!cursorSnapshotResolved)
 			{
-				if (!PlatformServices.Current.Capabilities.SupportsGlobalCursor) return;
-				var (cursorX, cursorY) = PlatformServices.Current.GetCursorPosition();
-				double scale = RenderScaling > 0 ? RenderScaling : 1.0;
-				double clientX = (cursorX - Position.X) / scale;
-				double clientY = (cursorY - Position.Y) / scale;
-				bool inside = clientX >= 0 && clientX < Bounds.Width && clientY >= 0 && clientY < Bounds.Height;
-				through = !(inside && _glControl.IsPointOnModel(clientX, clientY));
+				try
+				{
+					if (!PlatformServices.Current.Capabilities.SupportsGlobalCursor) return;
+					var (cursorX, cursorY) = PlatformServices.Current.GetCursorPosition();
+					clientCursor = ConvertScreenCursorToClient(cursorX, cursorY);
+				}
+				catch (Exception exception) when (exception is PlatformNotSupportedException or InvalidOperationException)
+				{
+					_services.Logger.Write(LogSource.Backend, "warn", $"读取伴侣窗口穿透状态失败: {exception.GetType().Name}");
+					return;
+				}
 			}
-			catch (Exception exception) when (exception is PlatformNotSupportedException or InvalidOperationException)
+
+			if (clientCursor is not { } position)
 			{
-				_services.Logger.Write(LogSource.Backend, "warn", $"读取伴侣窗口穿透状态失败: {exception.Message}");
 				return;
 			}
+			bool inside = position.X >= 0 && position.X < Bounds.Width && position.Y >= 0 && position.Y < Bounds.Height;
+			through = !(inside && _glControl.IsPointOnModel(position.X, position.Y));
 		}
 
 		if (_contextMenu is {IsOpen: true} || _isDragPending || _isDragging) through = false;
@@ -434,8 +500,14 @@ public sealed class PetWindow : Window
 		}
 		catch (Exception exception) when (exception is InvalidOperationException or EntryPointNotFoundException or DllNotFoundException)
 		{
-			_services.Logger.Write(LogSource.Backend, "warn", $"同步伴侣窗口穿透状态失败: {exception.Message}");
+			_services.Logger.Write(LogSource.Backend, "warn", $"同步伴侣窗口穿透状态失败: {exception.GetType().Name}");
 		}
+	}
+
+	private (double X, double Y) ConvertScreenCursorToClient(double cursorX, double cursorY)
+	{
+		double scale = RenderScaling > 0 ? RenderScaling : 1.0;
+		return ((cursorX - Position.X) / scale, (cursorY - Position.Y) / scale);
 	}
 
 	private IntPtr OnWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -485,7 +557,7 @@ public sealed class PetWindow : Window
 			if (!IsModelHit(pos)) return;
 
 			// 伴侣视窗是原生 Avalonia 窗口, 在 Linux/macOS 上优先让窗口管理器接管移动。
-			// 这条路径也覆盖 Wayland: WebView 的标题栏拖动能力不可用时, 原生窗口仍可拖动。
+			// 这条路径也覆盖 Wayland：原生窗口仍可拖动。
 			if (!OperatingSystem.IsWindows())
 			{
 				_isNativeDragPending = true;
@@ -499,7 +571,7 @@ public sealed class PetWindow : Window
 				catch (InvalidOperationException exception)
 				{
 					_isNativeDragPending = false;
-					_services.Logger.Write(LogSource.Backend, "warn", $"原生伴侣视窗拖动不可用, 改用手动拖动: {exception.Message}");
+					_services.Logger.Write(LogSource.Backend, "warn", $"原生伴侣视窗拖动不可用, 改用手动拖动: {exception.GetType().Name}");
 				}
 			}
 
@@ -608,8 +680,9 @@ public sealed class PetWindow : Window
 	{
 		var menu = new ContextMenu
 		{
-			Background = new SolidColorBrush(Color.FromArgb(245, 10, 26, 40)),
-			BorderBrush = new SolidColorBrush(Color.FromArgb(120, 125, 227, 255)),
+			FontFamily = NoriTypography.System,
+			Background = NoriThemeTokens.Brush("bg-menu"),
+			BorderBrush = NoriThemeTokens.Brush("line-strong"),
 			BorderThickness = new Thickness(1),
 			CornerRadius = new CornerRadius(8),
 			Padding = new Thickness(4),
@@ -628,7 +701,7 @@ public sealed class PetWindow : Window
 		menu.Items.Add(openMainItem);
 		menu.Items.Add(randomMotionItem);
 		menu.Items.Add(resetPosItem);
-		menu.Items.Add(new Separator { Background = new SolidColorBrush(Color.FromArgb(60, 125, 227, 255)), Margin = new Thickness(4, 2) });
+		menu.Items.Add(new Separator { Background = NoriThemeTokens.Brush("line-subtle"), Margin = new Thickness(4, 2) });
 		menu.Items.Add(hidePetItem);
 		menu.Items.Add(exitItem);
 
@@ -642,11 +715,11 @@ public sealed class PetWindow : Window
 		{
 			Header = header,
 			Foreground = isDanger
-				? new SolidColorBrush(Color.FromRgb(255, 120, 120))
-				: new SolidColorBrush(Color.FromRgb(220, 240, 255)),
+				? NoriThemeTokens.Brush("danger-text")
+				: NoriThemeTokens.Brush("text-body"),
 			FontSize = 13,
 			Padding = new Thickness(12, 6),
-			CornerRadius = new CornerRadius(4),
+			CornerRadius = new CornerRadius(8),
 		};
 		item.Click += (_, _) => onClick();
 		return item;

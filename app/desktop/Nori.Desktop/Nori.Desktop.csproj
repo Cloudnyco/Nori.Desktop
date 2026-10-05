@@ -11,7 +11,7 @@
 		<TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 		<!-- OPENAI001/MEAI001: 预览版 AI SDK 的实验性 API 标记 -->
 		<NoWarn>$(NoWarn);OPENAI001;MEAI001;CS0436</NoWarn>
-		<!-- NativeControlHost 需要这份 manifest 声明受支持的 OS, 否则 WebView 启动即失败 (仅 Windows 有意义) -->
+		<!-- OpenGL 原生控件需要这份 manifest 声明受支持的 OS (仅 Windows 有意义) -->
 		<ApplicationManifest Condition="'$(NoriIsWindowsBuild)' == 'true'">app.manifest</ApplicationManifest>
 		<ApplicationIcon Condition="'$(NoriIsWindowsBuild)' == 'true'">Assets/icon.ico</ApplicationIcon>
 		<!-- 发布构建可通过 -p:NoriSentry* 或同名环境变量把非秘密 DSN/release 编译进应用。 -->
@@ -26,12 +26,9 @@
 	<ItemGroup>
 		<PackageReference Include="Avalonia" Version="12.1.1" />
 		<PackageReference Include="Avalonia.Desktop" Version="12.1.1" />
-		<PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.1" />
 		<PackageReference Include="Markdig" Version="1.3.2" />
 		<!-- Nori 原生设置窗口使用 Devolutions 的跨平台 macOS 风格控件；该主题也提供 Windows/Linux 回退样式。 -->
 		<PackageReference Include="Devolutions.AvaloniaTheme.MacOS" Version="2026.7.22" />
-		<!-- 跨平台原生 WebView: Windows→WebView2, macOS→WKWebView, Linux→WebKitGTK -->
-		<PackageReference Include="Avalonia.Controls.WebView" Version="12.1.0" />
 		<PackageReference Include="Sentry" Version="6.9.0" />
 		<!-- 浏览器自动化代码继续参与编译/测试；正式基础包会在 Publish 结束后剥离其重量级 driver/runtime。 -->
 		<PackageReference Include="Microsoft.Playwright" Version="1.56.0" />
@@ -41,26 +38,26 @@
 		<InternalsVisibleTo Include="Nori.Desktop.Tests" />
 		<ProjectReference Include="../Nori.Core/Nori.Core.csproj" />
 		<ProjectReference Include="../Nori.PluginRuntime/Nori.PluginRuntime.csproj" />
-		<ProjectReference Include="../Live2DCSharpSDK.OpenGL/Live2DCSharpSDK.OpenGL.csproj" />
+		<ProjectReference Include="../Nori.Live2D/Nori.Live2D.csproj" />
+
 	</ItemGroup>
 
+	<!-- PurismCore v1.1.0 / v6 ABI；保留现有 P/Invoke 文件名，无 RID 时按 SDK 宿主架构选择。 -->
+	<PropertyGroup>
+		<NoriCoreRid>$(RuntimeIdentifier)</NoriCoreRid>
+		<NoriCoreRid Condition="'$(NoriCoreRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</NoriCoreRid>
+		<NoriCorePath Condition="'$(NoriCoreRid)' == 'win-x64'">../Live2D/native/win-x64/Live2DCubismCore.dll</NoriCorePath>
+		<NoriCorePath Condition="'$(NoriCoreRid)' == 'linux-x64' Or '$(NoriCoreRid)' == 'linux-arm64'">../Live2D/native/$(NoriCoreRid)/libLive2DCubismCore.so</NoriCorePath>
+		<NoriCorePath Condition="'$(NoriCoreRid)' == 'osx-x64' Or '$(NoriCoreRid)' == 'osx-arm64'">../Live2D/native/macos/libLive2DCubismCore.dylib</NoriCorePath>
+	</PropertyGroup>
 	<ItemGroup>
-		<!-- Cubism Core 原生库: 按 RID 只打包当前目标平台的一份 -->
-		<None Include="../Live2D/native/win-x64/Live2DCubismCore.dll" Link="Live2DCubismCore.dll" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-x64' Or ('$(RuntimeIdentifier)' == '' And '$(NoriIsWindowsBuild)' == 'true')" />
-		<None Include="../Live2D/native/linux-x64/libLive2DCubismCore.so" Link="libLive2DCubismCore.so" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'linux-x64' Or ('$(RuntimeIdentifier)' == '' And $([MSBuild]::IsOSPlatform('Linux')))" />
-		<None Include="../Live2D/native/macos/libLive2DCubismCore.dylib" Link="libLive2DCubismCore.dylib" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'osx-x64' Or '$(RuntimeIdentifier)' == 'osx-arm64' Or ('$(RuntimeIdentifier)' == '' And $([MSBuild]::IsOSPlatform('OSX')))" />
+		<None Include="$(NoriCorePath)" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="'$(NoriCorePath)' != ''" />
+		<None Include="../Live2D/PurismCore.LICENSE.txt" Link="PurismCore.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
 	</ItemGroup>
 
-	<!--
-		缺少目标平台的 Cubism Core 原生库时构建期就报错
-
-		否则要等到运行时才炸 DllNotFoundException, 排查成本高得多。
-		linux-arm64 官方 SDK 暂未提供, 需要自备后放到 Live2D/native/linux-arm64/。
-	-->
-	<Target Name="NoriCheckCubismCore" BeforeTargets="Build">
-		<Error Condition="'$(RuntimeIdentifier)' == 'linux-arm64' And !Exists('../Live2D/native/linux-arm64/libLive2DCubismCore.so')" Text="缺少 linux-arm64 的 Cubism Core 原生库: 请把 libLive2DCubismCore.so 放到 Live2D/native/linux-arm64/" />
-		<Error Condition="'$(RuntimeIdentifier)' == 'linux-x64' And !Exists('../Live2D/native/linux-x64/libLive2DCubismCore.so')" Text="缺少 linux-x64 的 Cubism Core 原生库: Live2D/native/linux-x64/libLive2DCubismCore.so" />
-		<Error Condition="($(RuntimeIdentifier.StartsWith('osx'))) And !Exists('../Live2D/native/macos/libLive2DCubismCore.dylib')" Text="缺少 macOS 的 Cubism Core 原生库: Live2D/native/macos/libLive2DCubismCore.dylib" />
+	<!-- 提前报告缺失或不支持的目标，避免运行时才出现 DllNotFoundException。 -->
+	<Target Name="NoriCheckPurismCore" BeforeTargets="Build">
+		<Error Condition="'$(NoriCorePath)' == '' Or !Exists('$(NoriCorePath)')" Text="缺少 $(NoriCoreRid) 的 PurismCore 原生库，请检查 Live2D/native/。" />
 	</Target>
 
 	<ItemGroup>
@@ -69,11 +66,6 @@
 		<AvaloniaResource Include="../src/assets/images/logo.png" Link="Assets/logo.png" />
 		<AvaloniaResource Include="../src/assets/images/live2D/Nori.webp" Link="Assets/Models/Nori.webp" />
 		<AvaloniaResource Include="../src/assets/images/live2D/ARGNori.webp" Link="Assets/Models/ARGNori.webp" />
-	</ItemGroup>
-
-	<ItemGroup>
-		<!-- 前端构建产物: 生产模式由 AssetServer 从这里提供 -->
-		<Content Include="../dist/**" LinkBase="wwwroot" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../dist')" />
 	</ItemGroup>
 
 	<!--

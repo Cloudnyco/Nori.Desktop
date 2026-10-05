@@ -41,11 +41,14 @@ public static class BridgeFailureClassifier
 		if (exception is AggregateException aggregate) return ClassifyAggregate(aggregate);
 		if (exception is VoiceProviderException voiceProvider) return ClassifyVoiceProvider(voiceProvider);
 		if (exception is TaskCanceledException or TimeoutException)
-			return ExternalService("timeout");
+			return ExternalService("timeout", telemetry: false);
 		if (exception is OperationCanceledException)
 			return new(BridgeFailureClass.Cancelled, "info", false, FailureKind("cancelled"));
 		if (exception is HttpRequestException requestException)
-			return ExternalService(IsConnectFailure(requestException) ? "connect" : "http_status");
+		{
+			bool connect = IsConnectFailure(requestException);
+			return ExternalService(connect ? "connect" : "http_status", telemetry: !connect);
+		}
 		if (exception is ChatException or ResourceException or UriFormatException or ArgumentException
 			or InvalidOperationException or JsonException or UnauthorizedAccessException)
 			return Expected();
@@ -76,11 +79,14 @@ public static class BridgeFailureClassifier
 			["failure_kind"] = kind,
 			["provider"] = exception.Provider,
 		};
-		return new(BridgeFailureClass.ExternalService, "warn", true, tags);
+		bool report = exception.FailureKind is VoiceFailureKind.ProviderRejected
+			or VoiceFailureKind.InvalidResponse
+			or VoiceFailureKind.EmptyResponse;
+		return new(BridgeFailureClass.ExternalService, "warn", report, tags);
 	}
 
-	private static BridgeFailure ExternalService(string kind) =>
-		new(BridgeFailureClass.ExternalService, "warn", true, FailureKind(kind));
+	private static BridgeFailure ExternalService(string kind, bool telemetry = true) =>
+		new(BridgeFailureClass.ExternalService, "warn", telemetry, FailureKind(kind));
 
 	private static BridgeFailure Unexpected() =>
 		new(BridgeFailureClass.Unexpected, "error", true, FailureKind("unexpected"));

@@ -1,19 +1,21 @@
 using Nori.Core.Configuration;
 using Nori.Core.Data;
 using Nori.Core.Security;
+using Nori.Core.Tests.TestSupport;
+using System.Text.Json;
 
 namespace Nori.Core.Tests;
 
 public sealed class AiSettingsTests : IDisposable
 {
-	private readonly string _path = Path.Combine(Path.GetTempPath(), $"nori-ai-settings-{Guid.NewGuid():N}.db");
+	private readonly TempDatabase _tempDatabase = new("nori-ai-settings");
 	private readonly NoriDatabase _database;
 	private readonly ConfigStore _config;
 	private readonly AiSettingsStore _settings;
 
 	public AiSettingsTests()
 	{
-		_database = NoriDatabase.Open(_path);
+		_database = NoriDatabase.Open(_tempDatabase.Path);
 		_config = new ConfigStore(_database);
 		_config.InitDefaults("test");
 		_settings = new AiSettingsStore(_config);
@@ -72,17 +74,39 @@ public sealed class AiSettingsTests : IDisposable
 		Assert.StartsWith(SecretProtector.Prefix, _config.RawValue(AiSettingsStore.KeyLlmApiKey), StringComparison.Ordinal);
 	}
 
+	[Fact]
+	public void 完整AI配置只执行一次指定键批量读取且快照不含密钥()
+	{
+		_settings.UpdateChat(new AiChatSettingsPatch(
+			BaseUrl: "https://chat.example/v1",
+			ApiKey: "chat-secret-value",
+			Model: "chat-model",
+			ApiKeySpecified: true));
+		_settings.UpdateEmbedding(new AiEmbeddingSettingsPatch(
+			BaseUrl: "https://embed.example/v1",
+			ApiKey: "embedding-secret-value",
+			Model: "embed-model",
+			ApiKeySpecified: true));
+
+		int queryCount = 0;
+		_config.ReadQueryExecuted = () => queryCount++;
+		AiProviderSettings settings = _settings.Read();
+
+		Assert.Equal(1, queryCount);
+		Assert.Equal("chat-secret-value", settings.Chat.ApiKey);
+		Assert.Equal("embedding-secret-value", settings.Embedding.ApiKey);
+
+		string chatSnapshot = JsonSerializer.Serialize(AiChatSettingsSnapshot.From(settings.Chat));
+		string embeddingSnapshot = JsonSerializer.Serialize(AiEmbeddingSettingsSnapshot.From(settings.Embedding));
+		Assert.Contains("\"hasApiKey\":true", chatSnapshot, StringComparison.Ordinal);
+		Assert.Contains("\"hasApiKey\":true", embeddingSnapshot, StringComparison.Ordinal);
+		Assert.DoesNotContain("chat-secret-value", chatSnapshot, StringComparison.Ordinal);
+		Assert.DoesNotContain("embedding-secret-value", embeddingSnapshot, StringComparison.Ordinal);
+	}
+
 	public void Dispose()
 	{
 		_database.Dispose();
-		try
-		{
-			File.Delete(_path);
-			File.Delete($"{_path}-wal");
-			File.Delete($"{_path}-shm");
-		}
-		catch (IOException)
-		{
-		}
+		_tempDatabase.Dispose();
 	}
 }

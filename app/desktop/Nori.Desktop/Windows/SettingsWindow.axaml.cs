@@ -2,6 +2,7 @@ using Avalonia.Animation;
 using Avalonia.Animation.Easings;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Nori.Core.Configuration;
 using Nori.Desktop.Bridge;
 using Nori.Desktop.Settings;
 
@@ -20,6 +21,8 @@ public partial class SettingsWindow : Window
 	public SettingsWindow()
 	{
 		InitializeComponent();
+		NativeWindowSizing.Apply(this, NativeWindowSizing.DefaultSize);
+		NativeWindowChrome.Attach(this, () => UiLanguage.IsEnglish(_viewModel?.Language));
 		PagePresenter.DataContextChanged += OnPageChanged;
 	}
 
@@ -36,7 +39,13 @@ public partial class SettingsWindow : Window
 		Opened += (_, _) =>
 		{
 			PagePresenter.RefreshPage();
+			_viewModel.SetHostVisible(true);
 			_ = _viewModel.RefreshSnapshotAsync();
+		};
+		PropertyChanged += (_, args) =>
+		{
+			if (_prepared || args.Property != IsVisibleProperty) return;
+			_viewModel.SetHostVisible(IsVisible);
 		};
 	}
 

@@ -277,25 +277,33 @@ public static class BuiltinTools
 			"使用 AnySearch 搜索引擎在互联网上搜索特定关键词、技术文档、新闻与实时信息", "safe",
 			Schema(
 				Text("query", "搜索关键词或查询短句 (例如: 'Go 1.26 release notes')"),
-				Text("tag", "搜索分类标签 (可选，例如: 'code.doc', 'web', 'general', 'news')", required: false)),
+				Text("tag", "可选垂直搜索能力标签，格式为 domain.sub_domain，例如 code.doc。普通网页、新闻或综合搜索无需填写，AnySearch 会自动选择数据源。", required: false)),
 			async (args, ctx) =>
 			{
 				string query = RequireString(args, "query");
-				string tag = OptionalString(args, "tag") ?? "general";
+				string? tag = NormalizeAnySearchTag(OptionalString(args, "tag"));
 				CancellationToken ct = ctx.CancellationToken;
 
 				// 端点/凭据绑定由策略决定: 存储密钥只允许发往官方端点, 自定义端点必须显式携带 key
-				AnySearchRequest resolved = AnySearchRequestPolicy.Resolve(
-					OptionalString(args, "endpoint") ?? deps.Config.Get("anysearch_api_base")?.ToStorage(),
-					OptionalString(args, "apiKey"),
-					deps.Config.Get("anysearch_api_key")?.ToStorage());
-				UrlAccessPolicy.EnsurePublicHttp(resolved.Endpoint);
+				AnySearchRequest resolved;
+				try
+				{
+					resolved = AnySearchRequestPolicy.Resolve(
+						OptionalString(args, "endpoint") ?? deps.Config.Get("anysearch_api_base")?.ToStorage(),
+						OptionalString(args, "apiKey"),
+						deps.Config.Get("anysearch_api_key")?.ToStorage());
+					UrlAccessPolicy.EnsurePublicHttp(resolved.Endpoint);
+				}
+				catch (InvalidOperationException exception)
+				{
+					throw AnySearchError.Configuration(exception);
+				}
 
 				JsonObject payload = new()
 				{
 					["query"] = query,
-					["tag"] = tag,
 				};
+				if (tag is not null) payload["tag"] = tag;
 
 				using HttpRequestMessage httpRequest = new(HttpMethod.Post, resolved.Endpoint)
 				{
@@ -313,19 +321,38 @@ public static class BuiltinTools
 				}
 				catch (HttpRequestException exception)
 				{
-					throw UrlAccessPolicy.Translate(exception, resolved.Endpoint);
+					throw AnySearchError.Network(exception);
 				}
 				using (response)
 				{
-					string body = await UrlAccessPolicy.ReadCappedTextAsync(
-						response.Content, UrlAccessPolicy.MaxResponseBytes, ct);
+					string body;
+					try
+					{
+						body = await UrlAccessPolicy.ReadCappedTextAsync(
+							response.Content, UrlAccessPolicy.MaxResponseBytes, ct);
+					}
+					catch (InvalidOperationException exception)
+					{
+						throw AnySearchError.ResponseTooLarge(exception);
+					}
 					if (!response.IsSuccessStatusCode)
 					{
-						throw new HttpRequestException($"AnySearch API 返回 HTTP {(int)response.StatusCode}: {body}");
+						throw AnySearchError.Parse(response.StatusCode, body);
 					}
 					return JsonNode.Parse(body) ?? body;
 				}
 			});
+	}
+
+	private static string? NormalizeAnySearchTag(string? value)
+	{
+		string? tag = value?.Trim();
+		if (string.IsNullOrWhiteSpace(tag)) return null;
+		return tag.Equals("general", StringComparison.OrdinalIgnoreCase)
+			|| tag.Equals("web", StringComparison.OrdinalIgnoreCase)
+			|| tag.Equals("news", StringComparison.OrdinalIgnoreCase)
+			? null
+			: tag;
 	}
 
 	/// <summary>构造对象参数 Schema</summary>
@@ -363,20 +390,23 @@ public static class BuiltinTools
 		// TryGetValue<double> 只在底层就是 double 时成功。模型的输出经 JsonNode.Parse
 		// 进来是 JsonElement 支撑的，转得动；而代码里 new JsonObject{["x"] = 5} 构出来
 		// 的是 CLR int 支撑的，转不动 —— 同一个 5，两条来路结果不同，所以逐个试过去。
-		if (value.TryGetValue(out double asDouble)) return asDouble;
+		if (value.TryGetValue(out double asDouble)) return double.IsFinite(asDouble) ? asDouble : null;
 		if (value.TryGetValue(out long asLong)) return asLong;
 		if (value.TryGetValue(out int asInt)) return asInt;
 		if (value.TryGetValue(out decimal asDecimal)) return (double) asDecimal;
 
 		return value.TryGetValue(out string? text)
 			&& double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double fromText)
+			&& double.IsFinite(fromText)
 			? fromText
 			: null;
 	}
 
 	/// <summary>报错里回显原值。字符串直接回显 —— ToJsonString 会把中文转义成 \uXXXX。</summary>
 	private static string Describe(JsonNode node) =>
-		node is JsonValue value && value.TryGetValue(out string? text) ? text : node.ToJsonString();
+		node is JsonValue value && value.TryGetValue(out string? text) ? text
+			: node is JsonValue number && number.TryGetValue(out double numeric) ? numeric.ToString(CultureInfo.InvariantCulture)
+			: node.ToJsonString();
 
 	/// <summary>
 	/// 必填的数字参数。缺失和「给了但不是数字」要分开报，否则排查时会去找一个

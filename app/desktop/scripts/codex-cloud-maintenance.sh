@@ -49,7 +49,7 @@ fi
 
 cd "$DESKTOP_DIR"
 
-log "同步前端依赖。"
+log "同步主题检查依赖。"
 pnpm install --frozen-lockfile
 
 log "同步 .NET solution 依赖。"

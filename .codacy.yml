@@ -1,0 +1,6 @@
+---
+# 生成锁文件由 pnpm 与依赖审计维护, 不参与源码模式扫描
+exclude_paths:
+  - "app/desktop/pnpm-lock.yaml"
+  # 根级代理说明引用用户机器上的全局 RTK 指令, 不是仓库内源码依赖
+  - "AGENTS.md"

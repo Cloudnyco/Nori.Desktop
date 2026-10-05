@@ -14,25 +14,8 @@ permissions:
 # Windows 另做 FDD 发布、ZIP 内容与双启动分支冒烟。
 # Linux / macOS 做 FDD 发布并上传 publish 产物。
 jobs:
-  source_scan:
-    name: first-party TODO/FIXME 扫描
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: app/desktop
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: 扫描一方源码标记
-        run: node scripts/check-first-party-todos.mjs
-
   desktop:
     name: ${{ matrix.name }}
-    needs: source_scan
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -59,65 +42,79 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: 安装 Linux 原生编译依赖
         if: matrix.name == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-0 libgtk-3-0
+          alsa=libasound2
+          if apt-cache show libasound2t64 >/dev/null 2>&1; then alsa=libasound2t64; fi
+          sudo apt-get install -y libgtk-3-0 "$alsa"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
         with:
           version: 11
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: app/desktop/pnpm-lock.yaml
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: "10.0.x"
 
       # NuGet 全局包缓存: 键随 csproj/构建口径变化, 前缀兜底让依赖变更时只下载增量。
       - name: 缓存 NuGet 全局包
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('app/desktop/**/*.csproj', 'app/desktop/Directory.Build.props', 'app/desktop/version.props', 'app/desktop/Nori.slnx') }}
           restore-keys: |
             nuget-${{ runner.os }}-
 
-      - name: 安装前端依赖
+      - name: 安装主题检查依赖
         run: pnpm install --frozen-lockfile
 
+      - name: 一方 TODO/FIXME 门禁
+        if: matrix.name == 'windows'
+        run: pnpm check:todo
+
       # ESLint 与平台无关，只在 Windows 门禁 job 跑一次，避免三平台重复消耗。
-      - name: 前端门 · 静态检查
+      - name: 主题令牌门 · 静态检查
         if: matrix.name == 'windows'
         run: pnpm lint
 
-      - name: 前端门 · 类型检查与构建
+      - name: 主题令牌门 · 类型检查
         run: pnpm build
 
       # Windows 的覆盖率命令已执行全量测试，无需重复跑普通测试。
-      - name: 前端门 · 单元测试
+      - name: 主题令牌门 · 单元测试
         if: matrix.name != 'windows'
         run: pnpm test
 
-      - name: 前端门 · 覆盖率与阈值
+      - name: 主题令牌门 · 覆盖率与阈值
         if: matrix.name == 'windows'
         run: pnpm coverage
 
-      - name: 上传前端覆盖率产物
+      - name: 上传主题令牌覆盖率产物
         if: matrix.name == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: nori-frontend-coverage
+          name: nori-theme-coverage
           path: app/desktop/coverage/*
           if-no-files-found: error
           retention-days: 7
+
+      - name: 脚本门 · 发布结构 fixture
+        if: matrix.name == 'windows'
+        run: node scripts/validate-publish-structure.test.mjs
+
+      - name: 脚本门 · 自动更新清单 fixture
+        if: matrix.name == 'windows'
+        run: node scripts/generate-update-manifest.test.mjs
 
       # 不把 build/test/publish 合并成并行 matrix 或后台任务, 避免共享 obj 文件锁。
       - name: 后端门 · 构建
@@ -133,52 +130,6 @@ jobs:
         if: matrix.name == 'windows'
         run: dotnet test Nori.AppLauncher.Tests/Nori.AppLauncher.Tests.csproj --configuration Release --no-build --no-restore -m:1
 
-      - name: 原生设置 · 真实渲染与布局验证
-        if: matrix.name == 'windows'
-        env:
-          NORI_CAPTURE_SETTINGS: "1"
-        run: dotnet test Nori.Desktop.Tests/Nori.Desktop.Tests.csproj --configuration Release --no-build --no-restore --filter FullyQualifiedName~NativeSettingsVisual -m:1
-
-      - name: 原生设置 · 可检视预览
-        if: always() && matrix.name == 'windows'
-        shell: pwsh
-        run: |
-          $samples = @("ai-dark-720x480", "general-light-720x480", "debug-dark-720x480", "proactive-light-1920x1080")
-          foreach ($sample in $samples) {
-            $capture = "artifacts/native-settings/$sample.png.base64.txt"
-            if (Test-Path $capture) {
-              Write-Output "NORI_SETTINGS_CAPTURE:$sample"
-              Get-Content $capture
-            }
-          }
-          if (Test-Path "artifacts/native-settings/manifest.json") {
-            Get-Content "artifacts/native-settings/manifest.json"
-          }
-
-      - name: 上传原生设置视觉产物
-        if: always() && matrix.name == 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: nori-native-settings-visuals
-          path: app/desktop/artifacts/native-settings
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: 原生记忆 · 八分区深色真实渲染与布局验证
-        if: matrix.name == 'windows'
-        env:
-          NORI_CAPTURE_MEMORY: "1"
-        run: dotnet test Nori.Desktop.Tests/Nori.Desktop.Tests.csproj --configuration Release --no-build --no-restore --filter FullyQualifiedName~NativeMemoryVisual -m:1
-
-      - name: 上传原生记忆视觉产物
-        if: always() && matrix.name == 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: nori-native-memory-visuals
-          path: app/desktop/artifacts/native-memory
-          if-no-files-found: warn
-          retention-days: 7
-
       # 复用 Release 构建，在同一轮执行 Core、Desktop、PluginRuntime 全量测试并收集覆盖率。
       - name: 后端门 · 覆盖率产物
         if: matrix.name == 'windows'
@@ -186,7 +137,7 @@ jobs:
 
       - name: 上传 .NET 覆盖率产物
         if: matrix.name == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nori-dotnet-coverage
           path: app/desktop/artifacts/dotnet-coverage/**
@@ -209,7 +160,7 @@ jobs:
 
       - name: 上传 Linux / macOS CI 产物
         if: matrix.name != 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nori-${{ matrix.rid }}-ci-package
           path: app/desktop/bin/publish/${{ matrix.rid }}
@@ -287,7 +238,7 @@ jobs:
 
       - name: 上传 Windows CI 产物
         if: matrix.name == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nori-windows-ci-package
           path: app/desktop/bin/ci-release

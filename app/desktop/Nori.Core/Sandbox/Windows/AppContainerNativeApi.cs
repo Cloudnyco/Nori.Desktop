@@ -112,6 +112,7 @@ internal static class AppContainerNativeApi
 	internal static extern bool TerminateProcess(IntPtr handle, uint exitCode);
 
 	[StructLayout(LayoutKind.Sequential)]
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3898", Justification = "原生 ABI 结构体仅用于互操作，不参与相等比较。")]
 	internal struct SecurityCapabilities
 	{
 		public IntPtr AppContainerSid;
@@ -121,6 +122,7 @@ internal static class AppContainerNativeApi
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3898", Justification = "原生 ABI 结构体仅用于互操作，不参与相等比较。")]
 	internal struct SidAndAttributes
 	{
 		public IntPtr Sid;
@@ -128,6 +130,7 @@ internal static class AppContainerNativeApi
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3898", Justification = "原生 ABI 结构体仅用于互操作，不参与相等比较。")]
 	internal struct SecurityAttributes
 	{
 		public int Length;
@@ -136,6 +139,7 @@ internal static class AppContainerNativeApi
 	}
 
 	[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3898", Justification = "原生 ABI 结构体仅用于互操作，不参与相等比较。")]
 	internal struct StartupInfo
 	{
 		public int Size;
@@ -159,6 +163,7 @@ internal static class AppContainerNativeApi
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3898", Justification = "原生 ABI 结构体仅用于互操作，不参与相等比较。")]
 	internal struct StartupInfoEx
 	{
 		public StartupInfo StartupInfo;
@@ -166,6 +171,7 @@ internal static class AppContainerNativeApi
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3898", Justification = "原生 ABI 结构体仅用于互操作，不参与相等比较。")]
 	internal struct ProcessInformation
 	{
 		public IntPtr Process;

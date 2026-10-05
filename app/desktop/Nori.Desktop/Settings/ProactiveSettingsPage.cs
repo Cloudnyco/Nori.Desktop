@@ -5,6 +5,7 @@ using System.Text.Json;
 namespace Nori.Desktop.Settings;
 
 /// <summary>主动互动与提醒设置页。</summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S1854", Justification = "设置命令回调按 UI 约定显式丢弃受控后台 Task。")]
 public sealed class ProactiveSettingsPage : SettingsPageBase
 {
 	private readonly SettingsFieldViewModel _newReminderText;
@@ -62,8 +63,8 @@ public sealed class ProactiveSettingsPage : SettingsPageBase
 		};
 		_repeatDaily = AddField(reminders, "repeatDaily", new("每天重复", "Repeat daily"), new("让提醒每天在相同时间触发。", "Repeat the reminder at the same time every day."), SettingsEditorKind.Boolean,
 			_ => _repeatDaily?.Boolean ?? false, false, (_, _) => Task.FromResult(default(JsonElement)));
-		_addCommand = new SettingsCommand(_ => _ = AddReminderAsync(), _ => !_safeMode && !_adding && !_refreshing && !_cancelling);
-		_refreshCommand = new SettingsCommand(_ => _ = RefreshRemindersAsync(), _ => !_refreshing && !_adding && !_cancelling);
+		_addCommand = new SettingsCommand(command => _ = AddReminderAsync(), canExecute => !_safeMode && !_adding && !_refreshing && !_cancelling);
+		_refreshCommand = new SettingsCommand(command => _ = RefreshRemindersAsync(), canExecute => !_refreshing && !_adding && !_cancelling);
 		AddAction(reminders, "addReminder", new("添加提醒", "Add reminder"), new("保存后会立即出现在下方列表。", "The reminder appears in the list after saving."), _addCommand);
 		AddAction(reminders, "refreshReminders", new("刷新提醒", "Refresh reminders"), new("从运行时重新读取提醒列表。", "Read reminders from the runtime again."), _refreshCommand);
 	}
@@ -170,7 +171,7 @@ public sealed class ProactiveSettingsPage : SettingsPageBase
 			SetStatus(Text("提醒已添加。", "Reminder added."));
 		}
 		catch (OperationCanceledException) { }
-		catch (Exception exception) { SetStatus(exception.Message); }
+		catch (Exception exception) { SetStatus(exception); }
 		finally
 		{
 			if (entered) _reminderGate.Release();
@@ -181,6 +182,7 @@ public sealed class ProactiveSettingsPage : SettingsPageBase
 	}
 
 	/// <summary>重复规则保存失败时撤销新建提醒，避免悄悄留下单次提醒。</summary>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "提醒创建失败后的 UI 清理不能覆盖原始错误。")]
 	internal static async Task CreateReminderAsync(
 		Func<string, object?, CancellationToken, Task<JsonElement>> execute,
 		string content, double delay, bool repeat, CancellationToken cancellationToken)
@@ -220,7 +222,7 @@ public sealed class ProactiveSettingsPage : SettingsPageBase
 			SetStatus(Text($"已加载 {Reminders.Count} 条提醒。", $"{Reminders.Count} reminders loaded."));
 		}
 		catch (OperationCanceledException) { }
-		catch (Exception exception) { SetStatus(exception.Message); }
+		catch (Exception exception) { SetStatus(exception); }
 		finally
 		{
 			if (entered) _reminderGate.Release();
@@ -247,7 +249,7 @@ public sealed class ProactiveSettingsPage : SettingsPageBase
 			SetStatus(Text("提醒已取消。", "Reminder cancelled."));
 		}
 		catch (OperationCanceledException) { }
-		catch (Exception exception) { SetStatus(exception.Message); }
+		catch (Exception exception) { SetStatus(exception); }
 		finally
 		{
 			if (entered) _reminderGate.Release();
@@ -262,7 +264,7 @@ public sealed class ProactiveSettingsPage : SettingsPageBase
 		_refreshCommand.RaiseCanExecuteChanged();
 	}
 
-	internal void ReportActionFailure(Exception exception) => SetStatus(exception.Message);
+	internal void ReportActionFailure(Exception exception) => SetStatus(exception);
 
 	private static string Text(string chinese, string english) => SettingsLocalization.IsEnglish ? english : chinese;
 }

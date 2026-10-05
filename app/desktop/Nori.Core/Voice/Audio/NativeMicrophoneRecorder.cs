@@ -6,9 +6,8 @@ namespace Nori.Core.Voice.Audio;
 /// 产出 **16 kHz 单声道 WAV**，理由有两条：
 /// - Whisper 的 <c>/audio/transcriptions</c> 内部就是按 16 kHz 单声道跑的，
 ///   送 48 kHz 立体声上去只是让它再降一次；
-/// - 体积。WebView 那条录的是 webm/opus（约 3 KB/s），原生拿到的是裸 PCM；
-///   若按设备原始格式（48 kHz 立体声 16 位 ≈ 192 KB/s）上传，一段 30 秒的话就是
-///   5.6 MB。降到 16 kHz 单声道之后是 32 KB/s，仍比 opus 大，但已经在可接受范围。
+/// - 体积。设备原始格式（48 kHz 立体声 16 位 ≈ 192 KB/s）上传时，一段 30 秒约 5.6 MB。
+///   降到 16 kHz 单声道之后是 32 KB/s。
 ///
 /// 采集设备那一层是 <see cref="IAudioCaptureDevice"/>，只有它需要原生实现；
 /// 这里的编排（攒缓冲、下混、重采样、封 WAV）全是普通托管代码。
@@ -24,7 +23,10 @@ public sealed class NativeMicrophoneRecorder(Func<IAudioCaptureDevice> openDevic
 	/// <summary>一次从设备读多少帧。太小会频繁唤醒，太大会让停止不跟手。</summary>
 	private const int ReadFrames = 1024;
 
+	private enum RecordingState { Idle, Starting, Recording, Completed, Stopping, Disposed }
+
 	private readonly Lock _gate = new();
+	private RecordingState _state;
 	private IAudioCaptureDevice? _device;
 	private Task<PcmAudio>? _pump;
 	private CancellationTokenSource? _cancelling;
@@ -32,7 +34,8 @@ public sealed class NativeMicrophoneRecorder(Func<IAudioCaptureDevice> openDevic
 	/// <inheritdoc />
 	public bool IsRecording
 	{
-		get { lock (_gate) return _pump is not null; }
+		// 上层据此决定是否调用 Stop；已采完但尚未提取的结果仍属于当前录音会话。
+		get { lock (_gate) return _state is RecordingState.Starting or RecordingState.Recording or RecordingState.Completed; }
 	}
 
 	/// <inheritdoc />
@@ -40,43 +43,36 @@ public sealed class NativeMicrophoneRecorder(Func<IAudioCaptureDevice> openDevic
 	{
 		lock (_gate)
 		{
-			if (_pump is not null) throw new InvalidOperationException("已经在录音了");
-		}
-
-		IAudioCaptureDevice device = openDevice();
-		AudioFormat format = device.Open();
-		CancellationTokenSource cancelling = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-		lock (_gate)
-		{
-			_device = device;
+			ObjectDisposedException.ThrowIf(_state == RecordingState.Disposed, this);
+			if (_state != RecordingState.Idle) throw new InvalidOperationException("已经在录音或正在停止");
+			cancellationToken.ThrowIfCancellationRequested();
+			CancellationTokenSource cancelling = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+			TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+			// 先预留，再打开设备；两个 Start 不能同时越过空闲检查。
+			_state = RecordingState.Starting;
 			_cancelling = cancelling;
-			_pump = Task.Run(() => Pump(device, format, cancelling.Token), CancellationToken.None);
+			_pump = Task.Run(() => Capture(cancelling, started), CancellationToken.None);
+			// Start 失败或调用方只 Dispose 时，也观察后台故障；Stop 仍从原任务取得异常。
+			_ = _pump.ContinueWith(static task => { _ = task.Exception; }, CancellationToken.None,
+				TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+			return started.Task;
 		}
-		return Task.CompletedTask;
 	}
 
 	/// <inheritdoc />
 	public async Task<RecordedAudio> StopAsync(CancellationToken cancellationToken = default)
 	{
-		Task<PcmAudio>? pump;
-		IAudioCaptureDevice? device;
-		CancellationTokenSource? cancelling;
+		Task<PcmAudio> pump;
 		lock (_gate)
 		{
-			pump = _pump;
-			device = _device;
-			cancelling = _cancelling;
-			_pump = null;
-			_device = null;
-			_cancelling = null;
+			ObjectDisposedException.ThrowIf(_state == RecordingState.Disposed, this);
+			if (_state is not (RecordingState.Starting or RecordingState.Recording or RecordingState.Completed))
+				throw new InvalidOperationException("当前没有在录音");
+			pump = _pump!;
+			_state = RecordingState.Stopping;
+			try { _cancelling?.Cancel(); }
+			finally { _device?.Stop(); }
 		}
-		if (pump is null) throw new InvalidOperationException("当前没有在录音");
-
-		// 先让设备把阻塞中的 Read 放出来，再取消 —— 反过来的话取消信号会卡在
-		// 一个正在等数据的 Read 后面。
-		device?.Stop();
-		try { await cancelling!.CancelAsync().ConfigureAwait(false); } catch (ObjectDisposedException) { }
 
 		try
 		{
@@ -86,8 +82,72 @@ public sealed class NativeMicrophoneRecorder(Func<IAudioCaptureDevice> openDevic
 		}
 		finally
 		{
-			device?.Dispose();
-			cancelling?.Dispose();
+			lock (_gate)
+			{
+				if (ReferenceEquals(_pump, pump) && pump.IsCompleted)
+				{
+					_pump = null;
+					if (_state != RecordingState.Disposed) _state = RecordingState.Idle;
+				}
+			}
+		}
+	}
+
+	private PcmAudio Capture(CancellationTokenSource cancelling, TaskCompletionSource started)
+	{
+		CancellationToken cancellationToken = cancelling.Token;
+		IAudioCaptureDevice? device = null;
+		try
+		{
+			try
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				device = openDevice();
+				cancellationToken.ThrowIfCancellationRequested();
+				AudioFormat format = device.Open();
+				lock (_gate)
+				{
+					// Starting 被 Stop/Dispose 取消后，不再发布设备或启动读取。
+					cancellationToken.ThrowIfCancellationRequested();
+					_device = device;
+					_state = RecordingState.Recording;
+					started.TrySetResult();
+				}
+				return Pump(device, format, cancellationToken);
+			}
+			finally
+			{
+				lock (_gate)
+				{
+					_device = null;
+					// 自然结束或外部取消后保留结果，直到 Stop 提取才允许下一段录音。
+					if (_state == RecordingState.Recording) _state = RecordingState.Completed;
+				}
+				try { device?.Dispose(); }
+				finally
+				{
+					lock (_gate)
+					{
+						_cancelling = null;
+						cancelling.Dispose();
+						if (_state != RecordingState.Completed)
+						{
+							_pump = null;
+							if (_state != RecordingState.Disposed) _state = RecordingState.Idle;
+						}
+					}
+				}
+			}
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			started.TrySetCanceled(cancellationToken);
+			return new PcmAudio {Samples = [], SampleRate = TargetSampleRate, Channels = 1};
+		}
+		catch (Exception failure)
+		{
+			started.TrySetException(failure);
+			throw;
 		}
 	}
 
@@ -99,9 +159,17 @@ public sealed class NativeMicrophoneRecorder(Func<IAudioCaptureDevice> openDevic
 
 		while (!cancellationToken.IsCancellationRequested && collected.Count < maxSamples)
 		{
-			int read = device.Read(buffer, cancellationToken);
-			if (read <= 0) break;
-			collected.AddRange(buffer.AsSpan(0, read));
+			try
+			{
+				int read = device.Read(buffer, cancellationToken);
+				if (read <= 0) break;
+				collected.AddRange(buffer.AsSpan(0, read));
+			}
+			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+			{
+				// 设备等待被取消时仍保留已经采到的样本。
+				break;
+			}
 		}
 
 		return new PcmAudio
@@ -150,19 +218,14 @@ public sealed class NativeMicrophoneRecorder(Func<IAudioCaptureDevice> openDevic
 
 	public void Dispose()
 	{
-		IAudioCaptureDevice? device;
-		CancellationTokenSource? cancelling;
 		lock (_gate)
 		{
-			device = _device;
-			cancelling = _cancelling;
-			_device = null;
+			if (_state == RecordingState.Disposed) return;
+			_state = RecordingState.Disposed;
 			_pump = null;
-			_cancelling = null;
+			// 打开和读取可能尚未退出，设备只由采集任务收尾释放。
+			try { _cancelling?.Cancel(); }
+			finally { _device?.Stop(); }
 		}
-		device?.Stop();
-		try { cancelling?.Cancel(); } catch (ObjectDisposedException) { }
-		device?.Dispose();
-		cancelling?.Dispose();
 	}
 }

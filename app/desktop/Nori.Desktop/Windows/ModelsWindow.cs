@@ -8,9 +8,11 @@ using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Nori.Core.Configuration;
 using Nori.Desktop.Bridge;
 using Nori.Desktop.Memory;
 using Nori.Desktop.Models;
+using static Nori.Desktop.SnapshotJson;
 
 namespace Nori.Desktop.Windows;
 
@@ -59,12 +61,13 @@ public sealed partial class ModelsWindow : Window
 	public ModelsWindow(AppServices services)
 	{
 		_service = new ModelService(services, this);
-		Width = 960; Height = 640; MinWidth = 720; MinHeight = 480;
+		NativeWindowSizing.Apply(this, NativeWindowSizing.DefaultSize);
 		RequestedThemeVariant = ThemeVariant.Dark;
 		Classes.Add("models-window");
 		WindowStartupLocation = WindowStartupLocation.CenterScreen;
 		Styles.Add(new StyleInclude(new Uri("avares://Nori.Desktop/")) { Source = new Uri("avares://Nori.Desktop/Settings/SettingsTheme.axaml") });
 		BuildShell();
+		NativeWindowChrome.Attach(this, () => UiLanguage.IsEnglish(_language));
 		BuildLibrary();
 		_behaviors = Scroller(BuildBehaviorPage());
 		InitializePreview(services);
@@ -166,7 +169,9 @@ public sealed partial class ModelsWindow : Window
 	/// <summary>在窗口内显示宿主失败；保存失败时重新显示原草稿。</summary>
 	public void ReportHostFailure(Exception exception)
 	{
-		ShowError(exception); if (!IsVisible) Show(); Activate();
+		ShowError(exception);
+		if (!IsVisible) Show();
+		Activate();
 	}
 	private async void OnClosing(object? sender, WindowClosingEventArgs args)
 	{
@@ -181,17 +186,20 @@ public sealed partial class ModelsWindow : Window
 	protected override void OnClosed(EventArgs e)
 	{
 		_lifetime.Cancel(); _service.StateChanged -= OnStateChanged; DisposePreview(); _service.Dispose();
-		foreach (var bitmap in _thumbnails) bitmap.Dispose(); _thumbnails.Clear();
+		foreach (var bitmap in _thumbnails) bitmap.Dispose();
+		_thumbnails.Clear();
 		base.OnClosed(e);
 	}
 	private void BeginBarrier()
 	{
 		if (_barrierDepth++ > 0) return;
-		_request++; _barrierWasEnabled = _root.IsEnabled; _root.IsEnabled = false;
+		// 标题栏装饰会包裹 _root，保存期间必须禁用整个内容树。
+		Control content = (Control)Content!;
+		_request++; _barrierWasEnabled = content.IsEnabled; content.IsEnabled = false;
 	}
 	private void EndBarrier()
 	{
-		if (--_barrierDepth == 0 && !_prepared) _root.IsEnabled = _barrierWasEnabled;
+		if (--_barrierDepth == 0 && !_prepared) ((Control)Content!).IsEnabled = _barrierWasEnabled;
 	}
 	private void OnStateChanged() => Dispatcher.UIThread.Post(QueueRefresh);
 	private void QueueRefresh()
@@ -210,20 +218,20 @@ public sealed partial class ModelsWindow : Window
 	private void BuildShell()
 	{
 		var nav = new StackPanel { Spacing = 4, Margin = new Thickness(10, 20, 10, 12) };
-		var monogram = new Border { Width = 36, Height = 36, CornerRadius = new CornerRadius(11), Child = Text("N", 22, true) };
+		var monogram = new Border { Width = 36, Height = 36, CornerRadius = new CornerRadius(12), Child = Text("N", 22, true) };
 		((TextBlock)monogram.Child).HorizontalAlignment = HorizontalAlignment.Center;
 		((TextBlock)monogram.Child).VerticalAlignment = VerticalAlignment.Center;
 		Brush(monogram, Border.BackgroundProperty, "SettingsSelectionBrush"); Brush(monogram.Child, TextBlock.ForegroundProperty, "SettingsAccentBrush");
 		var brand = new Grid { ColumnDefinitions = new ColumnDefinitions("36,*"), ColumnSpacing = 10, Margin = new Thickness(6, 0, 6, 20) };
 		brand.Children.Add(monogram);
-		var name = Stack(Text("NORI", 11.5, true), Local(() => T("模型", "Models"), 16, true)); name.Spacing = 2;
+		var name = Stack(Text("NORI", 12, true), Local(() => T("模型", "Models"), 16, true)); name.Spacing = 2;
 		Grid.SetColumn(name, 1); brand.Children.Add(name); nav.Children.Add(brand);
 		foreach (string section in new[] { "library", "behaviors" })
 		{
 			var icon = new Avalonia.Controls.Shapes.Path(); icon.Classes.Add("settings-nav-icon");
 			var symbol = new Border
 			{
-				Width = 26, Height = 26, CornerRadius = new CornerRadius(7),
+				Width = 26, Height = 26, CornerRadius = new CornerRadius(8),
 				Child = new Viewbox { Width = 18, Height = 18, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Child = icon },
 			};
 			symbol.Classes.Add("settings-nav-symbol");
@@ -234,7 +242,7 @@ public sealed partial class ModelsWindow : Window
 			var button = new Button
 			{
 				Name = "ModelsNav_" + section, Tag = section, Content = content,
-				MinHeight = 40, Padding = new Thickness(8, 6), Margin = new Thickness(0, 1), CornerRadius = new CornerRadius(9),
+				MinHeight = 40, Padding = new Thickness(8, 6), Margin = new Thickness(0, 1), CornerRadius = new CornerRadius(8),
 				HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
 			};
 			button.Classes.Add("settings-nav");
@@ -267,7 +275,11 @@ public sealed partial class ModelsWindow : Window
 	{
 		Title = T("Nori · 模型", "Nori · Models"); UpdateHeading();
 		bool previous = _applying; _applying = true;
-		try { foreach (Action action in _localize.Concat(_adjustLocalize).ToArray()) action(); ApplyBindings(); }
+		try
+		{
+			foreach (Action action in _localize.Concat(_adjustLocalize).ToArray()) action();
+			ApplyBindings();
+		}
 		finally { _applying = previous; }
 	}
 	private void ApplyBindings()

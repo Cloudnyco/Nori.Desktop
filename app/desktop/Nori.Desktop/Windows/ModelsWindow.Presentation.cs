@@ -6,13 +6,15 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Nori.Core.Configuration;
 using Nori.Desktop.Settings;
+using static Nori.Desktop.SnapshotJson;
 
 namespace Nori.Desktop.Windows;
 
 public sealed partial class ModelsWindow
 {
-	private string T(string chinese, string english) => _language.StartsWith("en", StringComparison.OrdinalIgnoreCase) ? english : chinese;
+	private string T(string chinese, string english) => UiLanguage.IsEnglish(_language) ? english : chinese;
 	private void Localize(Action action) { (_buildingAdjust ? _adjustLocalize : _localize).Add(action); action(); }
 	private static TextBlock Text(string value, double size = 13, bool bold = false) => new() { Text = value, FontSize = size, FontWeight = bold ? FontWeight.SemiBold : FontWeight.Normal, TextWrapping = TextWrapping.Wrap };
 	private TextBlock Local(Func<string> value, double size = 13, bool bold = false)
@@ -97,11 +99,6 @@ public sealed partial class ModelsWindow
 		try { return await task; }
 		finally { _operations.Remove(task); _revision++; QueueRefresh(); }
 	}
-	private static JsonElement P(JsonElement element, string key) => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(key, out var value) ? value : default;
-	private static string S(JsonElement element, string key, string fallback = "") => P(element, key).ValueKind is JsonValueKind.Null or JsonValueKind.Undefined ? fallback : P(element, key).ToString();
-	private static double N(JsonElement element, string key, double fallback = 0) => P(element, key).ValueKind == JsonValueKind.Number && P(element, key).TryGetDouble(out double value) ? value : fallback;
-	private static bool B(JsonElement element, string key) => P(element, key).ValueKind == JsonValueKind.True;
-	private static IEnumerable<JsonElement> Items(JsonElement element) => element.ValueKind == JsonValueKind.Array ? element.EnumerateArray() : [];
 	private static string[] Strings(JsonElement element) => Items(element).Select(value => value.GetString() ?? "").ToArray();
 	private static string ModelName(string id) => Models.FirstOrDefault(model => model.Id == id).Name ?? id;
 	private static bool Installed(JsonElement snapshot, string id) => Items(P(P(snapshot, "models"), "items")).Any(item => S(item, "id") == id && B(item, "installed"));

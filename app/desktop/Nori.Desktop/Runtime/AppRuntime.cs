@@ -1,8 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text.Json;
-using System.Text.Json.Nodes;
-using Avalonia.Threading;
-using Nori.Core;
 using Nori.Core.Agent;
 using Nori.Core.Automation;
 using Nori.Core.Configuration;
@@ -10,9 +6,6 @@ using Nori.Core.Emotion;
 using Nori.Core.Logging;
 using Nori.Core.Live2D;
 using Nori.Core.Memory;
-using Nori.Core.Mcp;
-using Nori.Core.Network;
-using Nori.Core.Observation;
 using Nori.Core.Proactive;
 using Nori.Core.Skills;
 using Nori.Core.Sandbox;
@@ -22,14 +15,11 @@ using Nori.Core.Vision;
 using Nori.Core.Expression;
 using Nori.Desktop.Expression;
 using Nori.Desktop.Observation;
-using Nori.Desktop.Vision;
-using Nori.Core.Telemetry;
 using Nori.Core.Voice;
-using Nori.PluginRuntime;
 using Nori.Desktop.Audio;
 using Nori.Desktop.Automation;
-using Nori.Desktop.Bridge;
 using Nori.Desktop.Telemetry;
+using Nori.Desktop.Bridge;
 using Nori.Desktop.Windows;
 
 namespace Nori.Desktop.Runtime;
@@ -37,16 +27,15 @@ namespace Nori.Desktop.Runtime;
 /// <summary>
 /// 应用运行时协调层
 ///
-/// 承接前端迁移过来的全部业务编排: Agent 会话与取消、工具授权、技能/情绪/提醒/
-/// 记忆/语音服务装配, 以及面向 WebView 的带版本号 UI 状态快照。
+/// 承接应用内的业务编排: Agent 会话与取消、工具授权、技能/情绪/提醒/
+/// 记忆/语音服务装配, 以及带版本号的脱敏 UI 状态快照。
 ///
 /// 事件出口约定:
-/// - nori:agent-event   → 仅推送给发起会话的窗口 (状态/chunk/用量/授权/完成/错误)
-/// - nori:state-changed → 全局广播 (快照版本 + 变更主题)
-/// - nori:proactive-message / nori:stt-result / nori:voice-notice → 对应窗口或全局
+/// - nori:agent-event → 只推送给发起会话的原生对话窗口 (状态/chunk/用量/授权/完成/错误)
 ///
 /// 秘密纪律: 快照只返回 hasApiKey 等脱敏标记, 明文绝不回传事件/日志/错误。
 /// </summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2931", Justification = "运行时计时器已在 DisposeAsync 中释放，属于分析器误报。")]
 public sealed partial class AppRuntime : IAsyncDisposable
 {
 	/// <summary>工具授权等待超时 (秒); 超时一律 fail-closed 拒绝</summary>
@@ -68,27 +57,17 @@ public sealed partial class AppRuntime : IAsyncDisposable
 	private readonly ConcurrentDictionary<Task, byte> _backgroundTasks = new();
 	private readonly CancellationTokenSource _lifetimeCts = new();
 	/// <summary>
-	/// 这一轮装配的是哪一套音频后端：native 或 webview。
+	/// 这一轮装配的音频后端名称。三平台固定为 native。
 	///
 	/// 日志里也写了一行，但那条只能事后翻。这个属性让「装配到了哪一份」可断言 ——
 	/// 换后端这种改动一旦悄悄回退到旧路径，现象只是「声音还是老样子」，很难发现。
 	/// </summary>
 	public string AudioBackendName { get; }
 
-	/// <summary>实际在用的播放后端。可能是原生设备，也可能是 WebView 那份。</summary>
+	/// <summary>实际在用的播放后端。三平台都是原生设备。</summary>
 	private readonly IAudioPlayback _playback;
 	private readonly IMicrophoneRecorder _recorder;
 
-	/// <summary>
-	/// WebView 那两份，**只为桥回调保留**。
-	///
-	/// ReportPlaybackFinished / ReportRecordingReady 这些是 WebView 专有的入口：
-	/// 页面播完或录完之后经桥回报。走原生后端时没有页面，这两个字段为 null，
-	/// 对应的桥命令变成空操作。
-	/// </summary>
-	private readonly WebViewAudioPlayback? _webViewPlayback;
-	private readonly WebViewMicrophoneRecorder? _webViewRecorder;
-	private readonly AudioHostChannel _audioChannel;
 	private readonly ReflectionWorker _reflectionWorker;
 	private readonly PetInteractionReactionService _petInteractionService;
 	private readonly SemaphoreSlim _petInteractionGate = new(1, 1);
@@ -134,6 +113,21 @@ public sealed partial class AppRuntime : IAsyncDisposable
 	/// <summary>运行时快照失效时通知原生设置窗口。</summary>
 	public event Action? StateChanged;
 
+	private string _lastCloudSyncMessage = "";
+
+	/// <summary>
+	/// 最近一次云端同步动作的结果，给设置页显示。
+	///
+	/// 放在这里而不是页面里：页面的只读字段只从快照取值，页面自己存一份就要绕开那条
+	/// 通路去改控件，而那会把字段标成「有未保存的编辑」，之后的快照刷新全部被跳过。
+	/// 走快照还有一个好处 —— 切走再切回来，那句话还在。
+	/// </summary>
+	internal string LastCloudSyncMessage
+	{
+		get => Volatile.Read(ref _lastCloudSyncMessage);
+		set => Volatile.Write(ref _lastCloudSyncMessage, value ?? "");
+	}
+
 	private int _snapshotVersion = 1;
 	private readonly Lock _snapshotCacheGate = new();
 	private object? _cachedSnapshot;
@@ -144,22 +138,21 @@ public sealed partial class AppRuntime : IAsyncDisposable
 	/// <summary>
 	/// 托盘是否真的可用
 	///
-	/// 由 App 在装载托盘后回填; 不可用时前端在主窗内显示常驻入口与退出按钮。
+	/// 由 App 在装载托盘后回填; 不可用时主窗内显示常驻入口与退出按钮。
 	/// </summary>
 	public bool TrayAvailable { get; set; } = true;
 
 	/// <summary>
-	/// 标记“初始化开始”已发生
+	/// 标记初始化窗口需要补跑开始流程。
 	///
-	/// 首启路径下 init 窗口隐藏启动, 向导完成时广播的 nori:init-start 有可能早于
-	/// init 页面订阅 (WebView 加载比广播慢), 事件就会永久丢失 —— 页面卡在转圈.
-	/// 因此额外留一个标志供页面就绪时回放.
+	/// 首次运行向导会先置位再打开初始化窗口。窗口变为可见后取走这一位。
 	/// </summary>
 	public void MarkInitStartPending() => Interlocked.Exchange(ref _initStartPending, 1);
 
 	/// <summary>取走并清除“初始化开始”标志 (只能被消费一次)</summary>
 	public bool ConsumeInitStartPending() => Interlocked.Exchange(ref _initStartPending, 0) == 1;
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "诊断回调失败必须隔离，不能阻断运行时构造。")]
 	public AppRuntime(AppServices services)
 	{
 		Services = services;
@@ -197,15 +190,15 @@ public sealed partial class AppRuntime : IAsyncDisposable
 			try { services.Logger.Write(LogSource.Backend, severity, message); } catch { }
 		};
 		Knowledge = new KnowledgeService(services.Database, Memory, config, services.Paths.KnowledgePath);
-		Knowledge.StatusChanged = () => InvalidateSnapshot("memory");
+		Knowledge.StatusChanged = () => InvalidateSnapshot();
 		Memory.Knowledge = Knowledge;
 		Lifecycle = new MemoryLifecycleService(Memory);
 		ReflectionService reflection = new(services.Http, services.Chat, Memory, config);
 		_reflectionWorker = new ReflectionWorker(reflection, exception =>
 		{
-			try { services.Logger.Write(LogSource.Backend, "warn", $"记忆整理失败: {SensitiveDataRedactor.ExceptionSummary(exception)}"); }
+			try { services.Logger.Write(LogSource.Backend, "warn", $"记忆整理失败: {ReflectionDiagnostics.Format(exception)}"); }
 			catch { }
-		}, () => InvalidateSnapshot("memory"));
+		}, () => InvalidateSnapshot());
 		Skills = new SkillService(config, services.PublicHttp);
 		Emotion = new EmotionManager(config);
 
@@ -214,38 +207,11 @@ public sealed partial class AppRuntime : IAsyncDisposable
 			reminderStore, config, services.Logger,
 			GetIdleSecondsSafe);
 
-		/* ── 音频后端 ──────────────────────────────────────────────────────
-		 * Windows 直接推声卡（WASAPI）；其余平台仍下沉到 main 窗口的
-		 * WebAudio / MediaRecorder，直到 CoreAudio 与 ALSA 补上。
-		 *
-		 * WebView 那条一直建着而不是按需建：桥回调（页面播完/录完的回报）挂在它
-		 * 身上，而那几条桥命令的存在与否不该随后端变化。真正的分流在下面那两行。 */
-		MediaExchange media = services.Assets?.Media ?? new MediaExchange();
-		Func<string, string> mediaUrl = services.Assets is {} assets
-			? assets.MediaUrl
-			: _ => throw new InvalidOperationException("资源服务未启动, 音频端点不可用");
-		AudioHostChannel channel = new(() => services.Windows?.GetNoriWindow(WindowLabels.Main));
-		_audioChannel = channel;
-
-		bool useNativeAudio = Nori.Core.Voice.Audio.AudioBackend.PrefersNative(
-			config.GetStringOr(ConfigStore.KeyAudioBackend, Nori.Core.Voice.Audio.AudioBackend.Auto), OperatingSystem.IsWindows());
-		if (useNativeAudio)
-		{
-			_playback = Audio.NativeAudioFactory.CreatePlayback();
-			_recorder = Audio.NativeAudioFactory.CreateRecorder();
-			_webViewPlayback = null;
-			_webViewRecorder = null;
-		}
-		else
-		{
-			WebViewAudioPlayback webPlayback = new(media, mediaUrl, channel);
-			WebViewMicrophoneRecorder webRecorder = new(media, mediaUrl, channel);
-			_playback = _webViewPlayback = webPlayback;
-			_recorder = _webViewRecorder = webRecorder;
-		}
-		AudioBackendName = useNativeAudio ? "native" : "webview";
-		services.Logger.Write(LogSource.Backend, "info",
-			$"音频后端：{(useNativeAudio ? "原生设备" : "WebView")}");
+		// 三平台都直接推声卡。旧的 audio_backend=webview 配置不再读取。
+		_playback = Audio.NativeAudioFactory.CreatePlayback();
+		_recorder = Audio.NativeAudioFactory.CreateRecorder();
+		AudioBackendName = "native";
+		services.Logger.Write(LogSource.Backend, "info", "音频后端：原生设备");
 
 		Voice = new VoiceService(services.Http, config, _playback,
 			() => VoiceRetired() ? null : _recorder, services.Paths);
@@ -284,770 +250,8 @@ public sealed partial class AppRuntime : IAsyncDisposable
 					CancelPetInteractionRequest();
 					CancelPetInteractionSpeech();
 				}
-				InvalidateSnapshot(label == WindowLabels.Pet ? "pet" : "windows");
+				InvalidateSnapshot();
 			};
-		}
-	}
-
-	// ===================================================================
-	// 启动装配
-	// ===================================================================
-
-	/// <summary>启动各子系统并接线事件</summary>
-	public void Start()
-	{
-		Emotion.Initialize();
-		if (!_petInteractionSubscribed && Services.PetRuntime is not null)
-		{
-			Services.PetRuntime.InteractionTriggered += OnPetInteractionTriggered;
-			Services.PetRuntime.ModelLoadRequested += CancelPetInteractionRequest;
-			Services.PetRuntime.ModelLoadRequested += CancelPetInteractionPresentation;
-			Services.PetRuntime.ModelLoadRequested += OnPetModelStateChanged;
-			Services.PetRuntime.ModelChanged += OnPetModelStateChanged;
-			Services.PetRuntime.ModelLoadFailed += OnPetModelStateChanged;
-			_petInteractionSubscribed = true;
-		}
-		Emotion.ExpressionRequested += expression =>
-		{
-			try
-			{
-				Services.PetRuntime?.PlayExpression(expression);
-			}
-			catch
-			{
-				/* 表情未匹配时忽略 */
-			}
-		};
-
-		// 回放持久化的工具禁用清单
-		if (Services.Config.Get("tools_disabled") is ConfigValue.Json {Value: JsonNode node})
-		{
-			try
-			{
-				List<string>? names = node.Deserialize<List<string>>(BridgeJson.Options);
-				if (names is {Count: > 0}) Tools.RestoreDisabled(names);
-			}
-			catch
-			{
-				/* 清单损坏时忽略 */
-			}
-		}
-
-		if (!Services.SafeMode)
-		{
-			Proactive.Message += message => Dispatcher.UIThread.Post(() => OnProactiveMessage(message));
-			// 情绪一变就扇出到各条表达通道；协调器自己做节流，这里不判。
-			Emotion.Changed += state => _ = Expression.ApplyAsync(state, Services.ShutdownToken);
-
-			// 上一次若是崩溃或被强制结束，桌面会停在她改过的样子。原值存在配置库里，
-			// 启动时先还原一次；用户仍开着这些通道的话，下一次情绪变化会重新改回去。
-			RestoreDesktopState();
-			Proactive.Start();
-
-			// 插件贡献动作 → AI 工具 (plugin 分类): 活跃插件变化时防抖刷新
-			if (Services.PluginRuntime is not null)
-			{
-				Services.PluginRuntime.ActivePluginsChanged += SchedulePluginToolsRefresh;
-				SchedulePluginToolsRefresh();
-			}
-
-			// Knowledge 和 Reflection 都在后台启动；索引或整理失败不能阻塞聊天。
-			_reflectionWorker.Start();
-			_reflectionWorker.TryEnqueue();
-			TrackBackground(InitializeKnowledgeAsync, "Memory.md index");
-			TrackBackground(() => Memory.ReembedAllAsync(_lifetimeCts.Token, false), "memory embedding rebuild");
-			TrackBackground(RunMemoryMaintenanceAsync, "memory lifecycle");
-		}
-
-		// 口型同步: 前端回传的播放音量采样直驱原生伴侣嘴型
-		_playback.VolumeSampled += level =>
-		{
-			try
-			{
-				Services.PetRuntime?.SetMouthOpen((float)level, true);
-			}
-			catch
-			{
-				/* 伴侣未加载时忽略 */
-			}
-		};
-		_playback.PlayingChanged += playing =>
-		{
-			try
-			{
-				Services.PetRuntime?.SetMouthOpen(0, playing);
-			}
-			catch
-			{
-				/* 伴侣未加载时忽略 */
-			}
-		};
-		Voice.SpeakingChanged += _ => InvalidateSnapshot("voice");
-
-		Voice.VolumeChanged += volume => _playback.SetDeviceVolume(volume);
-		_playback.SetDeviceVolume(Voice.GetVolume());
-
-		if (!Services.SafeMode)
-		{
-			DetectLegacyVoiceConfig();
-			TrackBackground(() => RefreshMcpToolsAsync(), "MCP tools refresh");
-		}
-
-		InvalidateSnapshot("all");
-	}
-
-	/// <summary>安全获取系统空闲秒数 (非 Windows 返回 null)</summary>
-	private static double? GetIdleSecondsSafe()
-	{
-		if (!OperatingSystem.IsWindows()) return null;
-		try
-		{
-			return SystemIdleTime.GetIdleSeconds();
-		}
-		catch
-		{
-			return null;
-		}
-	}
-
-	private void DetectLegacyVoiceConfig()
-	{
-		if (!Voice.HasRetiredVoiceConfig()) return;
-		string flagged = Services.Config.GetStringOr("voice_notice_pending", "");
-		if (flagged.Length > 0) return; // 已提示过或已处理
-		Services.Config.Set("voice_notice_pending", new ConfigValue.Text("1"));
-	}
-
-	private bool VoiceRetired() => VoiceService.RetiredProviders.Contains(Services.Config.GetStringOr("stt_provider", ""));
-
-	private void OnProactiveMessage(ProactiveMessage message)
-	{
-		try
-		{
-			Services.PetRuntime?.PlayMotionByName(message.Motion);
-			Services.PetRuntime?.PlayExpression(message.Expression);
-		}
-		catch
-		{
-			/* 伴侣未加载时忽略 */
-		}
-		BroadcastEvent("nori:proactive-message", new {text = message.Text});
-		bool autoTts = ParseBoolFlag(Services.Config.GetStringOr("tts_auto_play", "")) ?? false;
-		if (autoTts)
-		{
-			_ = SpeakSafelyAsync(message.Text);
-		}
-	}
-
-	private void CancelPetInteractionRequest() => CancelPetInteractionRequest(false);
-
-	/// <summary>取消当前伴侣 AI 请求；聊天抢占时只补发一次本地兜底。</summary>
-	private void CancelPetInteractionRequest(bool applyLocalFallback)
-	{
-		CancellationTokenSource? requestCts;
-		PetInteractionTrigger? fallback = null;
-		lock (_petInteractionThrottleGate)
-		{
-			requestCts = _petInteractionCts;
-			if (applyLocalFallback
-				&& !_activePetInteractionFallbackPosted
-				&& _activePetInteractionTrigger is { } trigger)
-			{
-				_activePetInteractionFallbackPosted = true;
-				fallback = trigger;
-			}
-		}
-		try { requestCts?.Cancel(); }
-		catch (ObjectDisposedException) { }
-		if (fallback is not null) PostPetInteractionFallback(fallback);
-	}
-
-	private void OnPetInteractionTriggered(PetInteractionTrigger trigger)
-	{
-		if (Volatile.Read(ref _disposed) != 0) return;
-		if (!IsPetInteractionAiEnabled() || !IsLlmConfigured() || _sessions.Count > 0)
-		{
-			PostPetInteractionFallback(trigger);
-			return;
-		}
-		if (!_petInteractionGate.Wait(0))
-		{
-			PostPetInteractionFallback(trigger);
-			return;
-		}
-
-		DateTimeOffset now = DateTimeOffset.UtcNow;
-		lock (_petInteractionThrottleGate)
-		{
-			if (now - _lastPetInteractionAt < TimeSpan.FromSeconds(3))
-			{
-				_petInteractionGate.Release();
-				PostPetInteractionFallback(trigger);
-				return;
-			}
-			_lastPetInteractionAt = now;
-		}
-
-		Task task = RunPetInteractionAsync(trigger);
-		TrackTask(task);
-	}
-
-	private async Task RunPetInteractionAsync(PetInteractionTrigger trigger)
-	{
-		using CancellationTokenSource requestCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-		lock (_petInteractionThrottleGate)
-		{
-			_petInteractionCts = requestCts;
-			_activePetInteractionTrigger = trigger;
-			_activePetInteractionFallbackPosted = false;
-		}
-		try
-		{
-			PetInteractionReactionRequest request = new()
-			{
-				ModelId = trigger.ModelId,
-				RegionId = trigger.Hit.Region.Id,
-				RegionName = trigger.Hit.Region.Name,
-				ModelX = trigger.Hit.ModelX,
-				ModelY = trigger.Hit.ModelY,
-				RegionX = trigger.Hit.RegionX,
-				RegionY = trigger.Hit.RegionY,
-				CurrentEmotion = Emotion.CurrentType,
-				AvailableMotions = Services.PetRuntime.MotionGroups
-					.Select(group => new MotionGroupInfo {Group = group.Group, Names = [.. group.Names]})
-					.ToArray(),
-				AvailableExpressions = Services.PetRuntime.Expressions.ToArray(),
-			};
-			PetInteractionReaction reaction = await _petInteractionService.ReactAsync(request, requestCts.Token).ConfigureAwait(false);
-			if (requestCts.IsCancellationRequested || !IsCurrentPetInteraction(trigger)) return;
-			await Dispatcher.UIThread.InvokeAsync(() =>
-			{
-				if (!requestCts.IsCancellationRequested) ApplyPetInteractionReaction(trigger, reaction);
-			});
-		}
-		catch (OperationCanceledException) when (requestCts.IsCancellationRequested || _lifetimeCts.IsCancellationRequested)
-		{
-			// 应用退出、模型切换、隐藏或聊天抢占时取消，不显示错误也不应用旧结果。
-		}
-		catch (Exception exception)
-		{
-			try { Services.Logger.Write(LogSource.Backend, "warn", $"伴侣 AI 互动失败: {SensitiveDataRedactor.ExceptionSummary(exception)}"); } catch { }
-			PostActivePetInteractionFallback(trigger, requestCts);
-		}
-		finally
-		{
-			lock (_petInteractionThrottleGate)
-			{
-				if (ReferenceEquals(_petInteractionCts, requestCts))
-				{
-					_petInteractionCts = null;
-					_activePetInteractionTrigger = null;
-					_activePetInteractionFallbackPosted = false;
-				}
-			}
-			_petInteractionGate.Release();
-		}
-	}
-
-	private void ApplyPetInteractionReaction(PetInteractionTrigger trigger, PetInteractionReaction reaction)
-	{
-		if (!IsCurrentPetInteraction(trigger)) return;
-		if (!string.IsNullOrWhiteSpace(reaction.Emotion) && EmotionTypes.IsValid(reaction.Emotion))
-		{
-			try { Emotion.SetEmotion(reaction.Emotion); } catch { }
-		}
-		if (!string.IsNullOrWhiteSpace(reaction.Motion)) Services.PetRuntime.PlayMotionByName(reaction.Motion);
-		if (!string.IsNullOrWhiteSpace(reaction.Expression)) Services.PetRuntime.PlayExpression(reaction.Expression);
-		if (string.IsNullOrWhiteSpace(reaction.Text)) return;
-		Services.Windows.ShowPetSpeech(reaction.Text);
-		bool autoTts = ParseBoolFlag(Services.Config.GetStringOr("tts_auto_play", "")) ?? false;
-		if (autoTts) StartPetInteractionSpeech(reaction.Text);
-	}
-
-	private void PostActivePetInteractionFallback(PetInteractionTrigger trigger, CancellationTokenSource requestCts)
-	{
-		bool shouldPost = false;
-		lock (_petInteractionThrottleGate)
-		{
-			if (ReferenceEquals(_petInteractionCts, requestCts) && !_activePetInteractionFallbackPosted)
-			{
-				_activePetInteractionFallbackPosted = true;
-				shouldPost = true;
-			}
-		}
-		if (shouldPost) PostPetInteractionFallback(trigger);
-	}
-
-	private void PostPetInteractionFallback(PetInteractionTrigger trigger)
-	{
-		Dispatcher.UIThread.Post(() =>
-		{
-			if (IsCurrentPetInteraction(trigger)) Services.PetRuntime.ApplyLocalInteraction(trigger.Hit.Region);
-		});
-	}
-
-	private bool IsCurrentPetInteraction(PetInteractionTrigger trigger) =>
-		Services.Windows.IsWindowVisible(WindowLabels.Pet)
-		&& Services.PetRuntime.CurrentModelId.Equals(trigger.ModelId, StringComparison.OrdinalIgnoreCase)
-		&& Services.PetRuntime.ModelGeneration == trigger.ModelGeneration;
-
-	private bool IsPetInteractionAiEnabled() =>
-		!Services.SafeMode
-		&& (ParseBoolFlag(Services.Config.GetStringOr(PetInteractionConfig.AiEnabledKey, "")) ?? false);
-
-	private bool IsLlmConfigured() => Services.AiSettings.Read().Chat.IsConfigured;
-
-	private void StartPetInteractionSpeech(string text)
-	{
-		CancelPetInteractionSpeech();
-		CancellationTokenSource speechCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-		lock (_petSpeechGate) _petSpeechCts = speechCts;
-		TrackTask(SpeakPetInteractionSafelyAsync(text, speechCts));
-	}
-
-	private void CancelPetInteractionPresentation()
-	{
-		CancelPetInteractionSpeech();
-		Dispatcher.UIThread.Post(Services.Windows.ClearPetSpeech);
-	}
-
-	private void OnPetModelStateChanged() => InvalidateSnapshot("models", "pet");
-
-	private void CancelPetInteractionSpeech()
-	{
-		CancellationTokenSource? speechCts;
-		lock (_petSpeechGate)
-		{
-			speechCts = _petSpeechCts;
-			_petSpeechCts = null;
-		}
-		try { speechCts?.Cancel(); }
-		catch (ObjectDisposedException) { }
-	}
-
-	private async Task SpeakPetInteractionSafelyAsync(string text, CancellationTokenSource speechCts)
-	{
-		try
-		{
-			// 伴侣互动朗读同样带上全局情绪状态，让 TTS 情感与表情联动一致。
-			TtsSynthesizeOptions speechOptions = new() {EmotionText = Emotion.CurrentType};
-			await Voice.SpeakAsync(text, speechOptions, speechCts.Token);
-		}
-		catch (OperationCanceledException) when (speechCts.IsCancellationRequested)
-		{
-			// 隐藏、切换模型、开始聊天或退出时取消，不作为播放失败。
-		}
-		catch (Exception exception)
-		{
-			try { Services.Logger.Write(LogSource.Backend, "warn", $"伴侣互动朗读失败: {SensitiveDataRedactor.ExceptionSummary(exception)}"); } catch { }
-		}
-		finally
-		{
-			lock (_petSpeechGate)
-			{
-				if (ReferenceEquals(_petSpeechCts, speechCts)) _petSpeechCts = null;
-			}
-			speechCts.Dispose();
-		}
-	}
-
-	private async Task SpeakSafelyAsync(string text)
-	{
-		try
-		{
-			await Voice.SpeakAsync(text);
-		}
-		catch (Exception exception)
-		{
-			try
-			{
-				Services.Logger.Write(LogSource.Backend, "warn", $"主动朗读失败: {SensitiveDataRedactor.ExceptionSummary(exception)}");
-			}
-			catch
-			{
-				// 日志失败保持静默
-			}
-		}
-	}
-
-	/// <summary>
-	/// 同步已连接 MCP 工具到 Agent 注册表。
-	/// 每个动态工具默认 confirm, 由 AgentRuntime 的逐调用授权链路 fail-closed 控制。
-	/// </summary>
-	public async Task RefreshMcpToolsAsync(CancellationToken cancellationToken = default)
-	{
-		// 安全模式不能通过聊天启动或其他间接路径刷新外部 MCP。
-		if (Services.SafeMode) return;
-
-		using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token, cancellationToken);
-		CancellationToken ct = linkedCts.Token;
-		bool entered = false;
-		string failureServerId = "unknown";
-		try
-		{
-			// 串行化刷新, 防止较早的慢刷新在较新的结果之后覆盖工具集合。
-			await _mcpRefreshGate.WaitAsync(ct).ConfigureAwait(false);
-			entered = true;
-			ct.ThrowIfCancellationRequested();
-
-			// 所有连接状态、Schema 和工具闭包都先在局部集合中完成。
-			// 任何失败或取消都不能触碰注册表中的上一版工具。
-			IReadOnlyList<McpServerStatusInfo> servers = await Services.Mcp.GetServersAsync().ConfigureAwait(false);
-			ct.ThrowIfCancellationRequested();
-
-			McpServerStatusInfo? unavailable = servers.FirstOrDefault(server =>
-				string.Equals(server.Status, "error", StringComparison.OrdinalIgnoreCase)
-				|| string.Equals(server.Status, "connecting", StringComparison.OrdinalIgnoreCase)
-				|| (!string.Equals(server.Status, "connected", StringComparison.OrdinalIgnoreCase)
-					&& !string.Equals(server.Status, "disconnected", StringComparison.OrdinalIgnoreCase)));
-			if (unavailable is not null)
-			{
-				LogMcpRefreshFailure(
-					unavailable.ServerId,
-					string.Equals(unavailable.Status, "error", StringComparison.OrdinalIgnoreCase)
-						? "server-error"
-						: "server-not-ready");
-				return;
-			}
-
-			List<RegisteredTool> replacements = [];
-			HashSet<string> replacementNames = new(StringComparer.Ordinal);
-			foreach (McpServerStatusInfo server in servers.Where(server =>
-				string.Equals(server.Status, "connected", StringComparison.OrdinalIgnoreCase)))
-			{
-				failureServerId = server.ServerId;
-				foreach (McpToolDefinition definition in server.Tools)
-				{
-					ct.ThrowIfCancellationRequested();
-					string serverId = server.ServerId;
-					string toolName = definition.Name;
-					if (string.IsNullOrWhiteSpace(serverId) || string.IsNullOrWhiteSpace(toolName))
-						throw new InvalidOperationException("MCP 工具定义无效");
-
-					string fullName = $"mcp__{serverId}__{toolName}";
-					if (!replacementNames.Add(fullName))
-						throw new InvalidOperationException("MCP 工具名称重复");
-
-					JsonObject schema = ToolLimits.CapSchema(definition.InputSchema);
-					replacements.Add(new RegisteredTool
-					{
-						Name = fullName,
-						Description = $"[{server.Name}] {McpConfigValidator.CapDescription(definition.Description ?? toolName)}",
-						Parameters = schema,
-						PermissionLevel = "confirm",
-						Category = McpToolCategory,
-						Execute = async (arguments, context) =>
-						{
-							JsonObject? objectArguments = arguments as JsonObject;
-							McpToolResult result = await Services.Mcp.CallToolAsync(serverId, toolName, objectArguments, context.CancellationToken);
-							if (result.IsError) throw new InvalidOperationException(result.AsText());
-							return result.AsText();
-						},
-					});
-				}
-			}
-
-			ct.ThrowIfCancellationRequested();
-			failureServerId = "unknown";
-			Tools.ReplaceCategory(McpToolCategory, replacements);
-		}
-		catch (OperationCanceledException) when (ct.IsCancellationRequested)
-		{
-			LogMcpRefreshFailure(failureServerId, "cancelled");
-			throw;
-		}
-		catch (Exception exception)
-		{
-			// 只记录服务 ID 和固定类别, 不写入异常正文、Schema、参数或工具结果。
-			LogMcpRefreshFailure(failureServerId, McpRefreshErrorCategory(exception));
-		}
-		finally
-		{
-			if (entered) _mcpRefreshGate.Release();
-		}
-	}
-
-	private void LogMcpRefreshFailure(string? serverId, string category)
-	{
-		string safeServerId = CapMcpLogPart(serverId, McpRefreshLogServerIdMaxCharacters);
-		string safeCategory = CapMcpLogPart(category, 32);
-		string message = $"MCP 工具刷新失败: server_id={safeServerId} category={safeCategory}";
-		if (message.Length > McpRefreshLogMaxCharacters) message = message[..McpRefreshLogMaxCharacters];
-		try { Services.Logger.Write(LogSource.Backend, "warn", message); }
-		catch { }
-	}
-
-	private static string McpRefreshErrorCategory(Exception exception) => exception switch
-	{
-		OperationCanceledException => "cancelled",
-		TimeoutException => "timeout",
-		JsonException => "schema",
-		IOException => "transport",
-		ObjectDisposedException => "lifecycle",
-		InvalidOperationException => "definition",
-		_ => "refresh",
-	};
-
-	private static string CapMcpLogPart(string? value, int maxCharacters)
-	{
-		if (string.IsNullOrEmpty(value) || maxCharacters <= 0) return "unknown";
-		return value.Length <= maxCharacters ? value : value[..maxCharacters];
-	}
-
-	/// <summary>活跃插件集合变化后防抖刷新插件工具。</summary>
-	private void SchedulePluginToolsRefresh()
-	{
-		_pluginToolsRefreshTimer?.Dispose();
-		_pluginToolsRefreshTimer = new Timer(
-			_ => { _ = RefreshPluginToolsAsync(); },
-			null, PluginToolsRefreshDebounceMs, Timeout.Infinite);
-	}
-
-	private async Task RefreshPluginToolsAsync()
-	{
-		if (Volatile.Read(ref _disposed) != 0) return;
-		PluginRuntimeHost? pluginRuntime = Services.PluginRuntime;
-		if (pluginRuntime is null) return;
-		bool entered = false;
-		try
-		{
-			if (!await _pluginToolsRefreshGate.WaitAsync(0).ConfigureAwait(false)) return;
-			entered = true;
-
-			List<RegisteredTool> tools = [];
-			HashSet<string> names = new(StringComparer.Ordinal);
-			foreach ((PluginDescriptor plugin, IPluginActionContribution action) in pluginRuntime.GetContributionsWithSource<IPluginActionContribution>())
-			{
-				if (string.IsNullOrWhiteSpace(action.Id)) continue;
-				string pluginName = plugin.Id.Replace('.', '_');
-				string fullName = $"plugin__{pluginName}__{action.Id}";
-				if (!names.Add(fullName)) continue;
-				tools.Add(new RegisteredTool
-				{
-					Name = fullName,
-					Description = $"[{plugin.Name}] {action.Description}",
-					Parameters = ToolLimits.CapSchema(action.ParametersSchema as JsonObject ?? new JsonObject()),
-					PermissionLevel = "safe",
-					Category = PluginToolCategory,
-					Execute = async (arguments, context) =>
-						await action.InvokeAsync(arguments, context.CancellationToken).ConfigureAwait(false),
-				});
-			}
-			Tools.ReplaceCategory(PluginToolCategory, tools);
-		}
-		catch (Exception exception)
-		{
-			// 只记录类别与摘要, 不写入插件参数或结果
-			try { Services.Logger.Write(LogSource.Backend, "warn", $"插件工具刷新失败: {SensitiveDataRedactor.ExceptionSummary(exception)}"); }
-			catch { }
-		}
-		finally
-		{
-			if (entered) _pluginToolsRefreshGate.Release();
-		}
-	}
-
-	/// <summary>
-	/// 改完工作目录之后重建内建工具。
-	///
-	/// 文件工具在注册时将工作目录捕获进闭包，不重建则配置变更要到下次启动才生效，表现为保存
-	/// 未成功。MCP 与插件工具按各自分类原子替换，本方法不涉及。
-	/// </summary>
-	public void RebuildTools()
-	{
-		WorkspaceAccess workspace = ResolveWorkspace();
-		WorkspaceTools.RegisterAll(Tools, workspace);
-		RegisterTaskTools(Tools, workspace);
-		RegisterScreenTools(Tools);
-		DeviceTools.RegisterAll(Tools, RefreshDevices);
-	}
-
-	/// <summary>
-	/// 注册读屏工具。用户未显式开启、或处于安全模式时不注册。
-	///
-	/// 授权与工作目录分开：文件访问的范围是用户挑的一个文件夹，屏幕上会出现什么他在授权那一刻
-	/// 无从预料。能力是否具备（平台支持、模型已配）由 ScreenTools 自己判断。
-	/// </summary>
-	private void RegisterScreenTools(ToolRegistry registry)
-	{
-		bool allowed = !Services.SafeMode
-			&& Services.Config.GetBoolOr(ConfigStore.KeyScreenReadingEnabled, false);
-		ScreenTools.RegisterAll(registry, allowed ? ScreenCapture : null, allowed ? VisionAnalyzer : null);
-	}
-
-	/// <summary>读屏实现；非 Windows 暂无实现，返回 null 即整组不注册。</summary>
-	private IScreenCapture? ScreenCapture =>
-		OperatingSystem.IsWindows() ? _screenCapture ??= new WindowsScreenCapture() : null;
-
-	/// <summary>截图分析器，走当前聊天 Provider 的多模态能力。</summary>
-	private IVisionAnalyzer VisionAnalyzer =>
-		_visionAnalyzer ??= new ChatVisionAnalyzer(Services.Chat, Services.AiSettings);
-
-	/// <summary>
-	/// 注册 runTask。没有任务时直接注销并返回，**不触碰 <see cref="Sandbox"/>**。
-	///
-	/// 建立启动器在 Windows 上会创建 AppContainer 配置文件，那是持久的机器状态。没配任务的
-	/// 用户不该平白多出这份东西。
-	/// </summary>
-	private void RegisterTaskTools(ToolRegistry registry, WorkspaceAccess workspace)
-	{
-		IReadOnlyList<WorkspaceTask> tasks = ResolveTasks();
-		if (!workspace.IsConfigured || tasks.Count == 0)
-		{
-			registry.Unregister(TaskTools.RunTaskName);
-			return;
-		}
-
-		TaskTools.RegisterAll(registry, workspace, tasks, Sandbox);
-	}
-
-	/// <summary>
-	/// 受限执行的启动器，首次使用时建立。
-	///
-	/// 延迟到首次使用：Windows 上建立它会创建 AppContainer 配置文件，没配任务的用户不该
-	/// 平白多出这份状态。
-	/// </summary>
-	private ISandboxLauncher Sandbox => _sandbox ??= Services.Sandbox ?? SandboxLauncherFactory.Create();
-
-	/// <summary>
-	/// 情绪表达的通道清单。
-	///
-	/// 与协调器分开持有，因为默认开关值要按通道的侵入等级取 —— 若经协调器去查，
-	/// 构造协调器时又要用到开关判定，就成了自引用。
-	/// </summary>
-	private IReadOnlyList<IExpressionChannel> ExpressionChannels => _expressionChannels ??=
-	[
-		new TrayIconChannel(() => Tray.TrayMenu.Current, RunOnUi),
-		new SpeechBorderChannel(() => Services.Windows.Pet?.SpeechOverlay, RunOnUi),
-		RgbChannel,
-		AmbientChannel,
-		AccentChannel,
-	];
-
-	/// <summary>灯效通道。设备探测与重连由它自己管。</summary>
-	private RgbLightingChannel RgbChannel => _rgbChannel ??= new RgbLightingChannel();
-
-	/// <summary>环境音通道。这一版只有壳：没有素材时恒为不可用。</summary>
-	private AmbientSoundChannel AmbientChannel => _ambientChannel ??=
-		new AmbientSoundChannel(Path.Combine(Services.Paths.DataRoot, "soundscapes"));
-
-	/// <summary>改持久系统设置前的原值备份。</summary>
-	private DesktopStateBackup DesktopBackup => _desktopBackup ??= new DesktopStateBackup(Services.Config);
-
-	private IDesktopAppearance Appearance => _appearance ??=
-		OperatingSystem.IsWindows() ? new WindowsDesktopAppearance() : new UnsupportedDesktopAppearance();
-
-	private AccentColorChannel AccentChannel => _accentChannel ??= new AccentColorChannel(Appearance, DesktopBackup);
-
-	/// <summary>
-	/// 把改过的桌面设置还回去。
-	///
-	/// 三个时机都要调：关掉某条通道、退出应用、以及**启动时** —— 上一次若是崩溃或被强制结束，
-	/// 桌面会停在她改过的样子，而原值存在配置库里，下次启动仍然还得回来。
-	/// </summary>
-	/// <summary>丢掉设备探测缓存，下次访问时重新探测。用户刚开 OpenRGB、刚插新外设时用。</summary>
-	public IReadOnlyList<string> RefreshDevices()
-	{
-		RgbChannel.Invalidate();
-		return [.. RgbChannel.Devices.Select(device => device.Name)];
-	}
-
-	public void RestoreDesktopState()
-	{
-		foreach (Action restore in new Action[] {AccentChannel.Restore})
-		{
-			try
-			{
-				restore();
-			}
-			catch (Exception exception) when (exception is InvalidOperationException or IOException
-				or UnauthorizedAccessException)
-			{
-				Services.Logger.Write(LogSource.Backend, "warn", $"还原桌面设置失败: {exception.Message}");
-			}
-		}
-	}
-
-	/// <summary>情绪表达的扇出协调器。通道自己判断可用性，协调器只负责过滤与节流。</summary>
-	private ExpressionCoordinator Expression => _expression ??= new ExpressionCoordinator(
-		ExpressionChannels,
-		IsExpressionChannelEnabled,
-		(key, exception) =>
-			Services.Logger.Write(LogSource.Backend, "warn", $"情绪表达通道失败 [{key}]: {exception.Message}"));
-
-	/// <summary>
-	/// 某条表达通道开没开。
-	///
-	/// 缺省值按侵入等级取：Global 档（系统强调色）默认关，其余默认开 —— 用户没表过态时
-	/// 不该被改掉整个桌面的颜色。
-	/// </summary>
-	private bool IsExpressionChannelEnabled(string key) =>
-		Services.Config.GetBoolOr(
-			key,
-			ExpressionChannels.FirstOrDefault(channel => channel.Key == key)?.Level != Intrusiveness.Global);
-
-	private static void RunOnUi(Action action) => Dispatcher.UIThread.Post(action);
-
-	/// <summary>
-	/// 已经可用的启动器，**不触发创建**：已建好的优先，其次是注入的，都没有则为空。
-	///
-	/// 报告隔离强度与释放授权都不该把容器建出来，但都必须尊重注入 —— 这条规则写在一处，
-	/// 两边共用。分开写过一次，结果是两处各漏了一次注入。
-	/// </summary>
-	private ISandboxLauncher? ExistingSandbox => _sandbox ?? Services.Sandbox;
-
-	/// <summary>当前该给 runTask 哪些任务。安全模式下一条都不给，判据与文件工具一致。</summary>
-	/// <summary>
-	/// 当前授予过持久权限的路径集合：工作目录，加上各条任务的可执行文件所在目录。
-	///
-	/// 与 <see cref="RegisterTaskTools"/> 用的是同一套推导，两处必须一致 —— 授权面算少了会残留，
-	/// 算多了会去动没授权过的目录的 ACL。
-	/// </summary>
-	public IReadOnlyList<string> CurrentGrantPaths()
-	{
-		WorkspaceAccess workspace = ResolveWorkspace();
-		if (!workspace.IsConfigured) return [];
-
-		List<string> paths = [workspace.Root];
-		foreach (WorkspaceTask task in ResolveTasks())
-		{
-			paths.AddRange(TaskTools.ExecutableDirectories(task.Command));
-		}
-
-		return [.. paths.Distinct(StringComparer.OrdinalIgnoreCase)];
-	}
-
-	/// <summary>
-	/// 释放已经不再需要的持久授权。
-	///
-	/// Windows 上授权写进文件系统 ACL，不随进程结束消失。工作目录换掉、任务删掉之后不释放，
-	/// ACE 就永远留在用户的目录上 —— 用户看不见，也无从清理。
-	///
-	/// 只释放「旧的减新的」：仍在用的路径撤了还得立刻加回来，反复增删 ACE 只会放大出错面。
-	/// 调用方需要在改配置**之前**取一次 <see cref="CurrentGrantPaths"/> 作为 previous。
-	/// </summary>
-	public void ReleaseStaleGrants(IReadOnlyList<string> previous)
-	{
-		ArgumentNullException.ThrowIfNull(previous);
-		if (previous.Count == 0) return;
-
-		HashSet<string> keep = new(CurrentGrantPaths(), StringComparer.OrdinalIgnoreCase);
-		string[] stale = [.. previous.Where(path => !keep.Contains(path))];
-		if (stale.Length == 0) return;
-
-		// 不走 Sandbox 属性：它会顺手把容器建出来，清理路径上是反效果。
-		ISandboxLauncher launcher = ExistingSandbox ?? SandboxLauncherFactory.CreateForRelease();
-		foreach (string path in stale)
-		{
-			try
-			{
-				launcher.Release(new SandboxPolicy { WorkspaceRoot = path });
-			}
-			catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
-			{
-				// 目录已被删除或权限不足；残留一条 ACE 不影响功能，记录即可。
-				Services.Logger.Write(LogSource.Backend, "warn", $"释放沙箱授权失败 [{path}]: {exception.Message}");
-			}
 		}
 	}
 
@@ -1062,1011 +266,18 @@ public sealed partial class AppRuntime : IAsyncDisposable
 	private IScreenCapture? _screenCapture;
 	private IVisionAnalyzer? _visionAnalyzer;
 
-	private IReadOnlyList<WorkspaceTask> ResolveTasks() =>
-		Services.SafeMode
-			? []
-			: WorkspaceTaskList.Read(Services.Config.Get(ConfigStore.KeyWorkspaceTasks));
-
-	/// <summary>
-	/// 当前该给文件工具哪个工作目录。构建与重建共用这一处判据。
-	///
-	/// 安全模式返回未配置：该组工具虽不产生网络请求，但具备对宿主文件系统的读写能力。只在
-	/// 构建时判、不在重建时判的话，安全模式下改一次设置就会把工具注册回来。
-	/// </summary>
-	private WorkspaceAccess ResolveWorkspace() =>
-		Services.SafeMode
-			? new WorkspaceAccess("")
-			: new WorkspaceAccess(Services.Config.GetStringOr(ConfigStore.KeyWorkspaceRoot, ""));
-
-	private ToolRegistry BuildToolRegistry(bool audioAvailable)
-	{
-		ToolRegistry registry = new();
-		BuiltinTools.RegisterAll(registry, new BuiltinToolDeps
-		{
-			Memory = Memory,
-			Emotion = Emotion,
-			Proactive = Proactive,
-			Pet = new PetActionsAdapter(() => Services.PetRuntime),
-			Clipboard = audioAvailable ? new AvaloniaClipboardOps(() => Services.Windows.Get(WindowLabels.Main)) : null,
-			SystemInfo = new DesktopSystemInfo(Services.Config),
-			Fetcher = new WebPageFetcher(Services.PublicHttp),
-			Http = Services.PublicHttp,
-			Config = Services.Config,
-			OpenUrl = url => ShellOpen.OpenUrl(url),
-		});
-
-		// 文件工具仅在配置了工作目录时注册。安全模式下一并跳过：该组工具虽不产生网络请求，
-		// 但具备对宿主文件系统的读写能力，属于安全模式要禁用的范围。判据与 RebuildTools 共用。
-		WorkspaceAccess workspace = ResolveWorkspace();
-		WorkspaceTools.RegisterAll(registry, workspace);
-		RegisterTaskTools(registry, workspace);
-		RegisterScreenTools(registry);
-		DeviceTools.RegisterAll(registry, RefreshDevices);
-		return registry;
-	}
-
-	private IReadOnlyList<string> FlattenMotionNames()
-	{
-		IReadOnlyList<Core.Live2D.MotionGroupInfo>? groups = Services.PetRuntime?.MotionGroups;
-		if (groups is null || groups.Count == 0) return [];
-		return groups.SelectMany(group => group.Names).Distinct().ToList();
-	}
-
-	// ===================================================================
-	// 聊天会话
-	// ===================================================================
-
-	/// <summary>
-	/// 启动一次 Agent 会话; 返回 sessionId 供取消/授权关联
-	/// </summary>
-	public string StartChat(IBridgeSource source, string text)
-	{
-		if (Volatile.Read(ref _disposed) != 0) throw new InvalidOperationException("应用正在退出");
-		if (Services.SafeMode) throw new InvalidOperationException("安全模式已禁用联网和外部服务");
-		Nori.Desktop.Chat.NativeChatService.ValidateSourceCommand(source, "chat_start");
-		if (source is not INativeChatSource && source.Label != WindowLabels.Main)
-			throw new InvalidOperationException("来源窗口无权发起对话");
-		if (string.IsNullOrWhiteSpace(text)) throw new InvalidOperationException("消息内容不能为空");
-		string sessionId = $"agent-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds():x}-{Interlocked.Increment(ref _sessionCounter):x}";
-		CancellationToken lifetimeToken = _lifetimeCts.Token;
-		AgentSessionState session = new(source, lifetimeToken);
-		AgentSessionLease lease;
-		try
-		{
-			session.Cts.Token.ThrowIfCancellationRequested();
-			// 在返回 sessionId 前预留引擎闸门，消除后台线程尚未启动时的清空/重入窗口。
-			lease = Engine.ReserveSession(sessionId, session.Cts.Token);
-		}
-		catch { session.Dispose(); throw; }
-		_sessions[sessionId] = session;
-
-		AgentCallbacks callbacks = new()
-		{
-			OnState = state => PostAgentEvent(session.Source, new {type = "state", sessionId, state = state.ToString().ToLowerInvariant()}),
-			OnTextChunk = chunk => PostAgentEvent(session.Source, new {type = "chunk", sessionId, chunk}),
-			OnToolExecuting = (name, args) => PostAgentEvent(session.Source, new {type = "tool-executing", sessionId, toolName = name, arguments = args}),
-			OnToolExecuted = (name, result, error) => PostAgentEvent(session.Source, new
-			{
-				type = "tool-executed",
-				sessionId,
-				toolName = name,
-				result = ToJsonNode(result),
-				success = error is null,
-				error = error is null ? null : SensitiveDataRedactor.Redact(error),
-			}),
-			OnUsage = usage => PostAgentEvent(session.Source, new
-			{
-				type = "usage", sessionId,
-				promptTokens = usage.PromptTokens, completionTokens = usage.CompletionTokens,
-				totalTokens = usage.TotalTokens, cachedTokens = usage.CachedTokens,
-				cacheHitRate = usage.CacheHitRate, durationMs = usage.DurationMs, model = usage.Model,
-			}),
-			RequestApproval = request => RequestApprovalAsync(session.Source, sessionId, request, session.Cts.Token),
-		};
-
-		Task worker = Task.Run(async () =>
-		{
-			object terminal;
-			ProtocolMessage? final = null;
-			try
-			{
-				using ITelemetryTransaction operation = Services.Telemetry.StartTransaction("agent.run");
-				// 聊天优先于伴侣轻量互动，但两者不共用聊天历史。
-				CancelPetInteractionRequest(true);
-				CancelPetInteractionPresentation();
-				await RefreshMcpToolsAsync(session.Cts.Token);
-				final = await Engine.RunAsync(text, sessionId, callbacks, session.Cts.Token, lease);
-				if (!Services.SafeMode) _reflectionWorker.TryEnqueue();
-				terminal = new
-				{
-					type = "complete", sessionId,
-					message = new {text = final.Text, emotion = final.Emotion, expression = final.Expression, action = final.Action},
-				};
-			}
-			catch (OperationCanceledException) { terminal = new {type = "cancelled", sessionId}; }
-			catch (Exception exception)
-			{
-				terminal = new {type = "error", sessionId, error = SensitiveDataRedactor.Redact(exception.Message)};
-			}
-			finally
-			{
-				lease.Dispose();
-				_sessions.TryRemove(sessionId, out _);
-				session.Dispose();
-				// 「本轮记住」记的就是这一轮。轮结束必须忘掉，否则下一轮会继承上一轮的同意。
-				Permissions.ForgetTurn(sessionId);
-			}
-			// 终结事件意味着引擎与落库已结束，清空/下一轮不再被自动朗读占用。
-			PostAgentEvent(session.Source, terminal);
-			if (final is not null) await AutoSpeakAsync(final.Text, final.Emotion, lifetimeToken);
-		});
-		session.Worker = worker;
-		TrackTask(worker);
-		return sessionId;
-	}
-
 	private int _sessionCounter;
-
-	private async Task AutoSpeakAsync(string text, string? messageEmotion, CancellationToken ct)
-	{
-		if (string.IsNullOrWhiteSpace(text)) return;
-		bool autoTts = ParseBoolFlag(Services.Config.GetStringOr("tts_auto_play", "")) ?? false;
-		if (!autoTts || Services.SafeMode || ct.IsCancellationRequested) return;
-
-		// 情绪自动推断：优先本条 AI 回复自带情绪，否则用全局情绪状态机当前值；
-		// 都没有 (或为 neutral) 时不传情绪，让 TTS 用音色自带情绪。
-		string? emotion = string.IsNullOrWhiteSpace(messageEmotion) ? Emotion.CurrentType : messageEmotion.Trim();
-		TtsSynthesizeOptions speechOptions = new() {EmotionText = emotion};
-		try
-		{
-			await Voice.SpeakAsync(text, speechOptions, ct);
-		}
-		catch
-		{
-			/* 自动朗读失败不阻断完成事件 */
-		}
-	}
-
-	/// <summary>取消指定来源窗口的会话</summary>
-	public bool CancelChat(IBridgeSource source, string sessionId)
-	{
-		if (!_sessions.TryGetValue(sessionId, out AgentSessionState? session) || !IsSameSource(source, session.Source)) return false;
-		try { session.Cts.Cancel(); }
-		catch (ObjectDisposedException) { return false; }
-		return true;
-	}
-
-	private static bool IsSameSource(IBridgeSource source, IBridgeSource owner) =>
-		source is INativeChatSource || owner is INativeChatSource
-			? ReferenceEquals(source, owner)
-			: source.Label == owner.Label;
-
-	/// <summary>会话是否仍在运行</summary>
-	public bool IsSessionActive(string sessionId) => _sessions.ContainsKey(sessionId);
-
-	// ===================================================================
-	// 工具授权
-	// ===================================================================
-
-	/// <summary>
-	/// 授权档位。运行期只有这一份 —— 「本轮记住」的记忆挂在它身上，换一个实例等于失忆。
-	/// </summary>
-	public ToolPermissionPolicy Permissions { get; } = new();
-
-	/// <summary>配置里存的档位（不看是否到期）。</summary>
-	public PermissionGear StoredGear =>
-		ToolPermissionPolicy.Parse(Services.Config.GetStringOr(ToolPermissionPolicy.KeyGear, ""));
-
-	/// <summary>完全放行的到期时刻；没存过则为 null。</summary>
-	public DateTimeOffset? BypassUntil =>
-		ToolPermissionPolicy.ParseDeadline(Services.Config.GetStringOr(ToolPermissionPolicy.KeyBypassUntil, ""));
-
-	/// <summary>真正生效的档位：存的是完全放行但已过期时，按完全授权走。</summary>
-	public PermissionGear EffectiveGear =>
-		ToolPermissionPolicy.Effective(StoredGear, BypassUntil, DateTimeOffset.UtcNow);
-
-	internal async Task<bool> RequestApprovalAsync(IBridgeSource source, string sessionId, ToolApprovalRequest request, CancellationToken cancellationToken)
-	{
-		// 安全模式排在档位之前：它是「什么都不做」，不是「不用问」。把 bypass 打开也不能
-		// 让安全模式放行 —— 那会让一个用来收拾残局的开关变成最宽的那一档。
-		if (Services.SafeMode) return false;
-
-		/* ── 档位 ──────────────────────────────────────────────────────────
-		 * 判定在**发事件之前**。放在之后（发了卡片再自动点掉）会让界面闪一下
-		 * 又消失，用户以为自己看漏了什么。 */
-		if (Permissions.Decide(EffectiveGear, sessionId, request.ToolName, request.PermissionLevel)
-			== PermissionDecision.Allow)
-		{
-			// 自动放行也要留痕：出事时要答得出「她什么时候做的、按的哪一档」。
-			Services.Logger.Write(LogSource.Backend, "info",
-				$"按档位自动放行：{request.ToolName}（{ToolPermissionPolicy.Format(EffectiveGear)}）");
-			return true;
-		}
-
-		using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
-			cancellationToken, request.CancellationToken, _lifetimeCts.Token,
-			source is INativeChatSource native ? native.LifetimeToken : CancellationToken.None);
-		PendingApproval approval = new(request.RequestId, request.ToolName, source, sessionId,
-			request.DeadlineUtc ?? DateTimeOffset.UtcNow.AddSeconds(AgentEngine.CallTimeoutSeconds), linked.Token);
-		lock (_approvalGate)
-		{
-			if (linked.IsCancellationRequested || approval.DeadlineUtc <= DateTimeOffset.UtcNow
-				|| !_approvals.TryAdd(request.RequestId, approval)) return false;
-			approval.ArmTimeout(() => ExpireApproval(approval));
-			PostAgentEvent(source, new
-			{
-				type = "approval-request", sessionId, requestId = request.RequestId,
-				toolName = request.ToolName, arguments = request.Arguments,
-				description = request.Description, permissionLevel = request.PermissionLevel,
-				category = request.Category, deadlineUtc = approval.DeadlineUtc,
-			});
-		}
-		// 通知在锁外发：它要起 COM、要建快捷方式，不该把授权锁按住那么久。
-		ShowApprovalNotice(request);
-		// 工具轮次自身先超时或退出时，立即撤销授权卡，而不是留下一张已失效的可批准卡片。
-		using CancellationTokenRegistration cancelled = linked.Token.Register(() =>
-		{
-			lock (_approvalGate) FinishApproval(approval, false, "cancelled");
-		});
-		return await approval.Tcs.Task.ConfigureAwait(false);
-	}
-
-	private void ExpireApproval(PendingApproval approval)
-	{
-		lock (_approvalGate)
-		{
-			if (!_approvals.TryGetValue(approval.RequestId, out PendingApproval? current) || !ReferenceEquals(current, approval)) return;
-			// 延期前已排队的旧定时器回调不能让新期限提前失效。
-			if (approval.DeadlineUtc > DateTimeOffset.UtcNow) { approval.RearmTimeout(); return; }
-			FinishApproval(approval, false, "timeout");
-		}
-	}
-
-	private bool FinishApproval(PendingApproval approval, bool approved, string reason)
-	{
-		if (!_approvals.TryRemove(new KeyValuePair<string, PendingApproval>(approval.RequestId, approval))) return false;
-		approval.Dispose();
-		// 无论从哪条路结束的，屏幕上那条都要收掉 —— 留一张点了没反应的卡片比不弹更糟。
-		_notifier.Hide(approval.RequestId);
-		// 只有用户**真的按了允许**才记。超时、取消、拒绝都不是同意 —— 把它们也记进来，
-		// 等于一次没人看见的超时换来后面整轮的静默放行。
-		if (approved) Permissions.Remember(approval.SessionId, approval.ToolName);
-		PostAgentEvent(approval.Source, new
-		{
-			type = "approval-result", sessionId = approval.SessionId, requestId = approval.RequestId, approved, reason,
-		});
-		return approval.Tcs.TrySetResult(approved);
-	}
-
-	/// <summary>延长原始来源的待决授权，返回不超过工具实际期限的服务端截止时间。</summary>
-	public DateTimeOffset ExtendApproval(IBridgeSource source, string requestId)
-	{
-		lock (_approvalGate)
-		{
-			if (!_approvals.TryGetValue(requestId, out PendingApproval? approval) || !IsSameSource(source, approval.Source))
-				throw new InvalidOperationException("授权请求不存在或不属于当前窗口");
-			if (approval.DeadlineUtc <= DateTimeOffset.UtcNow)
-			{
-				FinishApproval(approval, false, "timeout");
-				throw new InvalidOperationException("授权请求已超时");
-			}
-			if (approval.CancellationToken.IsCancellationRequested)
-			{
-				FinishApproval(approval, false, "cancelled");
-				throw new InvalidOperationException("授权请求已取消");
-			}
-			if (source is INativeChatSource && !source.IsVisible)
-				throw new InvalidOperationException("对话窗口不可见，无法延长工具授权");
-			approval.Extend();
-			PostAgentEvent(approval.Source, new
-			{
-				type = "approval-extended", sessionId = approval.SessionId, requestId, deadlineUtc = approval.DeadlineUtc,
-			});
-			return approval.DeadlineUtc;
-		}
-	}
-
-	/// <summary>等待桌面或浏览器高风险动作的用户决定；未装配或取消时一律不自动放行。</summary>
-	internal async Task<AutomationApprovalDecision> RequestAutomationApprovalAsync(
-		AutomationApprovalRequest request,
-		CancellationToken cancellationToken)
-	{
-		if (Services.SafeMode)
-		{
-			Services.Automation?.RecordApprovalOutcome(request, AutomationApprovalOutcome.Denied);
-			return AutomationApprovalDecision.Create(request, AutomationApprovalOutcome.Denied, DateTimeOffset.UtcNow);
-		}
-
-		/* ── 档位 ──────────────────────────────────────────────────────────
-		 * 接管鼠标键盘按 **dangerous** 算，不按 confirm：
-		 *
-		 * 它和「改一个文件」不是一个量级 —— 动的是你正在用的那套输入设备，出错时
-		 * 你连夺回控制的动作都要和她抢。所以「完全授权」这一档仍然逐次问，只有
-		 * 「完全放行」才免掉。这也正是那两档在今天唯一真实的差别：内置工具目前
-		 * 没有一个注册成 dangerous。
-		 *
-		 * 自动化自己的那几个开关（allowPointer / allowKeyboard / allowScroll）在这
-		 * 之外，档位放宽不了它们 —— 没打开的东西，哪一档都动不了。 */
-		if (Permissions.Decide(EffectiveGear, request.RequestId.ToString("D"), "automation", "dangerous")
-			== PermissionDecision.Allow)
-		{
-			Services.Logger.Write(LogSource.Backend, "info",
-				$"按档位自动放行自动化：{string.Join('/', request.ActionKinds)}（{ToolPermissionPolicy.Format(EffectiveGear)}）");
-			Services.Automation?.RecordApprovalOutcome(request, AutomationApprovalOutcome.Approved);
-			return AutomationApprovalDecision.Create(request, AutomationApprovalOutcome.Approved, DateTimeOffset.UtcNow);
-		}
-
-		TaskCompletionSource<bool> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
-		PendingDesktopApproval approval = new(request, tcs);
-		if (!_desktopApprovals.TryAdd(request.RequestId.ToString("D"), approval))
-		{
-			Services.Automation?.RecordApprovalOutcome(request, AutomationApprovalOutcome.Denied);
-			return AutomationApprovalDecision.Create(request, AutomationApprovalOutcome.Denied, DateTimeOffset.UtcNow);
-		}
-
-		Services.Automation?.SetAutomationApproval(request);
-		approval.ArmTimeout(ApprovalTimeoutSeconds, () =>
-		{
-			if (_desktopApprovals.TryRemove(request.RequestId.ToString("D"), out PendingDesktopApproval? expired))
-			{
-				expired.Tcs.TrySetResult(false);
-				expired.Dispose();
-				Services.Automation?.ClearAutomationApproval(request.RequestId);
-				Services.Automation?.RecordApprovalOutcome(request, AutomationApprovalOutcome.Expired);
-				PostAgentEvent(WindowLabels.Main, new
-				{
-					type = "approval-result",
-					requestId = request.RequestId,
-					approved = false,
-					reason = "timeout",
-				});
-			}
-		});
-		PostAgentEvent(WindowLabels.Main, new
-		{
-			type = "approval-request",
-			requestId = request.RequestId,
-			taskId = request.TaskId,
-			actionKinds = request.ActionKinds,
-			permissionLevel = "confirm",
-			category = "automation",
-			deadlineUtc = approval.DeadlineUtc,
-		});
-
-		try
-		{
-			bool approved = await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-			return AutomationApprovalDecision.Create(
-				request,
-				approved ? AutomationApprovalOutcome.Approved : AutomationApprovalOutcome.Denied,
-				DateTimeOffset.UtcNow);
-		}
-		catch (OperationCanceledException)
-		{
-			Services.Automation?.RecordApprovalCancellation(request);
-			throw;
-		}
-		finally
-		{
-			if (_desktopApprovals.TryRemove(request.RequestId.ToString("D"), out PendingDesktopApproval? removed))
-			{
-				removed.Dispose();
-				Services.Automation?.ClearAutomationApproval(request.RequestId);
-			}
-		}
-	}
-
-	/// <summary>
-	/// 回传授权决定; 只允许原始窗口响应。原生设置窗口可在明确可信上下文中
-	/// 响应主窗口发起的自动化审批，未匹配的请求 fail-closed 忽略。
-	/// </summary>
-	public bool RespondApproval(IBridgeSource source, string requestId, bool approved)
-	{
-		bool allowNativeSettings = source is INativeSettingsSource;
-		lock (_approvalGate)
-		{
-			if (_approvals.TryGetValue(requestId, out PendingApproval? approval)
-				&& (IsSameSource(source, approval.Source)
-					|| (allowNativeSettings && approval.Source is not INativeChatSource && approval.Source.Label == WindowLabels.Main)))
-			{
-				if (approval.DeadlineUtc <= DateTimeOffset.UtcNow)
-				{
-					FinishApproval(approval, false, "timeout");
-					return false;
-				}
-				// 可见性及取消信号可能在命令入口校验后、等待授权锁期间改变。
-				if (approval.CancellationToken.IsCancellationRequested)
-				{
-					FinishApproval(approval, false, "cancelled");
-					return false;
-				}
-				if (approved && source is INativeChatSource && !source.IsVisible)
-					throw new InvalidOperationException("对话窗口不可见，无法批准工具执行");
-				return FinishApproval(approval, approved, approved ? "approved" : "denied");
-			}
-		}
-
-		if (source.Label != WindowLabels.Main && !allowNativeSettings
-			|| !_desktopApprovals.TryGetValue(requestId, out PendingDesktopApproval? desktopApproval)) return false;
-		if (!_desktopApprovals.TryRemove(new KeyValuePair<string, PendingDesktopApproval>(requestId, desktopApproval))) return false;
-		desktopApproval.Dispose();
-		Services.Automation?.ClearAutomationApproval(desktopApproval.Request.RequestId);
-		Services.Automation?.RecordApprovalOutcome(
-			desktopApproval.Request,
-			approved ? AutomationApprovalOutcome.Approved : AutomationApprovalOutcome.Denied);
-		PostAgentEvent(WindowLabels.Main, new
-		{
-			type = "approval-result",
-			requestId,
-			taskId = desktopApproval.Request.TaskId,
-			approved,
-			reason = approved ? "approved" : "denied",
-		});
-		return desktopApproval.Tcs.TrySetResult(approved);
-	}
-
-	// ===================================================================
-	// 前端音频宿主回报
-	// ===================================================================
-
-	/// <summary>前端回报一段音频播放结束 (或失败)</summary>
-	public void ReportPlaybackFinished(string token, string? error) =>
-		_webViewPlayback?.ReportPlaybackFinished(token, error);
-
-	/// <summary>前端回报实时播放音量 (0~1), 驱动伴侣口型</summary>
-	public void ReportAudioLevel(double level) => _webViewPlayback?.ReportLevel(level);
-
-	/// <summary>前端 main WebView 完成监听器安装后的就绪握手。</summary>
-	public void MarkAudioHostReady() => _audioChannel.MarkReady();
-
-	/// <summary>前端回报 MediaRecorder 已获权并开始。</summary>
-	public void ReportRecordingReady(string token) => _webViewRecorder?.ReportRecordingReady(token);
-
-	/// <summary>前端回报麦克风权限、录音或上传失败。</summary>
-	public void ReportRecordingFailed(string token, string? error) => _webViewRecorder?.ReportRecordingFailed(token, error);
-
-	// ===================================================================
-	// UI 状态快照
-	// ===================================================================
-
-	/// <summary>使快照失效并广播变更主题</summary>
-	private string _lastCloudSyncMessage = "";
-
-	/// <summary>
-	/// 最近一次云端同步动作的结果，给设置页显示。
-	///
-	/// 放在这里而不是页面里：页面的只读字段只从快照取值，页面自己存一份就要绕开那条
-	/// 通路去改控件，而那会把字段标成「有未保存的编辑」，之后的快照刷新全部被跳过。
-	/// 走快照还有一个好处 —— 切走再切回来，那句话还在。
-	/// </summary>
-	internal string LastCloudSyncMessage
-	{
-		get => Volatile.Read(ref _lastCloudSyncMessage);
-		set => Volatile.Write(ref _lastCloudSyncMessage, value ?? "");
-	}
-
-	public void InvalidateSnapshot(params string[] topics)
-	{
-		Interlocked.Increment(ref _snapshotVersion);
-		RaiseStateChanged();
-		BroadcastEvent("nori:state-changed", new {version = SnapshotVersion, topics});
-	}
-
-	/// <summary>构建脱敏 UI 状态快照; 同一版本直接复用不可变 DTO。</summary>
-	public object BuildSnapshot(IBridgeSource source)
-	{
-		_ = source;
-		return BuildSnapshot();
-	}
-
-	/// <summary>构建不依赖 WebView 来源的脱敏 UI 状态快照。</summary>
-	public object BuildSnapshot()
-	{
-		while (true)
-		{
-			int version = SnapshotVersion;
-			lock (_snapshotCacheGate)
-			{
-				if (_cachedSnapshotVersion == version && _cachedSnapshot is not null) return _cachedSnapshot;
-			}
-
-			object snapshot = BuildSnapshotCore(version);
-			if (SnapshotVersion != version) continue;
-			lock (_snapshotCacheGate)
-			{
-				if (SnapshotVersion != version) continue;
-				_cachedSnapshot = snapshot;
-				_cachedSnapshotVersion = version;
-				return snapshot;
-			}
-		}
-	}
-
-	private void RaiseStateChanged()
-	{
-		if (Volatile.Read(ref _disposed) != 0) return;
-		Action? handlers = StateChanged;
-		if (handlers is null) return;
-		foreach (Action handler in handlers.GetInvocationList().Cast<Action>())
-		{
-			try { handler(); }
-			catch (Exception exception)
-			{
-				try { Services.Logger.Write(LogSource.Backend, "warn", $"原生设置状态通知失败: {SensitiveDataRedactor.ExceptionSummary(exception)}"); }
-				catch { }
-			}
-		}
-	}
-
-	private object BuildSnapshotCore(int snapshotVersion)
-	{
-		ConfigStore config = Services.Config;
-		var updateStatus = Services.Update?.CurrentStatus;
-		AiProviderSettings aiSettings = Services.AiSettings.Read();
-		AiChatSettingsSnapshot chatSnapshot = AiChatSettingsSnapshot.From(aiSettings.Chat);
-		bool remoteChat = new Nori.Core.Chat.LuoLiCore.LuoLiCoreSettingsStore(config).Read().IsActive;
-		AiEmbeddingSettingsSnapshot embeddingSnapshot = AiEmbeddingSettingsSnapshot.From(aiSettings.Embedding);
-
-		var models = ModelCatalogIds().Select(id => new
-		{
-			id,
-			installed = IsModelInstalled(id),
-		}).ToArray();
-
-		string selectedModel = config.GetStringOr("selected_model", ConfigStore.DefaultModel);
-		float modelOpacity = ReadFloat(config, $"l2d_opacity_{selectedModel}") ?? ReadFloat(config, "l2d_opacity") ?? 1.0f;
-		float modelRenderScale = ReadFloat(config, $"l2d_render_scale_{selectedModel}") ?? ReadFloat(config, "l2d_render_scale") ?? 2.0f;
-		bool modelShadow = ParseBoolFlag(ReadModelString(config, "l2d_shadow", selectedModel, "true")) ?? true;
-		string modelQualityMode = ReadModelString(config, "l2d_quality_mode", selectedModel, "adaptive");
-		int modelMaxFps = (int)(ReadFloat(config, $"l2d_max_fps_{selectedModel}") ?? ReadFloat(config, "l2d_max_fps") ?? 0);
-		Live2DRenderSettings modelRenderSettings = Live2DRenderSettings.Normalize(
-			selectedModel, modelOpacity, modelShadow, modelRenderScale, modelQualityMode, modelMaxFps);
-
-		Nori.Core.Memory.MemorySettings memorySettings = Memory.Settings;
-		(int activeMemories, int atomCount, int archivedMemories, int totalMemories) = Memory.GetOverview();
-		Nori.Core.Memory.MemoryIndexStatus memoryIndex = Knowledge.Status;
-
-		/*
-		 * 登录态。读不出来（平台密钥库不可用）时按未登录呈现 —— 快照构建失败会让整个
-		 * 设置窗口打不开，而这一条只是一行状态文字，不值得让它有这个权力。
-		 */
-		object accountSnapshot;
-		try
-		{
-			Nori.Core.Cloud.AccountSession session = new(config);
-			Nori.Core.Cloud.CloudAccount? signedInAs = session.Current;
-			accountSnapshot = new
-			{
-				signedIn = signedInAs is not null,
-				email = signedInAs?.Email ?? "",
-				// 本机最后一次见到的云端版本号。0 表示这台机器还没同步过。
-				cloudRevision = Nori.Core.Cloud.CloudSyncService.KnownRevisionOf(config),
-				available = true,
-				lastSyncMessage = LastCloudSyncMessage,
-			};
-		}
-		catch (Exception exception) when (exception is not OutOfMemoryException)
-		{
-			Services.Logger.Write(LogSource.Backend, "warn", $"读取登录态失败: {exception.GetType().Name}");
-			accountSnapshot = new
-			{
-				signedIn = false, email = "", cloudRevision = 0, available = false,
-				lastSyncMessage = LastCloudSyncMessage,
-			};
-		}
-
-		return new
-		{
-			version = snapshotVersion,
-			app = new
-			{
-				appVersion = ProductVersion.Current,
-				productVersion = ProductVersion.Current,
-				platform = PlatformOsName(),
-				debugCrashTestsAvailable = !SentryTelemetry.IsProductionBuild,
-				safeMode = Services.SafeMode,
-			},
-			/*
-			 * 账户与云端同步。
-			 *
-			 * **只放本机状态，不放云端状态。** 云端有没有存档、是什么时候的，都要发一次
-			 * 网络请求才知道，而快照是同步构建并且带缓存的 —— 在这里发请求会让每一次界面
-			 * 刷新都挂在网络上，断网时整个设置窗口转圈。云端那一侧由同步窗口按需去取。
-			 */
-			account = accountSnapshot,
-			general = new
-			{
-				language = config.GetStringOr("language", "zh-CN"),
-				petAutoSummon = ParseBoolFlag(config.GetStringOr("pet_auto_summon", "true")) ?? true,
-				sidebarCollapsed = ParseBoolFlag(config.GetStringOr("ui_sidebar_collapsed", "")) ?? false,
-				autoCheckUpdates = config.GetBoolOr("auto_check_updates", true),
-			},
-			// 文件工具那一族的配置。`workspaceRoot` 为空即整族不注册，界面据此显示「未启用」。
-			workspace = new
-			{
-				root = config.GetStringOr(ConfigStore.KeyWorkspaceRoot, ""),
-				// 目录被删除或移动后配置仍在，但工具已不再注册，界面需要区分这两种状态。
-				available = new WorkspaceAccess(config.GetStringOr(ConfigStore.KeyWorkspaceRoot, "")).IsConfigured,
-				maxToolIterations = Engine.ConfiguredToolIterations,
-				// 待决授权是否也发成系统通知。非 Windows 上界面据此显示「本平台不支持」。
-				toastApprovals = config.GetBoolOr(ConfigStore.KeyToastApprovals, true),
-				toastSupported = OperatingSystem.IsWindows(),
-				tasks = WorkspaceTaskList.Read(config.Get(ConfigStore.KeyWorkspaceTasks))
-					.Select(task => new { name = task.Name, command = task.Command }),
-				// 界面要能说清「命令跑在什么边界里」：无隔离与 AppContainer 的安全含义完全不同。
-				// 启动器尚未建立时报本平台的预期值，不报 unknown —— 用户在配置命令之前就该知道。
-				isolation = (ExistingSandbox?.Isolation ?? SandboxLauncherFactory.PlannedIsolation)
-					.ToString().ToLowerInvariant(),
-				screenEnabled = config.GetBoolOr(ConfigStore.KeyScreenReadingEnabled, false),
-				// 平台不支持或模型没配时，界面要说清是「开不了」而不是「没开」。
-				screenAvailable = ScreenCapture is {IsAvailable: true} && VisionAnalyzer.IsConfigured,
-				/* ── 授权档位 ────────────────────────────────────────────────
-				 * gear 是用户存的那个值，effective 是此刻真正生效的 —— 完全放行到期
-				 * 之后两者会不一样，界面必须能同时说出「你选的是什么」和「现在按什么走」。
-				 * 只报一个的话，用户看到还写着完全放行却仍然被弹框，只能怀疑是坏了。 */
-				permissions = new
-				{
-					gear = ToolPermissionPolicy.Format(StoredGear),
-					effective = ToolPermissionPolicy.Format(EffectiveGear),
-					bypassUntil = BypassUntil,
-					bypassRemainingSeconds = (int?)ToolPermissionPolicy
-						.BypassRemaining(StoredGear, BypassUntil, DateTimeOffset.UtcNow)?.TotalSeconds,
-					// 安全模式下需要确认的工具一律拒绝，档位说了不算。
-					safeMode = Services.SafeMode,
-				},
-			},
-			// 每条通道两项：开没开（用户的选择）与能不能用（环境是否具备）。界面要能说出差别，
-			// 否则「开了没反应」无从排查。
-			expression = ExpressionChannels.ToDictionary(
-				channel => channel.Key,
-				channel => (object)new
-				{
-					enabled = IsExpressionChannelEnabled(channel.Key),
-					available = channel.IsAvailable,
-					level = channel.Level.ToString().ToLowerInvariant(),
-				},
-				StringComparer.Ordinal),
-			telemetry = new
-			{
-				consent = ConfigValidation.TelemetryConsentStorage(config.GetTelemetryConsent()),
-				enabled = config.GetTelemetryConsent() == TelemetryConsent.Granted,
-				available = Services.Telemetry.IsAvailable,
-			},
-			updater = updateStatus is not null
-				? new
-				{
-					state = updateStatus.State.ToString().ToLowerInvariant(),
-					progress = updateStatus.Progress,
-					downloadedBytes = updateStatus.DownloadedBytes,
-					totalBytes = updateStatus.TotalBytes,
-					message = updateStatus.Message,
-					currentVersion = updateStatus.CurrentVersion,
-					availableVersion = updateStatus.AvailableVersion,
-					releaseTag = updateStatus.ReleaseTag,
-					releaseNotes = updateStatus.ReleaseNotes,
-					lastCheckedAt = updateStatus.LastCheckedAt,
-					unavailableReason = updateStatus.UnavailableReason,
-					manualDownloadUrl = updateStatus.ManualDownloadUrl,
-				}
-				: null,
-			secretIssues = config.GetSecretIssues().Select(issue => new
-			{
-				key = issue.Key,
-				category = issue.Code,
-				requiresUserAction = issue.RequiresUserAction,
-			}).ToArray(),
-			chat = new
-			{
-				configured = !Services.SafeMode && (remoteChat || chatSnapshot.Configured),
-				backend = remoteChat ? "luolicore" : "local",
-			},
-			ai = new
-			{
-				// 保留旧版扁平字段, 同时提供统一的 chat/embedding DTO。
-				configured = chatSnapshot.Configured,
-				provider = chatSnapshot.Provider,
-				baseUrl = chatSnapshot.BaseUrl,
-				model = chatSnapshot.Model,
-				persona = chatSnapshot.Persona,
-				hasApiKey = chatSnapshot.HasApiKey,
-				chat = chatSnapshot,
-				embedding = embeddingSnapshot,
-			},
-			models = new
-			{
-				selected = selectedModel,
-				items = models,
-				loadError = Services.PetRuntime?.LastModelLoadError,
-				scale = ReadFloat(config, $"l2d_scale_{selectedModel}") ?? ReadFloat(config, "l2d_scale") ?? 1.0,
-				expressions = ModelExpressions(selectedModel),
-			},
-			pet = new
-			{
-				visible = Services.Windows.IsWindowVisible(WindowLabels.Pet),
-				renderMetrics = Services.PetRuntime?.RenderMetrics,
-			},
-			/* ── 各个窗口开着没有 ──────────────────────────────────────────────
-			 * 侧边栏那四项点下去是**另开一个窗口**, 不是切页。此前界面拿不到这四个
-			 * 状态, 只好统一画成"未选中", 于是点了「对话」之后窗口开在旁边, 侧边栏
-			 * 却还是一副什么都没发生的样子。
-			 *
-			 * 注意 VisibilityChanged 里本来就在调 InvalidateSnapshot("windows") ——
-			 * 也就是说刷新这条路早就接好了, 缺的一直是这一段本身, 而缺了也不报错。 */
-			windows = new
-			{
-				chat = Services.Windows.IsWindowVisible(WindowLabels.Chat),
-				models = Services.Windows.IsWindowVisible(WindowLabels.Models),
-				memory = Services.Windows.IsWindowVisible(WindowLabels.Memory),
-				settings = Services.Windows.IsWindowVisible(WindowLabels.Settings),
-			},
-			platform = new
-			{
-				os = PlatformOsName(),
-				sessionType = Nori.Core.Platform.PlatformServices.Current.Session.ToString().ToLowerInvariant(),
-				supportsGlobalCursor = Nori.Core.Platform.PlatformServices.Current.Capabilities.SupportsGlobalCursor,
-				supportsWindowDrag = Nori.Core.Platform.PlatformServices.Current.Capabilities.SupportsWindowDrag,
-				supportsHitThrough = Nori.Core.Platform.PlatformServices.Current.Capabilities.SupportsHitThrough,
-				supportsTopmost = Nori.Core.Platform.PlatformServices.Current.Capabilities.SupportsTopmost,
-				supportsTray = Nori.Core.Platform.PlatformServices.Current.Capabilities.SupportsTray && TrayAvailable,
-			},
-			behaviors = new
-			{
-				clickInteraction = ParseBoolFlag(config.GetStringOr("l2d_click_interaction", "true")) ?? true,
-				clickThrough = ParseBoolFlag(config.GetStringOr("l2d_click_through", "")) ?? false,
-				autoBlink = ParseBoolFlag(config.GetStringOr("l2d_auto_blink", "true")) ?? true,
-				eyeTracking = ParseBoolFlag(config.GetStringOr("l2d_eye_tracking", "true")) ?? true,
-				idleEyeAnimation = ParseBoolFlag(config.GetStringOr("l2d_idle_eye_animation", "true")) ?? true,
-				idleAnimation = ParseBoolFlag(config.GetStringOr("l2d_idle_animation", "true")) ?? true,
-				expressionEnabled = ParseBoolFlag(config.GetStringOr("l2d_expression_enabled", "true")) ?? true,
-				lipSync = ParseBoolFlag(config.GetStringOr("l2d_lip_sync", "true")) ?? true,
-				shadow = modelRenderSettings.ShadowEnabled,
-				beatSync = ParseBoolFlag(config.GetStringOr("l2d_beat_sync", "")) ?? false,
-				aiInteraction = !Services.SafeMode && (ParseBoolFlag(config.GetStringOr(PetInteractionConfig.AiEnabledKey, "")) ?? false),
-				opacity = modelRenderSettings.Opacity,
-				renderScale = modelRenderSettings.RenderScale,
-				qualityMode = Live2DRenderSettings.QualityModeToStorage(modelRenderSettings.QualityMode),
-				maxFps = modelRenderSettings.MaxFps,
-			},
-			memory = new
-			{
-				enabled = memorySettings.Enabled,
-				reflectionEnabled = !Services.SafeMode && memorySettings.ReflectionEnabled,
-				decayEnabled = memorySettings.DecayEnabled,
-				archiveEnabled = memorySettings.ArchiveEnabled,
-				active = activeMemories,
-				atoms = atomCount,
-				archived = archivedMemories,
-				total = totalMemories,
-				knowledgePath = Knowledge.Path,
-				knowledgeChunks = Knowledge.Status.Total,
-				indexState = memoryIndex.State.ToString().ToLowerInvariant(),
-				indexProcessed = memoryIndex.Processed,
-				indexTotal = memoryIndex.Total,
-				lastError = memoryIndex.LastError,
-				lastReflection = Memory.Store.GetEngineState("last_reflection_at"),
-				lastMaintenance = Memory.Store.GetEngineState("last_maintenance_at"),
-				ftsAvailable = Services.Memory.IsFtsAvailable,
-				reflectionRounds = memorySettings.ReflectionRounds,
-				reflectionMinChars = memorySettings.ReflectionMinChars,
-				recallTopK = memorySettings.RecallTopK,
-				keywordTopK = memorySettings.KeywordTopK,
-				vectorTopK = memorySettings.VectorTopK,
-				rrfK = memorySettings.RrfK,
-				minSimilarity = memorySettings.MinSimilarity,
-				sourceRetentionThreshold = memorySettings.SourceRetentionThreshold,
-				archiveThreshold = memorySettings.ArchiveThreshold,
-				knowledgeEnabled = memorySettings.KnowledgeEnabled,
-				knowledgeWatch = !Services.SafeMode && memorySettings.KnowledgeWatch,
-				debugRetrieval = memorySettings.DebugRetrieval,
-			},
-			voice = new
-			{
-				volume = Voice.GetVolume(),
-				ttsProvider = Voice.ResolveProviderName(),
-				ttsBaseUrl = config.GetStringOr("tts_base_url", ""),
-				ttsModel = config.GetStringOr("tts_model", "tts-1"),
-				hasTtsApiKey = config.GetStringOr("tts_api_key", "").Length > 0,
-				ttsVoice = config.GetStringOr("tts_voice", ""),
-				ttsSpeed = ReadFloat(config, "tts_speed") ?? 1.0,
-				ttsAutoPlay = ParseBoolFlag(config.GetStringOr("tts_auto_play", "")) ?? false,
-				gptsovitsBaseUrl = config.GetStringOr("gptsovits_base_url", "http://127.0.0.1:9880"),
-				gptsovitsRefAudio = config.GetStringOr("gptsovits_ref_audio", ""),
-				gptsovitsPromptText = config.GetStringOr("gptsovits_prompt_text", ""),
-				gptsovitsPromptLang = config.GetStringOr("gptsovits_prompt_lang", "zh"),
-				indexttsTemplateAudio = config.GetStringOr("indextts_template_audio", ""),
-				indexttsEmoAlpha = ReadFloat(config, "indextts_emo_alpha") ?? 0.3,
-				sttProvider = config.GetStringOr("stt_provider", "whisper"),
-				sttBaseUrl = config.GetStringOr("stt_base_url", ""),
-				hasSttApiKey = config.GetStringOr("stt_api_key", "").Length > 0,
-				noticePending = config.GetStringOr("voice_notice_pending", "") == "1",
-				speaking = Voice.IsSpeaking,
-			},
-			embedding = embeddingSnapshot,
-			proactive = new
-			{
-				idleEnabled = !Services.SafeMode && (ParseBoolFlag(config.GetStringOr("proactive_idle_enabled", "true")) ?? true),
-				idleMinutes = (int)(ReadFloat(config, "proactive_idle_minutes") ?? ProactiveScheduler.DefaultIdleMinutes),
-				dailyGreeting = !Services.SafeMode && (ParseBoolFlag(config.GetStringOr("proactive_daily_greeting", "true")) ?? true),
-				reminders = Proactive.ListReminders().Select(item => new
-				{
-					id = item.Id,
-					content = item.Content,
-					triggerTime = item.TriggerAt,
-					repeatDaily = item.RepeatDaily,
-					status = item.Status,
-					timezone = item.Timezone,
-					recurrenceJson = item.RecurrenceJson,
-					snoozedUntil = item.SnoozedUntil,
-				}).ToArray(),
-			},
-			skills = Skills.GetInstalled().Select(skill => new
-			{
-				id = skill.Id, name = skill.Name, description = skill.Description, author = skill.Author,
-				version = skill.Version, icon = skill.Icon, tags = skill.Tags.ToArray(), category = skill.Category,
-				instructions = "", // 详情按需 skills_export 获取, 避免快照膨胀
-				enabled = skill.Enabled, source = skill.Source,
-			}).ToArray(),
-			enabledSkillsCount = Skills.GetEnabled().Count,
-			tools = Tools.List().Select(tool => new
-			{
-				name = tool.Name, description = tool.Description,
-				permissionLevel = tool.PermissionLevel, category = tool.Category, enabled = tool.Enabled,
-			}).ToArray(),
-			mcpServersCount = McpServerCount(),
-			emotion = new {type = Emotion.CurrentType},
-			automation = Services.Automation?.GetSnapshot(),
-		};
-	}
-
-	/// <summary>当前操作系统名 (前端按它决定平台相关文案)</summary>
-	private static string PlatformOsName()
-	{
-		if (OperatingSystem.IsWindows()) return "windows";
-		if (OperatingSystem.IsMacOS()) return "macos";
-		if (OperatingSystem.IsLinux()) return "linux";
-		return "unknown";
-	}
-
-	/// <summary>已知模型目录 (展示名由前端静态目录映射)</summary>
-	private static IReadOnlyList<string> ModelCatalogIds() => SupportedModelIds.All;
-
-	private IReadOnlyList<string> ModelExpressions(string modelId)
-	{
-		try
-		{
-			string dir = Services.Resources.ResourceDir(Nori.Core.Resources.ResourceType.Live2D, modelId);
-			return Core.Live2D.Model3Meta.Read(dir).Expressions;
-		}
-		catch
-		{
-			return [];
-		}
-	}
-
-	private bool IsModelInstalled(string modelId)
-	{
-		try
-		{
-			return Services.Resources.IsInstalled(Nori.Core.Resources.ResourceType.Live2D, modelId);
-		}
-		catch
-		{
-			return false;
-		}
-	}
-
-	private int McpServerCount()
-	{
-		try
-		{
-			return Services.Mcp.GetServerConfigs().Count;
-		}
-		catch
-		{
-			return 0;
-		}
-	}
-
-	// ===================================================================
-	// 事件出口
-	// ===================================================================
-
-	/// <summary>原生会话只回推最初的可信对象，旧会话不会流入同标签的新窗口。</summary>
-	private void PostAgentEvent(IBridgeSource source, object payload)
-	{
-		if (Volatile.Read(ref _disposed) != 0) return;
-		if (source is not INativeChatSource native)
-		{
-			PostAgentEvent(source.Label, payload);
-			return;
-		}
-		if (native.Label != WindowLabels.Chat || native.LifetimeToken.IsCancellationRequested) return;
-		try { source.PostEvent(AgentEventName, payload); }
-		catch { /* 窗口退出不影响会话收尾。 */ }
-	}
-
-	/// <summary>向指定 WebView 推送 Agent 事件，不解析原生窗口标签。</summary>
-	private void PostAgentEvent(string label, object payload)
-	{
-		if (Volatile.Read(ref _disposed) != 0) return;
-		try { Services.Windows.GetNoriWindow(label)?.PostEvent(AgentEventName, payload); }
-		catch { /* windows may already be closing */ }
-	}
-
-	/// <summary>自动化状态变化只广播脱敏生命周期汇总。</summary>
-	private void OnAutomationChanged()
-	{
-		if (Volatile.Read(ref _disposed) != 0) return;
-		InvalidateSnapshot("automation");
-		AutomationSnapshot? snapshot = Services.Automation?.GetSnapshot();
-		if (snapshot is not null) BroadcastEvent("nori:automation-changed", snapshot);
-	}
-
-	private void OnUpdateStatusChanged()
-	{
-		if (Volatile.Read(ref _disposed) == 0) InvalidateSnapshot("updater");
-	}
-
-	/// <summary>向所有 WebView 窗口广播</summary>
-	private void BroadcastEvent(string name, object payload)
-	{
-		if (Volatile.Read(ref _disposed) != 0) return;
-		Dispatcher.UIThread.Post(() =>
-		{
-			if (Volatile.Read(ref _disposed) == 0)
-			{
-				try { Services.Windows.Broadcast(name, payload); }
-				catch { /* windows may already be closing */ }
-			}
-		});
-	}
+	private long _chatHistoryRevision;
 
 	/// <summary>Agent 事件通道名</summary>
 	public const string AgentEventName = "nori:agent-event";
 
-	private static JsonNode? ToJsonNode(object? value)
-	{
-		if (value is null) return null;
-		try
-		{
-			return JsonSerializerNode(value);
-		}
-		catch
-		{
-			return System.Text.Json.Nodes.JsonValue.Create(value.ToString());
-		}
-	}
+	private static bool? ParseBoolFlag(string raw) => Live2DModelConfig.ParseBool(raw);
 
-	private static System.Text.Json.Nodes.JsonNode? JsonSerializerNode(object value)
-	{
-		string json = System.Text.Json.JsonSerializer.Serialize(value, BridgeJson.Options);
-		return System.Text.Json.Nodes.JsonNode.Parse(json);
-	}
+	private static float? ReadFloat(ConfigStore config, string key) =>
+		Live2DModelConfig.ParseFloat(config.GetStringOr(key, ""));
 
-	private static bool? ParseBoolFlag(string raw) => raw switch
-	{
-		"1" => true,
-		"0" => false,
-		_ when raw.Equals("true", StringComparison.OrdinalIgnoreCase) => true,
-		_ when raw.Equals("false", StringComparison.OrdinalIgnoreCase) => false,
-		_ => null,
-	};
-
-	private static string ReadModelString(ConfigStore config, string baseKey, string modelId, string fallback)
-	{
-		string modelValue = config.GetStringOr($"{baseKey}_{modelId}", "");
-		return modelValue.Length > 0 ? modelValue : config.GetStringOr(baseKey, fallback);
-	}
-
-	private static float? ReadFloat(ConfigStore config, string key)
-	{
-		string raw = config.GetStringOr(key, "");
-		if (raw.Length == 0) return null;
-		if (raw.Equals("true", StringComparison.OrdinalIgnoreCase)) return 1f;
-		if (raw.Equals("false", StringComparison.OrdinalIgnoreCase)) return 0f;
-		return float.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float value) ? value : null;
-	}
-
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "退出清理按资源逐项隔离，单项失败不能阻断其余释放。")]
 	public async ValueTask DisposeAsync()
 	{
 		if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
@@ -2095,7 +306,7 @@ public sealed partial class AppRuntime : IAsyncDisposable
 		{
 			approval.Tcs.TrySetResult(false);
 			approval.Dispose();
-			_notifier.Hide(approval.RequestId);
+			HideApprovalNotice(approval.RequestId);
 		}
 		DisposeNotifier();
 		foreach ((string _, PendingDesktopApproval approval) in _desktopApprovals)
@@ -2121,8 +332,6 @@ public sealed partial class AppRuntime : IAsyncDisposable
 		// Voice.Dispose 会逆向释放 _playback; 录音票据要单独作废
 		try { _recorder.Dispose(); } catch { }
 		try { Voice.Dispose(); } catch { }
-		// 音频宿主通道最后解除: 让所有 WaitUntilReadyAsync 等待者立即结束而不是等超时
-		try { _audioChannel.Dispose(); } catch { }
 		try { if (Services.Automation is not null) await Services.Automation.DisposeAsync().ConfigureAwait(false); } catch { }
 		_petInteractionGate.Dispose();
 		_pluginToolsRefreshTimer?.Dispose();
@@ -2160,7 +369,7 @@ public sealed partial class AppRuntime : IAsyncDisposable
 	{
 		TrackBackground(() => Knowledge.ReindexAsync(_lifetimeCts.Token), "Memory.md embedding rebuild");
 		TrackBackground(() => Memory.ReembedAllAsync(_lifetimeCts.Token, false), "memory embedding rebuild");
-		InvalidateSnapshot("memory", "embedding");
+		InvalidateSnapshot();
 	}
 
 	private async Task RunMemoryMaintenanceAsync()
@@ -2168,12 +377,13 @@ public sealed partial class AppRuntime : IAsyncDisposable
 		while (!_lifetimeCts.IsCancellationRequested)
 		{
 			int changed = Lifecycle.RunOnce();
-			if (changed > 0) InvalidateSnapshot("memory");
+			if (changed > 0) InvalidateSnapshot();
 			try { await Task.Delay(TimeSpan.FromHours(6), _lifetimeCts.Token).ConfigureAwait(false); }
 			catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested) { break; }
 		}
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "后台任务的遥测和日志失败不能覆盖已观察到的原始异常。")]
 	private async Task ObserveBackgroundAsync(Func<Task> operation, string name)
 	{
 		try { await operation().ConfigureAwait(false); }
@@ -2182,7 +392,8 @@ public sealed partial class AppRuntime : IAsyncDisposable
 		{
 			try
 			{
-				Services.Telemetry.CaptureException(exception, "runtime.background_task");
+				if (!TelemetryNoise.IsNoise(exception))
+					Services.Telemetry.CaptureException(exception, "runtime.background_task");
 				Services.Logger.Write(LogSource.Backend, "warn", $"{name} failed: {SensitiveDataRedactor.ExceptionSummary(exception)}");
 			}
 			catch { }
@@ -2193,7 +404,17 @@ public sealed partial class AppRuntime : IAsyncDisposable
 	{
 		if (tasks.Count == 0) return;
 		Task all = Task.WhenAll(tasks);
-		await Task.WhenAny(all, Task.Delay(timeout)).ConfigureAwait(false);
+		Task finished = await Task.WhenAny(all, Task.Delay(timeout)).ConfigureAwait(false);
+		if (!ReferenceEquals(finished, all))
+		{
+			_ = all.ContinueWith(
+				static task => _ = task.Exception,
+				CancellationToken.None,
+				TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+				TaskScheduler.Default);
+			return;
+		}
+		if (all.IsFaulted) _ = all.Exception;
 	}
 
 	/// <summary>活动 Agent 会话状态</summary>
@@ -2213,11 +434,18 @@ public sealed partial class AppRuntime : IAsyncDisposable
 	}
 
 	/// <summary>待决桌面视觉授权请求；只保存动作种类和任务标识。</summary>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2931", Justification = "待决授权的计时器已在 Dispose 中释放，属于分析器误报。")]
 	private sealed class PendingDesktopApproval(AutomationApprovalRequest request, TaskCompletionSource<bool> tcs) : IDisposable
 	{
 		public AutomationApprovalRequest Request { get; } = request;
 		public TaskCompletionSource<bool> Tcs { get; } = tcs;
 		public DateTimeOffset DeadlineUtc { get; private set; }
+		private int _timedOut;
+
+		/// <summary>超时回调已经记过期。完成信号之后用它区分拒绝。</summary>
+		public bool TimedOut => Volatile.Read(ref _timedOut) != 0;
+
+		public void MarkTimedOut() => Volatile.Write(ref _timedOut, 1);
 
 		private System.Threading.Timer? _timeout;
 

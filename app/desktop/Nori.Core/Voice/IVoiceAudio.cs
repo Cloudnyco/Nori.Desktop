@@ -40,8 +40,7 @@ public interface ITtsProvider
 /// 播放期间通过 VolumeSampled 输出 0~1 音量采样驱动口型,
 /// PlayingChanged 通知说话状态变化。
 ///
-/// 实现已从 NAudio 换成 WebView 内的 WebAudio (三平台一套代码),
-/// 因此这里的语义是“把音频交给播放宿主并等待其播完”。
+/// 实现直接把 PCM 推到平台声卡，并等待这一段播完。
 /// </summary>
 public interface IAudioPlayback : IDisposable
 {
@@ -77,14 +76,14 @@ public interface IAudioPlayback : IDisposable
 /// <summary>
 /// 麦克风录音接口
 ///
-/// 全部异步: WebView 录音需要等前端回传音频, 绝不能在 UI 线程上同步阻塞。
+/// 全部异步：采集在音频线程完成，绝不能在 UI 线程上同步阻塞。
 /// </summary>
 public interface IMicrophoneRecorder : IDisposable
 {
 	/// <summary>开始录制</summary>
 	Task StartAsync(CancellationToken cancellationToken = default);
 
-	/// <summary>停止录制并返回 MediaRecorder 的实际 MIME 与文件名</summary>
+	/// <summary>停止录制并返回 WAV 的 MIME 与文件名</summary>
 	Task<RecordedAudio> StopAsync(CancellationToken cancellationToken = default);
 
 	/// <summary>是否正在录制</summary>

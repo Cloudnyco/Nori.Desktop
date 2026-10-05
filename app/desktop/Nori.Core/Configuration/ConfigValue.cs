@@ -6,11 +6,10 @@ using System.Text.Json.Serialization;
 namespace Nori.Core.Configuration;
 
 /// <summary>
-/// 配置值类型: 支持基础类型和 JSON
-///
-/// 与 Rust 版 config.rs 的 ConfigValue 逐字等价, 包括"读取时重新推断类型"这一行为.
-/// 原生模型配置读取需兼容布尔、数字、文本和 JSON 数组这几种存储形式,
-/// 改动推断规则会让伴侣的缩放/表情配置静默失效.
+/// 配置值类型: 支持基础类型和 JSON。
+/// 包含“读取时重新推断类型”这一行为：
+/// 原生模型配置读取需兼容布尔、数字、文本和 JSON 数组这几种存储形式，
+/// 改动推断规则会让伴侣的缩放/表情配置静默失效。
 /// </summary>
 [JsonConverter(typeof(ConfigValueJsonConverter))]
 public abstract record ConfigValue
@@ -44,9 +43,8 @@ public abstract record ConfigValue
 	};
 
 	/// <summary>
-	/// 从 SQLite 保存的字符串恢复 ConfigValue
-	///
-	/// 推断顺序与 Rust 版一致: 布尔 → 整数 → JSON 对象/数组 → 字符串
+	/// 从 SQLite 保存的字符串恢复 ConfigValue。
+	/// 推断顺序: 布尔 → 整数 → JSON 对象/数组 → 字符串。
 	/// </summary>
 	public static ConfigValue FromStorage(string value)
 	{
@@ -73,13 +71,13 @@ public abstract record ConfigValue
 	}
 
 	/// <summary>
-	/// 读取字符串配置, 缺失/类型不符时返回 fallback (对应 Rust 的 get_str_or)
+	/// 读取字符串配置，缺失或类型不符时返回 fallback。
 	/// </summary>
 	public static string AsStringOr(ConfigValue? value, string fallback) => value switch
 	{
 		Text text when text.Value.Length > 0 => text.Value,
 		Integer integer => integer.Value.ToString(CultureInfo.InvariantCulture),
-		// Rust 用的是 bool 的 Display, 即 "true" / "false"
+		// 布尔值转为 "true" / "false"
 		Boolean boolean => boolean.Value ? "true" : "false",
 		_ => fallback,
 	};
@@ -95,10 +93,9 @@ public abstract record ConfigValue
 }
 
 /// <summary>
-/// ConfigValue 的 JSON 编解码
-///
-/// 对应 Rust 的 #[serde(untagged)]: 序列化成裸值, 反序列化按 JSON 实际类型还原.
-/// 前端 invoke("set_config", {key, value}) 可能传字符串 / 数字 / 布尔 / 数组, 都要接得住.
+/// ConfigValue 的 JSON 编解码。
+/// 序列化成裸值，反序列化按 JSON 实际类型还原。
+/// 调用 set_config 时可能传字符串、数字、布尔或数组，都要能够解析。
 /// </summary>
 public sealed class ConfigValueJsonConverter : JsonConverter<ConfigValue>
 {
@@ -137,7 +134,7 @@ public sealed class ConfigValueJsonConverter : JsonConverter<ConfigValue>
 	}
 
 	/// <summary>
-	/// 数字: 能放进 i64 的走 Integer, 小数按 Rust 的 untagged 顺序会落到 Json
+	/// 数字: 能放进 64 位整数的走 Integer，小数则转为 Json
 	/// </summary>
 	private static ConfigValue ReadNumber(ref Utf8JsonReader reader)
 	{

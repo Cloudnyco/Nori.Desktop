@@ -49,7 +49,7 @@ Agent 阶段推荐使用“常用依赖项”域名允许列表，并只开放 `
 
 `app/desktop/scripts/codex-cloud-setup.sh` 会：
 
-1. 在 apt 系 Linux 环境安装 `libgtk-3-0` 与 `libwebkit2gtk-4.1-0`，与 Linux CI 保持一致。
+1. 在 apt 系 Linux 环境安装 `libgtk-3-0`，以及 `libasound2t64`（Ubuntu 24.04 起）或 `libasound2`，与 Linux CI 保持一致。
 2. 检测当前 Node.js；当 Codex 面板提供的 Node.js 22 低于项目要求时，通过 `mise` 安装并激活 Node.js 24。
 3. 通过 `mise` 的 `pnpm` 后端安装并激活 pnpm 11。这里不使用 `corepack prepare pnpm@11`，避免 Corepack 自举阶段直接访问 npm registry 时因 Cloud 网络代理或短时网络问题失败。
 4. 验证 .NET 10 SDK；缺失时安装到 `~/.dotnet`，并将路径持久化到 `~/.bashrc`。
@@ -104,7 +104,7 @@ pnpm coverage
 pnpm coverage:dotnet --no-build --no-restore
 ```
 
-Windows 发布、Windows WebView2 和 Windows 启动冒烟测试无法在 Codex Cloud 的 Linux 容器中原生复现，继续以 GitHub Actions 的 Windows job 为最终平台门禁。
+Windows 发布和 Windows 启动冒烟测试无法在 Codex Cloud 的 Linux 容器中原生复现，继续以 GitHub Actions 的 Windows job 为最终平台门禁。
 
 ## 官方参考
 

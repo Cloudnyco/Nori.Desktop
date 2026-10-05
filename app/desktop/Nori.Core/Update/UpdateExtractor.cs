@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Nori.Core.Data;
+using Nori.Core.Resources;
 
 namespace Nori.Core.Update;
 
@@ -43,6 +44,7 @@ public static class UpdateExtractor
 	public const double MaxCompressionRatio = 200.0;
 
 	/// <summary>安全解压更新包并原子提交到发布包根目录。</summary>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "更新失败后的暂存目录清理不能覆盖原始异常。")]
 	public static SlotCommitResult ExtractAndCommitSlot(
 		string archivePath,
 		string packageRoot,
@@ -170,8 +172,15 @@ public static class UpdateExtractor
 	/// <summary>读取并验证槽内的 deployment.json 元数据与入口有效性。</summary>
 	public static SlotManifest ReadAndValidateManifest(string slotDirectory, string expectedRid)
 	{
-		EnsureNoReparsePoints(slotDirectory);
-		string manifestPath = Path.Combine(slotDirectory, "deployment.json");
+		string fullSlotDirectory = Path.GetFullPath(slotDirectory);
+		string slotName = Path.GetFileName(Path.TrimEndingDirectorySeparator(fullSlotDirectory));
+		if (slotName.Length == 0 || slotName is "." or "..")
+			throw new InvalidOperationException("部署槽目录名无效");
+		string parentDirectory = Path.GetDirectoryName(fullSlotDirectory)
+			?? throw new InvalidOperationException("部署槽目录无效");
+		string sanitizedSlotDirectory = Path.Combine(parentDirectory, slotName);
+		EnsureNoReparsePoints(sanitizedSlotDirectory);
+		string manifestPath = Path.Combine(sanitizedSlotDirectory, "deployment.json");
 		EnsureNoReparsePoints(manifestPath);
 		if (File.Exists(manifestPath) && new FileInfo(manifestPath).Length > 1024 * 1024)
 			throw new InvalidOperationException("部署清单大小超过限制");
@@ -206,7 +215,7 @@ public static class UpdateExtractor
 			|| entrypoint.Contains('\\') || entrypoint.Split('/').Any(part => part is "" or "." or "..")
 			|| SanitizePath(entrypoint) != entrypoint)
 			throw new InvalidOperationException("部署清单版本或入口无效");
-		string fullSlot = Path.GetFullPath(slotDirectory);
+		string fullSlot = sanitizedSlotDirectory;
 		string entryPath = Path.GetFullPath(Path.Combine(fullSlot, entrypoint.Replace('/', Path.DirectorySeparatorChar)));
 		if (!IsContained(entryPath, fullSlot) || !File.Exists(entryPath))
 		{
@@ -272,7 +281,7 @@ public static class UpdateExtractor
 			if ((fileType != 0 && fileType != 0x8000 && fileType != 0x4000) || (unixMode & 0xe00) != 0
 				|| (entry.ExternalAttributes & (int)FileAttributes.ReparsePoint) != 0)
 				throw new InvalidOperationException($"ZIP 包含链接、特殊文件或特殊权限: {entry.FullName}");
-			bool isDirectory = entry.Name.Length == 0;
+			bool isDirectory = ZipExtractor.IsDirectoryEntry(entry);
 			if (isDirectory)
 			{
 				Directory.CreateDirectory(outPath);

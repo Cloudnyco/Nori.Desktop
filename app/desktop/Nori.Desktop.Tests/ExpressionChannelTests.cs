@@ -1,9 +1,7 @@
-using Avalonia.Controls;
 using Avalonia.Media;
 using Nori.Core.Emotion;
 using Nori.Core.Expression;
 using Nori.Desktop.Expression;
-using Nori.Desktop.Live2D;
 
 namespace Nori.Desktop.Tests;
 
@@ -54,13 +52,6 @@ public sealed class ExpressionChannelTests
 		Assert.Equal(0xB0, color.B);
 	}
 
-	[Fact]
-	public void 转成Windows的BGR字节序()
-	{
-		// Windows 的注册表与 DWM 都按 0x00BBGGRR 存颜色，写反了整个桌面会变成补色。
-		Assert.Equal(0x00DAC3B4u, ExpressionColors.ToWindowsBgr(Color.FromRgb(0xB4, 0xC3, 0xDA)));
-	}
-
 	// ---- 语音气泡 ----
 
 	[Fact]
@@ -107,14 +98,6 @@ public sealed class ExpressionChannelTests
 		Assert.NotEqual(
 			TrayIconChannel.Gradient(Palette(EmotionTypes.Happy)),
 			TrayIconChannel.Gradient(Palette(EmotionTypes.Sad)));
-	}
-
-	[Fact]
-	public void 同一情绪同一强度取相同的渐变色()
-	{
-		Assert.Equal(
-			TrayIconChannel.Gradient(Palette(EmotionTypes.Fond, 0.6)),
-			TrayIconChannel.Gradient(Palette(EmotionTypes.Fond, 0.6)));
 	}
 
 	/// <summary>强度趋零时向中性收敛，图标也跟着 —— 这条穿透了映射层与通道层。</summary>

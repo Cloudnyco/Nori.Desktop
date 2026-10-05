@@ -9,9 +9,8 @@ namespace Nori.Desktop.Settings;
 /// <summary>
 /// 原生设置窗口共享服务。
 ///
-/// 设置窗口与既有 WebView 共用 BridgeCommands 的业务实现，但通过明确的 native
-/// settings 上下文和命令白名单隔离来源权限。所有桥接调用放到后台执行，UI 文件选择
-/// 等操作仍由既有命令回切 Avalonia UI 线程。
+/// 设置窗口通过明确的 native settings 上下文和命令白名单调用 BridgeCommands。
+/// 所有桥接调用放到后台执行，UI 文件选择等操作仍由既有命令回切 Avalonia UI 线程。
 /// </summary>
 public sealed class SettingsService : IDisposable
 {
@@ -29,13 +28,7 @@ public sealed class SettingsService : IDisposable
 		"cloud_restore",
 		"ai_test_connection",
 		"llm_fetch_models",
-		"llm_test_connection",
-		"settings_update_ai",
 		"settings_update_ai_providers",
-		"settings_test_ai",
-		"settings_update_embedding",
-		"settings_test_embedding",
-		"embedding_test_connection",
 		"settings_update_voice",
 		"settings_ack_voice_notice",
 		"indextts_pick_template",
@@ -47,14 +40,14 @@ public sealed class SettingsService : IDisposable
 		"settings_update_workspace",
 		"settings_pick_workspace",
 		"settings_update_tasks",
+		"settings_update_notifications",
+		"settings_update_permission",
 		"settings_update_screen",
 		"settings_update_expression",
 		"settings_update_proactive",
 		"reminder_add",
 		"reminder_cancel",
 		"reminder_update",
-		"reminder_snooze",
-		"reminder_complete",
 		"reminder_list",
 		"settings_update_automation",
 		"automation_get_snapshot",
@@ -77,13 +70,11 @@ public sealed class SettingsService : IDisposable
 		"skills_save_custom",
 		"skills_uninstall",
 		"skills_export",
-		"skills_import_json",
 		"mcp_get_servers",
 		"mcp_save_server",
 		"mcp_delete_server",
 		"mcp_connect_server",
 		"mcp_disconnect_server",
-		"mcp_list_tools",
 		"mcp_test_server",
 		"mcp_call_tool",
 		"mcp_import_url",
@@ -97,15 +88,14 @@ public sealed class SettingsService : IDisposable
 		"settings_get_plugin_trust",
 		"settings_set_plugin_trust",
 		"get_recent_logs",
+		"get_logging_status",
+		"set_logging_level",
 		"clear_recent_logs",
 		"get_diagnostic_info",
 		"export_diagnostics",
 		"open_log_folder",
 		"clipboard_write_text",
 		"open_url",
-		"run_gc_collect",
-		"write_log",
-		"debug_crash_test",
 		"settings_update_general",
 		"model_set_behavior",
 		"updater_check",
@@ -136,7 +126,7 @@ public sealed class SettingsService : IDisposable
 
 	/// <summary>
 	/// 执行一个设置领域命令并返回桥接层同形 JSON。
-	/// 前端原生 UI 不应通过 WebView invoke 执行设置操作。
+	/// 原生设置页通过本服务执行，不接受任意来源直接调用。
 	/// </summary>
 	public async Task<JsonElement> ExecuteAsync(
 		string command,
@@ -169,7 +159,7 @@ public sealed class SettingsService : IDisposable
 		return ToJsonElement(result);
 	}
 
-	/// <summary>读取与 WebView 相同的脱敏运行时快照。</summary>
+	/// <summary>读取脱敏运行时快照。</summary>
 	public async Task<JsonElement> GetSnapshotAsync(CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
@@ -276,11 +266,12 @@ public sealed class SettingsService : IDisposable
 
 		bool confirmed = value.GetBoolean();
 		_services.Config.Set(PluginTrustConfigKey, new Nori.Core.Configuration.ConfigValue.Text(confirmed ? "1" : "0"));
-		if (_services.Runtime is { } runtime) runtime.InvalidateSnapshot("plugins");
+		if (_services.Runtime is { } runtime) runtime.InvalidateSnapshot();
 		else RaiseStateChanged();
 		return new {confirmed};
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "设置状态通知失败不能阻断保存流程。")]
 	private void RaiseStateChanged()
 	{
 		if (Volatile.Read(ref _disposed) != 0) return;
@@ -307,14 +298,11 @@ public sealed class SettingsService : IDisposable
 			or "reminder_add"
 			or "reminder_cancel"
 			or "reminder_update"
-			or "reminder_snooze"
-			or "reminder_complete"
 			or "skills_install_marketplace"
 			or "skills_toggle"
 			or "skills_install_url"
 			or "skills_save_custom"
 			or "skills_uninstall"
-			or "skills_import_json"
 			or "mcp_save_server"
 			or "mcp_delete_server"
 			or "mcp_connect_server"
@@ -326,7 +314,6 @@ public sealed class SettingsService : IDisposable
 			or "plugin_disable"
 			or "plugin_uninstall"
 			or "clear_recent_logs"
-			or "run_gc_collect"
 			or "updater_check"
 			or "updater_install"
 			or "updater_cancel"

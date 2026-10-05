@@ -6,11 +6,12 @@ using Avalonia.Layout;
 using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Media;
 using Avalonia.Styling;
-using Avalonia.Threading;
+using Avalonia.Platform.Storage;
 using Nori.Core.Configuration;
 using Nori.Core.FirstRun;
 using Nori.Core.Logging;
 using Nori.Core.Platform;
+using Nori.Core.Resources;
 using Nori.Desktop.Bridge;
 using Nori.Desktop.Chat;
 using Nori.Desktop.FirstRun;
@@ -20,8 +21,7 @@ namespace Nori.Desktop.Windows;
 /// <summary>
 /// 原生首次运行向导。
 ///
-/// 迁移的第二块（初始化窗口之后）。同样不碰音频 —— 音频宿主在主界面那个 WebView 里，
-/// 那一块要单独处理。
+/// 原生首次运行向导不碰音频。播放和录音由宿主的原生声卡后端负责。
 ///
 /// 壳只做三件事：顶部的步骤指示、中间的舞台、底部的导航。每一步自己是什么样、
 /// 要调什么，全在 <see cref="FirstRunSteps"/> 那边；步进与守卫在
@@ -36,6 +36,9 @@ public sealed class FirstRunWindow : Window
 	private readonly AppServices _services;
 	private readonly FirstRunWizard _wizard;
 	private readonly FirstRunSteps _steps;
+	private readonly CancellationTokenSource _lifetime;
+	private readonly CancellationToken _lifetimeToken;
+	private bool _closed;
 
 	private readonly StackPanel _pips = new()
 	{
@@ -62,18 +65,18 @@ public sealed class FirstRunWindow : Window
 	public bool AllowClose { get; set; }
 
 	public FirstRunWindow(WindowDefinition definition, AppServices services)
+		: this(definition, services, null) { }
+
+	internal FirstRunWindow(WindowDefinition definition, AppServices services, Func<string, Task<string?>>? pickModel)
 	{
 		_services = services;
 		Title = definition.Title;
 		Width = definition.Width; Height = definition.Height;
 		MinWidth = definition.MinWidth ?? definition.Width;
 		MinHeight = definition.MinHeight ?? definition.Height;
-		// 与 NoriWindow 同一套判断：能原生拖动就去掉系统边框（整个应用都是自绘 chrome，
-		// 少设这一行就会在一堆无边框窗口里冒出一个系统标题栏）；不能拖的平台退回
-		// 系统边框，不留一个既拖不动也没有提示的窗口。
-		WindowDecorations = PlatformServices.Current.Capabilities.SupportsWindowDrag
-			? WindowDecorations.None
-			: WindowDecorations.Full;
+		CanResize = definition.CanResize;
+		NativeWindowSizing.ConstrainOnFirstOpen(this, NativeWindowSizing.FirstRunSize);
+		WindowDecorations = WindowDecorations.None;
 		WindowStartupLocation = WindowStartupLocation.CenterScreen;
 		RequestedThemeVariant = ThemeVariant.Dark;
 		Styles.Add(new StyleInclude(new Uri("avares://Nori.Desktop/"))
@@ -83,11 +86,19 @@ public sealed class FirstRunWindow : Window
 		Background = ChatPalette.Background;
 
 		_wizard = new FirstRunWizard(CompleteAsync);
-		// 把窗口交给步骤层：选形象那一步要弹文件选择框，而它必须挂在一个窗口上。
-		_steps = new FirstRunSteps(services, OnGate, Render, this);
+		_lifetime = CancellationTokenSource.CreateLinkedTokenSource(services.ShutdownToken);
+		_lifetimeToken = _lifetime.Token;
+		_steps = new FirstRunSteps(services, OnGate, Render, pickModel ?? PickModelAsync, _lifetimeToken);
 
 		Content = BuildChrome();
 		Render();
+		Closed += (_, _) =>
+		{
+			_closed = true;
+			// 关闭窗口立即终止导入等待，不依赖应用稍后才触发的全局退出信号。
+			_lifetime.Cancel();
+			_lifetime.Dispose();
+		};
 
 		Closing += (_, args) =>
 		{
@@ -98,46 +109,40 @@ public sealed class FirstRunWindow : Window
 		};
 	}
 
-	private bool IsEnglish() =>
-		_services.Config.GetStringOr(ConfigStore.KeyLanguage, "zh-CN")
-			.StartsWith("en", StringComparison.OrdinalIgnoreCase);
+	private async Task<string?> PickModelAsync(string sourceKind)
+	{
+		if (sourceKind == "folder")
+		{
+			IReadOnlyList<IStorageFolder> folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+			{
+				Title = IsEnglish() ? "Choose a Live2D folder" : "选择 Live2D 模型文件夹",
+				AllowMultiple = false,
+			});
+			return folders.Count > 0 ? folders[0].TryGetLocalPath()
+				?? throw new InvalidOperationException("请选择本地模型文件夹") : null;
+		}
+
+		IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+		{
+			Title = IsEnglish() ? "Choose a Live2D ZIP" : "选择 Live2D 资源文件 (.zip)",
+			AllowMultiple = false,
+			FileTypeFilter = [new FilePickerFileType("Live2D ZIP") {Patterns = ["*.zip"]}],
+		});
+		return files.Count > 0 ? files[0].TryGetLocalPath()
+			?? throw new InvalidOperationException("请选择本地模型 ZIP 文件") : null;
+	}
+
+	private bool IsEnglish() => UiLanguage.IsEnglish(_services.Config);
 
 	private Control BuildChrome()
 	{
-		Button close = new()
-		{
-			Content = "✕", Width = 34, Height = 26,
-			Background = Brushes.Transparent, Foreground = ChatPalette.Muted,
-			BorderThickness = default,
-			HorizontalAlignment = HorizontalAlignment.Right,
-		};
-		close.Click += (_, _) => _services.Windows.Shutdown();
+		Grid heading = new() { ColumnDefinitions = new ColumnDefinitions("*") };
+		heading.Children.Add(Place(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { _pips, _stepLabel } }, 0, HorizontalAlignment.Left));
+		// 「3 / 5」那一条去掉了：左边已经有圆点（看得出位置）和步骤名
+		// （看得出是哪一步），再写一遍数字是同一件事的第三种说法。
+		NativeWindowChrome header = new(this, IsEnglish, heading) { Height = 44 };
 
-		Border header = new()
-		{
-			Height = 44,
-			Background = ChatPalette.Deep,
-			BorderBrush = ChatPalette.Panel, BorderThickness = new Thickness(0, 0, 0, 1),
-			Padding = new Thickness(16, 0, 8, 0),
-			Child = new Grid
-			{
-				ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
-				Children =
-				{
-					Place(new StackPanel
-					{
-						Orientation = Orientation.Horizontal, Spacing = 8,
-						VerticalAlignment = VerticalAlignment.Center,
-						Children = {_pips, _stepLabel},
-					}, 0),
-					// 「3 / 5」那一条去掉了：左边已经有圆点（看得出位置）和步骤名
-					// （看得出是哪一步），再写一遍数字是同一件事的第三种说法。
-					Place(close, 2),
-				},
-			},
-		};
-
-		_back.Click += (_, _) => { _wizard.Prev(); Render(); };
+		_back.Click += (_, _) => Back();
 		_forward.Click += (_, _) => _ = AdvanceAsync();
 		StyleNav(_back, primary: false);
 		StyleNav(_forward, primary: true);
@@ -153,13 +158,6 @@ public sealed class FirstRunWindow : Window
 				ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
 				Children = {Place(_back, 0), Place(_error, 1), Place(_forward, 2)},
 			},
-		};
-
-		// 去掉系统边框之后，顶部这条就是拖动区 —— 向导有自己的头部，
-		// 不像启动画面那样整面可拖。
-		header.PointerPressed += (_, args) =>
-		{
-			if (args.GetCurrentPoint(header).Properties.IsLeftButtonPressed) BeginMoveDrag(args);
 		};
 
 		return new DockPanel
@@ -207,6 +205,7 @@ public sealed class FirstRunWindow : Window
 	/// </summary>
 	private void OnGate(string error)
 	{
+		if (_closed) return;
 		if (error.Length > 0) _wizard.BlockStep(error);
 		else _wizard.ClearStep();
 		RenderFooter();
@@ -220,13 +219,18 @@ public sealed class FirstRunWindow : Window
 	/// </summary>
 	private async Task AdvanceAsync()
 	{
+		if (_closed || _steps.IsImporting) return;
 		if (_wizard.Snapshot().IsLast)
 		{
-			await _wizard.FinishAsync();
+			Task<bool> finishing = _wizard.FinishAsync(_lifetimeToken);
+			RenderFooter();
+			await finishing;
 			Render();
 			return;
 		}
 
+		// 模型可能在停留期间被移除，离开前重新检查安装状态。
+		if (_wizard.Snapshot().Step == WizardStep.Model) Render();
 		if (_wizard.Snapshot().Step == WizardStep.Ai)
 		{
 			_forward.IsEnabled = false;
@@ -254,11 +258,14 @@ public sealed class FirstRunWindow : Window
 		// 自己先挡一道。没有形象时 CompleteFirstRun 会抛 ArgumentException，而状态机
 		// 把异常消息原样摆到底部那条错误行上 —— 用户会看见「模型 ID 不能为空」这种
 		// 内部说法。正常路径上选形象那一步就挡住了，这里是兜底。
-		if (_steps.SelectedModel.Length == 0)
+		if (_steps.SelectedModel.Length == 0
+			|| !await Task.Run(() => _services.Resources.IsInstalled(ResourceType.Live2D, _steps.SelectedModel), cancellationToken))
 			throw new InvalidOperationException(IsEnglish()
 				? "No appearance selected"
 				: "未选择形象，无法完成初始化");
 
+		if (_closed) throw new OperationCanceledException("首次运行向导已关闭");
+		cancellationToken.ThrowIfCancellationRequested();
 		_services.Config.CompleteFirstRun(_steps.SelectedModel, _steps.TelemetryEnabled);
 		_services.Telemetry.Configure(_steps.TelemetryEnabled);
 		_services.Logger.Write(LogSource.Backend, "info",
@@ -268,15 +275,14 @@ public sealed class FirstRunWindow : Window
 		if (_services.Runtime is { } runtime) runtime.MarkInitStartPending();
 		cancellationToken.ThrowIfCancellationRequested();
 
-		AllowClose = true;
 		_services.Windows.Close(WindowLabels.FirstRun);
 		_services.Windows.Show(WindowLabels.Init);
-		await Task.CompletedTask;
 	}
 
 	/// <summary>把状态机的快照画出来。每次状态变化都整幅重画 —— 这一页够小。</summary>
 	private void Render()
 	{
+		if (_closed) return;
 		WizardState state = _wizard.Snapshot();
 		bool english = IsEnglish();
 		RenderChrome(state, english);
@@ -318,7 +324,7 @@ public sealed class FirstRunWindow : Window
 
 		_back.Content = english ? "Back" : "上一步";
 		_back.IsVisible = !state.IsFirst;
-		_back.IsEnabled = state.CanPrev;
+		_back.IsEnabled = state.CanPrev && !_steps.IsImporting;
 
 		bool submitting = state.FinishState == WizardFinishState.Submitting;
 		_forward.Content = state.IsLast
@@ -328,7 +334,7 @@ public sealed class FirstRunWindow : Window
 					? english ? "Retry" : "重试"
 					: english ? "Start" : "开始使用"
 			: english ? "Next" : "下一步";
-		_forward.IsEnabled = state.IsLast ? !submitting : state.CanNext;
+		_forward.IsEnabled = !_steps.IsImporting && (state.IsLast ? !submitting : state.CanNext);
 		// 显式设过 Background，Avalonia 的禁用态样式盖不掉 —— 不自己压暗的话，
 		// 一颗按不动的按钮看起来和能按的一模一样。
 		_forward.Opacity = _forward.IsEnabled ? 1 : 0.4;
@@ -339,43 +345,7 @@ public sealed class FirstRunWindow : Window
 		_error.IsVisible = message.Length > 0;
 	}
 
-	// ── 测试用 ─────────────────────────────────────────────────────────────
-
-	/// <summary>当前处在哪一步。</summary>
-	internal WizardStep CurrentStepForTests => _wizard.Snapshot().Step;
-
-	/// <summary>底部那条错误行上现在写着什么。</summary>
-	internal string ErrorTextForTests => _error.Text ?? "";
-
-	/// <summary>前进按钮的文案与可用性 —— 末步会换成「开始使用」。</summary>
-	internal (string Text, bool Enabled) ForwardForTests => (_forward.Content as string ?? "", _forward.IsEnabled);
-
-	/// <summary>推进一步，走的是按钮那条路。</summary>
-	internal Task AdvanceForTests() => AdvanceAsync();
-
-	/// <summary>
-	/// 直接跳到某一步，绕开守卫。
-	///
-	/// **只给测试用。** 选形象那一步在测试环境里必然被自己挡住（一个模型都没装），
-	/// 而末步和完成流程仍然要能测到。
-	/// </summary>
-	internal void ForceStepForTests(WizardStep? target = null)
-	{
-		WizardStep want = target ?? FirstRunWizard.Order[
-			Math.Min(FirstRunWizard.Order.Count - 1, _wizard.Snapshot().Index + 1)];
-		while (_wizard.Snapshot().Step != want && !_wizard.Snapshot().IsLast)
-		{
-			_wizard.ClearStep();
-			if (!_wizard.Next()) break;
-		}
-		Render();
-	}
-
-	/// <summary>指定选中的形象。**只给测试用** —— 测试环境里一个模型都没装。</summary>
-	internal void SelectModelForTests(string modelId) => _steps.SelectModelForTests(modelId);
-
-	/// <summary>后退一步。</summary>
-	internal void BackForTests()
+	private void Back()
 	{
 		_wizard.Prev();
 		Render();

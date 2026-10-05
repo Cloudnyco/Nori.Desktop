@@ -26,7 +26,8 @@ public sealed partial class NativeSettingsPagePresenter : ContentControl, IDispo
 		HorizontalContentAlignment = HorizontalAlignment.Stretch;
 		DataContextChanged += OnDataContextChanged;
 		SettingsLocalization.Changed += OnLanguageChanged;
-		AttachedToVisualTree += (_, _) => Build();
+		AttachedToVisualTree += (_, _) => { Build(); StartDebugRefresh(); };
+		DetachedFromVisualTree += (_, _) => StopDebugRefresh();
 	}
 
 	private void OnLanguageChanged()
@@ -40,6 +41,7 @@ public sealed partial class NativeSettingsPagePresenter : ContentControl, IDispo
 
 	private void OnDataContextChanged(object? sender, EventArgs args)
 	{
+		StopDebugRefresh();
 		if (_viewModel is not null)
 		{
 			_viewModel.PropertyChanged -= OnViewModelPropertyChanged;
@@ -126,6 +128,8 @@ public sealed partial class NativeSettingsPagePresenter : ContentControl, IDispo
 				case DebugSettingsViewModel debug:
 					BuildDebug(root, debug);
 					break;
+				default:
+					break;
 			}
 			Content = root;
 		}
@@ -139,12 +143,6 @@ public sealed partial class NativeSettingsPagePresenter : ContentControl, IDispo
 	{
 		DiagnosticExportItem? result = await viewModel.ExportDiagnosticsAsync().ConfigureAwait(true);
 		if (result is not null) await NativeSettingsDialogs.ShowMessageAsync(Owner(), NativeSettingsResources.Get("debug.export"), $"{result.FileName}\n{result.Bytes} bytes").ConfigureAwait(true);
-	}
-
-	private async Task RunCrashAsync(DebugSettingsViewModel viewModel, string mode, bool mayExit)
-	{
-		string prompt = mayExit ? NativeSettingsResources.Get("debug.exitConfirm") : NativeSettingsResources.Get("debug.crashConfirm");
-		if (await NativeSettingsDialogs.ConfirmAsync(Owner(), NativeSettingsResources.Get("debug.crash"), prompt, true).ConfigureAwait(true)) await viewModel.TriggerCrashAsync(mode).ConfigureAwait(true);
 	}
 
 	private StackPanel CardBody(string title, string? subtitle, bool compact = false)
@@ -232,6 +230,7 @@ public sealed partial class NativeSettingsPagePresenter : ContentControl, IDispo
 	public void Dispose()
 	{
 		_disposed = true;
+		StopDebugRefresh();
 		if (_viewModel is not null)
 		{
 			_viewModel.PropertyChanged -= OnViewModelPropertyChanged;

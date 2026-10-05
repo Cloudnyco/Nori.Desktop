@@ -17,6 +17,7 @@ internal static class Program
 
 	internal static StartupOptions? Options { get; private set; }
 	internal static AppStoragePaths? StoragePaths { get; private set; }
+	internal static Nori.Core.Logging.FileLogger? Logger { get; private set; }
 
 	internal static bool ConsumePendingActivation() => Interlocked.Exchange(ref _activationPending, 0) == 1;
 
@@ -34,6 +35,7 @@ internal static class Program
 		return $"{os}-{architecture}";
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "启动错误展示失败不能覆盖原始错误。")]
 	private static void ShowStartupError(string title, string message)
 	{
 		string safe = Nori.Core.Security.SensitiveDataRedactor.Redact(message);
@@ -48,8 +50,11 @@ internal static class Program
 			{
 				System.Diagnostics.ProcessStartInfo alert = new("osascript") { UseShellExecute = false };
 				alert.ArgumentList.Add("-e");
-				alert.ArgumentList.Add($"display alert {AppleScriptString(title)} message {AppleScriptString(safe)}");
-				using System.Diagnostics.Process? process = System.Diagnostics.Process.Start(alert);
+				alert.ArgumentList.Add("display alert (system attribute \"NORI_ALERT_TITLE\") message (system attribute \"NORI_ALERT_MESSAGE\")");
+				alert.Environment["NORI_ALERT_TITLE"] = title;
+				alert.Environment["NORI_ALERT_MESSAGE"] = safe;
+				// 可执行文件和脚本均为固定字面量，动态文本只通过环境变量传值。
+				using System.Diagnostics.Process? process = System.Diagnostics.Process.Start(alert); // nosemgrep
 				if (process is null) throw new InvalidOperationException("无法显示启动错误");
 				process.WaitForExit(5000);
 				return;
@@ -58,8 +63,6 @@ internal static class Program
 		}
 		Console.Error.WriteLine($"{title}: {safe}");
 	}
-
-	private static string AppleScriptString(string value) => "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal).Replace("\r", " ", StringComparison.Ordinal).Replace("\n", " ", StringComparison.Ordinal) + "\"";
 
 	[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = CharSet.Unicode)]
 	private static extern int MessageBox(nint hWnd, string text, string caption, uint type);
@@ -136,6 +139,8 @@ internal static class Program
 		{
 			AppStoragePaths paths = StoragePaths ?? throw new InvalidOperationException("存储路径尚未初始化");
 			StorageBootstrapper.Bootstrap(paths, ProductVersion.Current, RuntimeRid());
+			Logger = new Nori.Core.Logging.FileLogger(paths.LogsDirectory);
+			CrashReporter.AttachLogger(Logger);
 			BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
 		}
 		catch (Exception exception)
@@ -146,6 +151,14 @@ internal static class Program
 			ShowStartupError("存储初始化失败", summary);
 			Environment.ExitCode = 1;
 		}
+		finally
+		{
+			Logger?.Write(Nori.Core.Logging.LogSource.Backend, "info", "应用退出", "Lifecycle", "app.shutdown");
+			Logger?.Dispose();
+			Avalonia.Logging.Logger.Sink = null;
+			CrashReporter.DetachLogger();
+			Logger = null;
+		}
 	}
 
 	/// <summary>
@@ -153,5 +166,9 @@ internal static class Program
 	/// </summary>
 	public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<App>()
 		.UsePlatformDetect()
-		.LogToTrace();
+		.LogToTrace()
+		.AfterSetup(_ =>
+		{
+			if (Logger is { } logger) Avalonia.Logging.Logger.Sink = new AvaloniaLogSink(logger);
+		});
 }

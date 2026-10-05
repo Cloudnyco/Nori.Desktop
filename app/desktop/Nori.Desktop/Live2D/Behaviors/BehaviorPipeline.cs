@@ -1,4 +1,4 @@
-using Live2DCSharpSDK.App;
+using Nori.Live2D;
 
 namespace Nori.Desktop.Live2D.Behaviors;
 
@@ -10,7 +10,7 @@ namespace Nori.Desktop.Live2D.Behaviors;
 /// </summary>
 public sealed class BehaviorContext
 {
-	public LAppModel Model { get; set; } = null!;
+	public AnimatedModel Model { get; set; } = null!;
 	public double Now { get; set; }
 	public double TimeDelta { get; set; }
 	public bool IsIdleMotion { get; set; }
@@ -69,6 +69,8 @@ public sealed class BehaviorPipeline
 				break;
 			case PipelineStage.Final:
 				_finalPlugins.Add(plugin);
+				break;
+			default:
 				break;
 		}
 	}

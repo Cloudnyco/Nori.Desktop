@@ -4,6 +4,7 @@ using Avalonia.Threading;
 namespace Nori.Desktop.Settings;
 
 /// <summary>语音、TTS 与 STT 设置页。</summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S1854", Justification = "设置命令回调按 UI 约定显式丢弃受控后台 Task。")]
 public sealed class VoiceSettingsPage : SettingsPageBase
 {
 	private static readonly IReadOnlyList<SettingsOption> TtsProviders =
@@ -62,10 +63,10 @@ public sealed class VoiceSettingsPage : SettingsPageBase
 		AddField(general, "ttsAutoPlay", new("自动朗读", "Auto play"), new("让对话回复自动播放语音。", "Play speech automatically for chat replies."), SettingsEditorKind.Boolean,
 			snapshot => SettingsSnapshotReader.Boolean(snapshot, false, "voice", "ttsAutoPlay"), false,
 			(value, token) => ExecuteAsync("settings_update_voice", new { ttsAutoPlay = Convert.ToBoolean(value) }, token));
-		_previewCommand = new SettingsCommand(_ => _ = TestVoiceAsync(), _ => !_previewing && !_speaking);
+		_previewCommand = new SettingsCommand(command => _ = TestVoiceAsync(), canExecute => !_previewing && !_speaking);
 		AddAction(general, "testVoice", new("试听当前声音", "Preview voice"), new("使用当前 TTS 配置播放一条测试语音。", "Play a sample with the current TTS configuration."), _previewCommand);
-		AddAction(general, "stopVoice", new("停止播放", "Stop playback"), new("停止当前语音播放。", "Stop the current speech."), new SettingsCommand(_ => _ = StopVoiceAsync()));
-		_notice = AddAction(general, "ackVoiceNotice", new("已了解语音配置迁移", "Dismiss voice migration notice"), new("旧版浏览器语音配置已停用，当前由宿主语音服务合成和播放。", "Legacy browser speech settings are no longer used. The host now synthesizes and plays speech."), new SettingsCommand(_ => _ = AcknowledgeVoiceNoticeAsync()));
+		AddAction(general, "stopVoice", new("停止播放", "Stop playback"), new("停止当前语音播放。", "Stop the current speech."), new SettingsCommand(command => _ = StopVoiceAsync()));
+		_notice = AddAction(general, "ackVoiceNotice", new("已了解语音配置迁移", "Dismiss voice migration notice"), new("旧版浏览器语音配置已停用，当前由宿主语音服务合成和播放。", "Legacy browser speech settings are no longer used. The host now synthesizes and plays speech."), new SettingsCommand(command => _ = AcknowledgeVoiceNoticeAsync()));
 
 		SettingsSectionViewModel gpt = _gptSection = AddSection(new("GPT-SoVITS", "GPT-SoVITS"));
 		AddField(gpt, "gptsovitsBaseUrl", new("服务地址", "Service URL"), new("GPT-SoVITS API 地址。", "GPT-SoVITS API endpoint."), SettingsEditorKind.Text,
@@ -89,8 +90,8 @@ public sealed class VoiceSettingsPage : SettingsPageBase
 			snapshot => SettingsSnapshotReader.Number(snapshot, 0.3, "voice", "indexttsEmoAlpha"), 0.3,
 			(value, token) => ExecuteAsync("settings_update_voice", new { indexttsEmoAlpha = Convert.ToDouble(value).ToString(System.Globalization.CultureInfo.InvariantCulture) }, token),
 			minimum: 0, maximum: 1, increment: 0.01);
-		AddAction(index, "pickIndexTemplate", new("选择模板音频", "Pick template audio"), new("选择用于 IndexTTS-2 克隆的本地音频文件。", "Choose local audio for IndexTTS-2 voice cloning."), new SettingsCommand(_ => _ = PickIndexTemplateAsync()));
-		_cloneCommand = new SettingsCommand(_ => _ = CloneIndexVoiceAsync(), _ => !_cloning);
+		AddAction(index, "pickIndexTemplate", new("选择模板音频", "Pick template audio"), new("选择用于 IndexTTS-2 克隆的本地音频文件。", "Choose local audio for IndexTTS-2 voice cloning."), new SettingsCommand(command => _ = PickIndexTemplateAsync()));
+		_cloneCommand = new SettingsCommand(command => _ = CloneIndexVoiceAsync(), canExecute => !_cloning);
 		AddAction(index, "cloneIndexVoice", new("克隆声音", "Clone voice"), new("使用模板音频创建声音配置。", "Create a voice configuration from the template audio."), _cloneCommand);
 
 		SettingsSectionViewModel stt = AddSection(new("语音识别", "Speech to text"));
@@ -199,7 +200,7 @@ public sealed class VoiceSettingsPage : SettingsPageBase
 			_indexTemplate.Text = path;
 			SetStatus(Text("模板音频已选择。", "Template audio selected."));
 		}
-		catch (Exception exception) { SetStatus(exception.Message); }
+		catch (Exception exception) { SetStatus(exception); }
 	}
 
 	private async Task TestVoiceAsync()
@@ -214,7 +215,7 @@ public sealed class VoiceSettingsPage : SettingsPageBase
 			SetStatus(Text("试听已开始。", "Voice preview started."));
 		}
 		catch (OperationCanceledException) { }
-		catch (Exception exception) { SetStatus(exception.Message); }
+		catch (Exception exception) { SetStatus(exception); }
 		finally { _previewing = false; _previewCommand.RaiseCanExecuteChanged(); }
 	}
 
@@ -222,7 +223,7 @@ public sealed class VoiceSettingsPage : SettingsPageBase
 	{
 		try { await ExecuteAsync("tts_stop", cancellationToken: LifetimeToken).ConfigureAwait(true); }
 		catch (OperationCanceledException) { }
-		catch (Exception exception) { SetStatus(exception.Message); }
+		catch (Exception exception) { SetStatus(exception); }
 	}
 
 	private async Task AcknowledgeVoiceNoticeAsync()
@@ -233,7 +234,7 @@ public sealed class VoiceSettingsPage : SettingsPageBase
 			_notice.IsVisible = false;
 			SetStatus(Text("旧版提示已关闭。", "Legacy notice dismissed."));
 		}
-		catch (Exception exception) { SetStatus(exception.Message); }
+		catch (Exception exception) { SetStatus(exception); }
 	}
 
 	private async Task CloneIndexVoiceAsync()
@@ -254,7 +255,7 @@ public sealed class VoiceSettingsPage : SettingsPageBase
 			SetStatus(voiceId.Length > 0 ? Text("声音克隆完成：", "Voice cloned: ") + voiceId : Text("声音克隆完成。", "Voice cloned."));
 		}
 		catch (OperationCanceledException) { }
-		catch (Exception exception) { SetStatus(exception.Message); }
+		catch (Exception exception) { SetStatus(exception); }
 		finally { _cloning = false; _cloneCommand.RaiseCanExecuteChanged(); }
 	}
 }

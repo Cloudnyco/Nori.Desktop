@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+
 namespace Nori.Desktop.Live2D.Behaviors;
 
 /// <summary>
@@ -37,28 +39,33 @@ public sealed class EyeFocusBehavior : IBehaviorPlugin
 		}
 	}
 
-	private readonly Random _random = new();
 	private double _nextSaccadeAt = -1;
 	private (float X, float Y) _focusTarget = (0, 0);
 	private double _lastSaccadeAt = -1;
 
 	private double RandomSaccadeInterval()
 	{
-		double r = _random.NextDouble();
+		double r = NextUnit();
 		foreach (var (prob, baseInterval) in SaccadeDistribution)
 		{
-			if (r <= prob) return baseInterval + _random.NextDouble() * SaccadeStep;
+			if (r <= prob) return baseInterval + NextUnit() * SaccadeStep;
 		}
 		var last = SaccadeDistribution[^1];
-		return last.Base + _random.NextDouble() * SaccadeStep;
+		return last.Base + NextUnit() * SaccadeStep;
 	}
 
-	private float RandFloat(float min, float max) => min + (float)_random.NextDouble() * (max - min);
+	private static double NextUnit() => RandomNumberGenerator.GetInt32(int.MaxValue) / (double)int.MaxValue;
+	private static float RandFloat(float min, float max) => min + (float)NextUnit() * (max - min);
 	private static float Lerp(float a, float b, float t) => a + (b - a) * t;
 
 	public void Execute(BehaviorContext ctx)
 	{
-		if (!ctx.IsIdleMotion || ctx.Handled || !ctx.ForceIdleEyeAnimation) return;
+		if (!ctx.IsIdleMotion || ctx.Handled || !ctx.ForceIdleEyeAnimation || !ctx.ModelParameters.IsBound) return;
+		int eyeBallXIndex = ctx.ModelParameters.EyeBallXIndex;
+		int eyeBallYIndex = ctx.ModelParameters.EyeBallYIndex;
+		if (eyeBallXIndex < 0 || eyeBallYIndex < 0) return;
+
+		var model = ctx.Model.Model;
 
 		double now = ctx.Now;
 
@@ -69,10 +76,10 @@ public sealed class EyeFocusBehavior : IBehaviorPlugin
 			_nextSaccadeAt = now + (RandomSaccadeInterval() / 1000.0);
 		}
 
-		float curX = ctx.Model.Model.GetParameterValue("ParamEyeBallX");
-		float curY = ctx.Model.Model.GetParameterValue("ParamEyeBallY");
+		float curX = model.GetParameterValue(eyeBallXIndex);
+		float curY = model.GetParameterValue(eyeBallYIndex);
 
-		ctx.Model.Model.SetParameterValue("ParamEyeBallX", Lerp(curX, _focusTarget.X, 0.3f));
-		ctx.Model.Model.SetParameterValue("ParamEyeBallY", Lerp(curY, _focusTarget.Y, 0.3f));
+		model.SetParameterValue(eyeBallXIndex, Lerp(curX, _focusTarget.X, 0.3f));
+		model.SetParameterValue(eyeBallYIndex, Lerp(curY, _focusTarget.Y, 0.3f));
 	}
 }

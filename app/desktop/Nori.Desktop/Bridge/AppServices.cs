@@ -1,4 +1,3 @@
-using Nori.Core.Assets;
 using Nori.Core.Agent;
 using Nori.Core.Automation;
 using Nori.Core.Chat;
@@ -16,10 +15,8 @@ using Nori.PluginRuntime;
 namespace Nori.Desktop.Bridge;
 
 /// <summary>
-/// 应用级服务容器
-///
-/// 承接原来 Rust 侧 tauri::State 的角色: 把数据库/配置/资源/聊天/日志/窗口
-/// 装配在一起交给桥接命令使用.
+/// 应用级服务容器。
+/// 把数据库、配置、资源、聊天、日志、窗口等核心服务装配在一起提供给各模块和桥接命令使用。
 /// </summary>
 public sealed class AppServices : IAsyncDisposable
 {
@@ -37,6 +34,8 @@ public sealed class AppServices : IAsyncDisposable
 
 	/// <summary>日志</summary>
 	public required FileLogger Logger { get; init; }
+	/// <summary>生产进程在所有服务退出后统一释放日志；独立测试服务自行释放。</summary>
+	public bool ProcessOwnsLogger { get; init; }
 
 	/// <summary>错误与性能遥测; 未装配时为空实现</summary>
 	public ITelemetry Telemetry { get; set; } = NoopTelemetry.Instance;
@@ -58,9 +57,6 @@ public sealed class AppServices : IAsyncDisposable
 
 	/// <summary>MCP (Model Context Protocol) 管理器</summary>
 	public required Nori.Core.Mcp.McpManager Mcp { get; init; }
-
-	/// <summary>回环资源服务</summary>
-	public AssetServer? Assets { get; init; }
 
 	/// <summary>统一插件运行时；安全模式下仅发现并标记禁用插件。</summary>
 	internal PluginRuntimeHost? PluginRuntime { get; set; }
@@ -106,7 +102,7 @@ public sealed class AppServices : IAsyncDisposable
 	/// <summary>
 	/// 造登录协调器，并把「登录成功」接到界面刷新上。
 	///
-	/// 登录成功之后必须让快照失效：设置里的「账户与同步」页、托盘标题、WebView 那一侧，
+	/// 登录成功之后必须让快照失效：设置里的「账户与同步」页、托盘标题，
 	/// 读的都是快照的 account 段。缺这一步的症状是**登录完界面一切照旧** —— 那一页仍写着
 	/// 「未登录」，备份与恢复仍是禁用的，直到别的操作碰巧让快照失效才跟上。
 	///
@@ -119,7 +115,7 @@ public sealed class AppServices : IAsyncDisposable
 			PublicHttp, Config, AskConsentAsync, Logger);
 		coordinator.SignedIn += _ =>
 		{
-			Runtime?.InvalidateSnapshot("account");
+			Runtime?.InvalidateSnapshot();
 			// 托盘那一条要从「登录…」换成账户名，它不读快照，只能单独喊一次。
 			Avalonia.Threading.Dispatcher.UIThread.Post(Tray.TrayMenu.Refresh);
 		};
@@ -203,9 +199,6 @@ public sealed class AppServices : IAsyncDisposable
 	/// <summary>桥接命令, 服务装配完成后回填</summary>
 	public BridgeCommands Commands { get; set; } = null!;
 
-	/// <summary>桥接内核, 服务装配完成后回填</summary>
-	public NoriBridge? Bridge { get; set; }
-
 	/// <summary>原生 Live2D 伴侣运行时</summary>
 	public PetRuntime PetRuntime { get; set; } = null!;
 
@@ -232,8 +225,7 @@ public sealed class AppServices : IAsyncDisposable
 	{
 		if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
-		// 先停止桥接，再并行取消彼此独立的后台子系统；单个挂起项不能挡住数据库与遥测释放。
-		await DisposeStep(() => Bridge?.DisposeAsync() ?? ValueTask.CompletedTask, TimeSpan.FromSeconds(1));
+		// 并行取消彼此独立的后台子系统；单个挂起项不能挡住数据库与遥测释放。
 		await Task.WhenAll(
 			DisposeStep(() => Runtime?.DisposeAsync() ?? ValueTask.CompletedTask, TimeSpan.FromSeconds(4)),
 			DisposeStep(() => Automation?.DisposeAsync() ?? ValueTask.CompletedTask, TimeSpan.FromSeconds(4)),
@@ -243,25 +235,25 @@ public sealed class AppServices : IAsyncDisposable
 				Update?.Dispose();
 				return ValueTask.CompletedTask;
 			}, TimeSpan.FromSeconds(1)),
-			DisposeStep(() => Mcp.DisposeAsync(), TimeSpan.FromSeconds(4)),
-			DisposeStep(() => Assets?.DisposeAsync() ?? ValueTask.CompletedTask, TimeSpan.FromSeconds(4)));
+			DisposeStep(() => Mcp.DisposeAsync(), TimeSpan.FromSeconds(4))).ConfigureAwait(false);
 		await DisposeStep(() =>
 		{
 			if (_publicHttp is not null && !ReferenceEquals(_publicHttp, Http)) _publicHttp.Dispose();
 			Http.Dispose();
 			return ValueTask.CompletedTask;
-		}, TimeSpan.FromSeconds(1));
+		}, TimeSpan.FromSeconds(1)).ConfigureAwait(false);
 		await DisposeStep(() =>
 		{
 			Database.Dispose();
 			return ValueTask.CompletedTask;
-		}, TimeSpan.FromSeconds(1));
-		await DisposeStep(async () => await Telemetry.FlushAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false), TimeSpan.FromSeconds(2));
+		}, TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+		await DisposeStep(async () => await Telemetry.FlushAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false), TimeSpan.FromSeconds(2)).ConfigureAwait(false);
 		await DisposeStep(() =>
 		{
 			Telemetry.Dispose();
 			return ValueTask.CompletedTask;
-		}, TimeSpan.FromSeconds(1));
+		}, TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+		if (!ProcessOwnsLogger) await Logger.DisposeAsync().ConfigureAwait(false);
 	}
 
 	private static async Task DisposeStep(Func<ValueTask> dispose, TimeSpan timeout)

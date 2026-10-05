@@ -3,27 +3,27 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
-using Nori.Core.Assets;
-using Nori.Core.Data;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Nori.Desktop.QuickChat;
 using Nori.Desktop.Bridge;
+using Nori.Desktop.Appearance;
+using Nori.Core.Configuration;
 
 namespace Nori.Desktop.Windows;
 
 /// <summary>
-/// 窗口调度
-///
-/// 承接原来 Rust 侧 lib.rs setup / tray.rs 与前端 services/window/index.ts 的窗口调度职责.
-/// 管理三个 WebView、原生伴侣视窗与按需创建的原生设置、记忆、模型和对话窗口。
+/// 窗口调度。负责管理与调度所有原生窗口的生命周期与显示状态。
 /// </summary>
-public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleApplicationLifetime lifetime, AppStoragePaths storagePaths) : IWindowManager
+public sealed class WindowManager : IWindowManager
 {
-	private readonly AssetServer _assetServer = assetServer;
-	private readonly AppStoragePaths _storagePaths = storagePaths ?? throw new ArgumentNullException(nameof(storagePaths));
-	private readonly IClassicDesktopStyleApplicationLifetime _lifetime = lifetime;
+	private readonly Action<int> _shutdown;
 	private readonly Dictionary<string, Window> _windows = [];
 	private readonly ConcurrentDictionary<string, bool> _visible = new();
 	private PetWindow? _petWindow;
+	private QuickChatController? _quickChat;
 	private AppServices? _services;
+	private WindowBackdropController? _backdrops;
 	private int _shutdownRequested;
 	private Task? _memoryCloseTask;
 	private Task? _modelsCloseTask;
@@ -41,20 +41,34 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 	/// <summary>云端同步窗口。和账户窗口一样是按需建、关掉即销毁的一次性窗口。</summary>
 	private Account.CloudSyncWindow? _cloudSyncWindow;
 
+	/// <summary>生产入口仍由 Avalonia 生命周期执行最终退出。</summary>
+	public WindowManager(IClassicDesktopStyleApplicationLifetime lifetime)
+		: this(lifetime.Shutdown)
+	{
+	}
+
+	/// <summary>隔离最终退出动作，生命周期测试不实现 Avalonia 私有接口，也不终止共享 UI 会话。</summary>
+	internal WindowManager(Action<int> shutdown)
+	{
+		_shutdown = shutdown ?? throw new ArgumentNullException(nameof(shutdown));
+	}
+
 	/// <inheritdoc />
 	public event Action<string, bool>? VisibilityChanged;
 
 	/// <summary>
 	/// 建好全部窗口 (不显示)
 	/// </summary>
-	public void CreateAll(NoriBridge bridge, AppServices services)
+	public void CreateAll(AppServices services)
 	{
 		_services = services;
+		_backdrops = new WindowBackdropController();
+		_ = LoadBackdropPreferenceAsync(services);
 		foreach (WindowDefinition definition in WindowDefinition.All)
 		{
 			if (definition.Label == WindowLabels.Main)
 			{
-				// 主界面也原生了：迁移的最后一块，WebView 在主路径上就此退出。
+				// 主界面是原生窗口。
 				MainWindow mainWindow = new(definition, services);
 				_windows[definition.Label] = mainWindow;
 			}
@@ -65,8 +79,7 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 			}
 			else if (definition.Label == WindowLabels.Init)
 			{
-				// 初始化窗口已经是原生的：它自足，不碰音频也不碰插件，迁过来之后
-				// 启动路径上少一次 WebView 冷启动。
+				// 初始化窗口自足，不碰音频也不碰插件。
 				InitWindow initWindow = new(definition, services);
 				_windows[definition.Label] = initWindow;
 			}
@@ -84,14 +97,7 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 			}
 			else
 			{
-				NoriWindow window = new(definition, bridge, _assetServer.WindowUrl(definition.Label), _storagePaths);
-				window.Closing += (_, args) =>
-				{
-					if (window.AllowClose) return;
-					args.Cancel = true;
-					window.Hide();
-				};
-				_windows[definition.Label] = window;
+				throw new InvalidOperationException($"窗口 {definition.Label} 没有原生实现");
 			}
 
 			TrackVisibility(definition.Label, _windows[definition.Label]);
@@ -106,6 +112,8 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 	/// </summary>
 	private void TrackVisibility(string label, Window window)
 	{
+		_backdrops?.Register(window);
+		window.AddHandler(InputElement.KeyDownEvent, OnQuickChatShortcut, RoutingStrategies.Tunnel);
 		_visible[label] = window.IsVisible;
 		window.PropertyChanged += (_, args) =>
 		{
@@ -126,11 +134,6 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 	public Window? Get(string? label) => label is not null && _windows.TryGetValue(label, out Window? window) ? window : null;
 
 	/// <summary>
-	/// 按标签取 WebView2 窗口
-	/// </summary>
-	public NoriWindow? GetNoriWindow(string? label) => Get(label) as NoriWindow;
-
-	/// <summary>
 	/// 原生伴侣视窗引用
 	/// </summary>
 	public PetWindow? Pet => _petWindow;
@@ -140,11 +143,32 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 	/// </summary>
 	public IEnumerable<Window> All => _windows.Values;
 
+	/// <inheritdoc />
+	public void UpdateBackgroundBlurEnabled(bool enabled)
+	{
+		Dispatcher.UIThread.VerifyAccess();
+		_backdrops?.SetEnabled(enabled);
+	}
+
+	private async Task LoadBackdropPreferenceAsync(AppServices services)
+	{
+		try
+		{
+			if (_backdrops is { } backdrops)
+				await backdrops.InitializeAsync(() => services.Config.GetBoolOr(ConfigStore.KeyBackgroundBlurEnabled, true));
+		}
+		catch (Exception exception)
+		{
+			services.Logger.Write(Nori.Core.Logging.LogSource.Backend, "warn", $"读取窗口外观设置失败: {exception.GetType().Name}");
+		}
+	}
+
 	/// <summary>
 	/// 显示窗口；伴侣视窗不抢焦点，其他窗口同时聚焦
 	/// </summary>
 	public void Show(string label)
 	{
+		if (label == WindowLabels.Pet) EnsureQuickChat();
 		if (label == WindowLabels.Settings)
 		{
 			ShowSettings();
@@ -167,6 +191,7 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 		}
 		if (Get(label) is not { } window) return;
 		window.Show();
+		if (window is QuickChatWindow) return;
 		if (window is PetWindow pet)
 		{
 			// 伴侣视窗不抢当前应用焦点；点击穿透由分层样式实现，窗口保持置顶。
@@ -175,6 +200,25 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 			return;
 		}
 		window.Activate();
+	}
+
+	private void EnsureQuickChat()
+	{
+		if (_quickChat is not null || _petWindow is null || _services?.Runtime is null) return;
+		_quickChat = new QuickChatController(_services, _petWindow, window =>
+		{
+			_windows[WindowLabels.QuickChat] = window;
+			TrackVisibility(WindowLabels.QuickChat, window);
+		}, window =>
+		{
+			if (ReferenceEquals(Get(WindowLabels.QuickChat), window)) _windows.Remove(WindowLabels.QuickChat);
+		});
+	}
+
+	private void OnQuickChatShortcut(object? sender, KeyEventArgs args)
+	{
+		KeyModifiers modifier = OperatingSystem.IsMacOS() ? KeyModifiers.Meta : KeyModifiers.Control;
+		if (args.Key == Key.K && args.KeyModifiers == modifier && _quickChat?.FocusComposer() == true) args.Handled = true;
 	}
 
 	/// <inheritdoc />
@@ -364,7 +408,9 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 			return;
 		}
 		_windows.Remove(label);
-		if (window is NoriWindow nw) nw.AllowClose = true;
+		if (window is InitWindow init) init.AllowClose = true;
+		else if (window is FirstRunWindow firstRun) firstRun.AllowClose = true;
+		else if (window is MainWindow main) main.AllowClose = true;
 		else if (window is SettingsWindow settings) settings.AllowClose = true;
 		else if (window is PetWindow pw)
 		{
@@ -456,25 +502,12 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 	public void ClearPetSpeech() => _petWindow?.ClearSpeech();
 
 	/// <summary>
-	/// 向所有 WebView2 窗口广播事件
-	/// </summary>
-	public void Broadcast(string name, object? payload)
-	{
-		foreach (Window window in _windows.Values)
-		{
-			if (window is NoriWindow noriWindow)
-			{
-				noriWindow.PostEvent(name, payload);
-			}
-		}
-	}
-
-	/// <summary>
 	/// 退出应用
 	///
 	/// 托盘菜单与桥接命令可能在关闭回调或后台线程中触发退出。统一延迟到 UI 线程执行,
 	/// 并在真正关闭前放行所有受管窗口, 避免窗口关闭处理器把退出请求变成隐藏窗口。
 	/// </summary>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S1854", Justification = "关闭流程使用受控异步任务并显式处理生命周期结果。")]
 	public void Shutdown()
 	{
 		if (Interlocked.Exchange(ref _shutdownRequested, 1) != 0) return;
@@ -512,6 +545,7 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 				if (models is not null) await models.PrepareShutdownAsync();
 				failureOwner = Get(WindowLabels.Chat);
 				if (failureOwner is ChatWindow chat) await chat.PrepareShutdownAsync();
+				if (_quickChat is not null) await _quickChat.ShutdownAsync();
 			}
 			catch (Exception exception)
 			{
@@ -524,7 +558,9 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 			}
 			foreach (Window window in _windows.Values)
 			{
-				if (window is NoriWindow noriWindow) noriWindow.AllowClose = true;
+				if (window is InitWindow initWindow) initWindow.AllowClose = true;
+				else if (window is FirstRunWindow firstRunWindow) firstRunWindow.AllowClose = true;
+				else if (window is MainWindow mainWindow) mainWindow.AllowClose = true;
 				else if (window is SettingsWindow settingsWindow) settingsWindow.AllowClose = true;
 				else if (window is MemoryWindow memoryWindow) memoryWindow.AllowClose = true;
 				else if (window is ModelsWindow modelsWindow) modelsWindow.AllowClose = true;
@@ -532,9 +568,12 @@ public sealed class WindowManager(AssetServer assetServer, IClassicDesktopStyleA
 				else if (window is PetWindow petWindow) petWindow.AllowClose = true;
 			}
 
+			_backdrops?.Dispose();
+			_backdrops = null;
+
 			try
 			{
-				_lifetime.Shutdown(0);
+				_shutdown(0);
 			}
 			catch (InvalidOperationException)
 			{

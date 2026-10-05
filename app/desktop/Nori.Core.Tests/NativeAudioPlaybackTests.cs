@@ -12,17 +12,32 @@ namespace Nori.Core.Tests;
 /// </summary>
 public sealed class NativeAudioPlaybackTests
 {
+	private static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(10);
+
 	/// <summary>记账用的假设备。可以按需在 Write 上阻塞，用来测打断。</summary>
 	private sealed class FakeDevice : IAudioDevice
 	{
-		private readonly ManualResetEventSlim _released = new(true);
+		private readonly ManualResetEventSlim _released = new(false);
+		private readonly ManualResetEventSlim _openReleased = new(false);
 		private volatile bool _stopped;
+		private double _volume = 1.0;
 
 		public List<float> Written { get; } = [];
 		public AudioFormat Opened { get; private set; }
 		public bool Drained { get; private set; }
-		public bool DisposedOnce { get; private set; }
-		public double Volume { get; set; } = 1.0;
+		public int DisposeCount { get; private set; }
+		public bool DisposedOnce => DisposeCount == 1;
+		public TaskCompletionSource WriteEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		public TaskCompletionSource OpenEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		public bool HoldAfterStop { get; set; }
+		public bool BlockOpen { get; set; }
+		public bool FailOpen { get; set; }
+		public bool FailVolume { get; set; }
+		public double Volume
+		{
+			get => _volume;
+			set => _volume = FailVolume ? throw new AudioDeviceException("设置音量失败") : value;
+		}
 
 		/// <summary>设备实际接受的格式；不设就原样接受调用方要的。</summary>
 		public AudioFormat? Force { get; set; }
@@ -32,17 +47,21 @@ public sealed class NativeAudioPlaybackTests
 
 		public AudioFormat Open(int sampleRate, int channels)
 		{
+			OpenEntered.TrySetResult();
+			if (BlockOpen) Assert.True(_openReleased.Wait(WaitTimeout), "未放行设备打开");
+			if (FailOpen) throw new AudioDeviceException("打开设备失败");
 			Opened = Force ?? new AudioFormat(sampleRate, channels);
 			return Opened;
 		}
 
 		public int Write(ReadOnlySpan<float> samples, CancellationToken cancellationToken)
 		{
+			WriteEntered.TrySetResult();
 			if (BlockWrites)
 			{
-				_released.Reset();
-				// 真设备在缓冲满时就是这样等着；Stop 要能把它放出来。
-				_released.Wait(TimeSpan.FromSeconds(5), cancellationToken);
+				// 可让旧段在收到 Stop 后仍停在设备里，精确控制它晚于新段收尾。
+				Assert.True(_released.Wait(WaitTimeout,
+					HoldAfterStop ? CancellationToken.None : cancellationToken), "未放行设备写入");
 				if (_stopped) return 0;
 			}
 			Written.AddRange(samples.ToArray());
@@ -54,15 +73,17 @@ public sealed class NativeAudioPlaybackTests
 		public void Stop()
 		{
 			_stopped = true;
-			_released.Set();
+			if (!HoldAfterStop) _released.Set();
 		}
 
 		public void Release() => _released.Set();
+		public void ReleaseOpen() => _openReleased.Set();
 
 		public void Dispose()
 		{
-			DisposedOnce = true;
+			DisposeCount++;
 			_released.Dispose();
+			_openReleased.Dispose();
 		}
 	}
 
@@ -89,6 +110,7 @@ public sealed class NativeAudioPlaybackTests
 		await playback.PlayAsync(Bytes(), CancellationToken.None);
 
 		Assert.Equal(audio.Samples.Length, device.Written.Count);
+		Assert.Equal(audio.Samples, device.Written);
 		Assert.Equal(new AudioFormat(44100, 1), device.Opened);
 		Assert.True(device.Drained);
 		Assert.True(device.DisposedOnce);
@@ -170,12 +192,11 @@ public sealed class NativeAudioPlaybackTests
 		using NativeAudioPlayback playback = Playback(device, Tone(frames: 44100));
 
 		Task playing = playback.PlayAsync(Bytes(), CancellationToken.None);
-		// 等它真的进到阻塞里。
-		await Task.Delay(80);
+		await device.WriteEntered.Task.WaitAsync(WaitTimeout);
 		Assert.True(playback.IsPlaying);
 
 		playback.Stop();
-		await playing.WaitAsync(TimeSpan.FromSeconds(3));
+		await playing.WaitAsync(WaitTimeout);
 
 		Assert.False(playback.IsPlaying);
 		Assert.True(device.Written.Count < Tone(frames: 44100).Samples.Length);
@@ -189,12 +210,263 @@ public sealed class NativeAudioPlaybackTests
 		using CancellationTokenSource cancelling = new();
 
 		Task playing = playback.PlayAsync(Bytes(), cancelling.Token);
-		await Task.Delay(80);
+		await device.WriteEntered.Task.WaitAsync(WaitTimeout);
 		await cancelling.CancelAsync();
-		device.Release();
 
-		await playing.WaitAsync(TimeSpan.FromSeconds(3));
+		await playing.WaitAsync(WaitTimeout);
 		Assert.False(playback.IsPlaying);
+	}
+
+	[Fact]
+	public async Task 旧段晚收尾不能覆盖新段状态和口型()
+	{
+		FakeDevice first = new() {BlockWrites = true, HoldAfterStop = true};
+		FakeDevice second = new() {BlockWrites = true};
+		int created = 0;
+		using NativeAudioPlayback playback = new(
+			() => Interlocked.Increment(ref created) == 1 ? first : second, (_, _) => Tone());
+		List<bool> states = [];
+		List<double> levels = [];
+		playback.PlayingChanged += states.Add;
+		playback.VolumeSampled += levels.Add;
+
+		Task previous = playback.PlayAsync(Bytes(), CancellationToken.None);
+		await first.WriteEntered.Task.WaitAsync(WaitTimeout);
+		Task current = playback.PlayAsync(Bytes(), CancellationToken.None);
+		await second.WriteEntered.Task.WaitAsync(WaitTimeout);
+		int levelCount = levels.Count;
+		try
+		{
+			first.Release();
+			await previous.WaitAsync(WaitTimeout);
+
+			Assert.True(playback.IsPlaying);
+			Assert.Equal([true], states);
+			Assert.Equal(levelCount, levels.Count);
+			Assert.True(levels[^1] > 0);
+			Assert.True(first.DisposedOnce);
+			Assert.Equal(0, second.DisposeCount);
+		}
+		finally
+		{
+			second.Release();
+			await current.WaitAsync(WaitTimeout);
+		}
+		Assert.Equal([true, false], states);
+		Assert.Equal(0, levels[^1]);
+		Assert.True(second.DisposedOnce);
+	}
+
+	[Fact]
+	public async Task 创建设备期间已被替换的段不能抢回所有权()
+	{
+		using ManualResetEventSlim release = new(false);
+		TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		FakeDevice first = new();
+		FakeDevice second = new() {BlockWrites = true};
+		int created = 0;
+		using NativeAudioPlayback playback = new(() =>
+		{
+			if (Interlocked.Increment(ref created) != 1) return second;
+			entered.SetResult();
+			Assert.True(release.Wait(WaitTimeout), "未放行设备创建");
+			return first;
+		}, (_, _) => Tone());
+
+		Task previous = Task.Run(() => playback.PlayAsync(Bytes(), CancellationToken.None));
+		await entered.Task.WaitAsync(WaitTimeout);
+		Task current = playback.PlayAsync(Bytes(), CancellationToken.None);
+		await second.WriteEntered.Task.WaitAsync(WaitTimeout);
+		try
+		{
+			release.Set();
+			await previous.WaitAsync(WaitTimeout);
+			Assert.False(first.OpenEntered.Task.IsCompleted);
+			Assert.True(first.DisposedOnce);
+			Assert.True(playback.IsPlaying);
+			Assert.Equal(0, second.DisposeCount);
+		}
+		finally
+		{
+			release.Set();
+			second.Release();
+			await current.WaitAsync(WaitTimeout);
+		}
+	}
+
+	[Fact]
+	public async Task 打开期间停止不会写入且只释放一次()
+	{
+		FakeDevice device = new() {BlockOpen = true};
+		using NativeAudioPlayback playback = Playback(device, Tone());
+		Task playing = playback.PlayAsync(Bytes(), CancellationToken.None);
+		await device.OpenEntered.Task.WaitAsync(WaitTimeout);
+		try
+		{
+			playback.Stop();
+			Assert.Equal(0, device.DisposeCount);
+		}
+		finally
+		{
+			device.ReleaseOpen();
+			await playing.WaitAsync(WaitTimeout);
+		}
+		Assert.Empty(device.Written);
+		Assert.True(device.DisposedOnce);
+		Assert.False(playback.IsPlaying);
+	}
+
+	[Fact]
+	public async Task 释放只请求停止并由播放任务释放设备()
+	{
+		FakeDevice device = new() {BlockWrites = true, HoldAfterStop = true};
+		using NativeAudioPlayback playback = Playback(device, Tone());
+		Task playing = playback.PlayAsync(Bytes(), CancellationToken.None);
+		await device.WriteEntered.Task.WaitAsync(WaitTimeout);
+		try
+		{
+			playback.Dispose();
+			playback.Dispose();
+			Assert.Equal(0, device.DisposeCount);
+			await Assert.ThrowsAsync<ObjectDisposedException>(() => playback.PlayAsync(Bytes(), CancellationToken.None));
+		}
+		finally
+		{
+			device.Release();
+			await playing.WaitAsync(WaitTimeout);
+		}
+		Assert.True(device.DisposedOnce);
+		Assert.False(playback.IsPlaying);
+	}
+
+	[Theory]
+	[InlineData(true)]
+	[InlineData(false)]
+	public async Task 状态与电平回调允许其他线程同步停止(bool onState)
+	{
+		FakeDevice device = new();
+		using NativeAudioPlayback playback = Playback(device, Tone());
+		bool invoked = false;
+		void StopFromOtherThread()
+		{
+			if (invoked) return;
+			invoked = true;
+			using ManualResetEventSlim stopped = new(false);
+			_ = Task.Run(() =>
+			{
+				playback.Stop();
+				stopped.Set();
+			});
+			Assert.True(stopped.Wait(WaitTimeout), "通知回调持有状态锁，阻塞了停止操作");
+		}
+		if (onState) playback.PlayingChanged += playing => { if (playing) StopFromOtherThread(); };
+		else playback.VolumeSampled += level => { if (level > 0) StopFromOtherThread(); };
+
+		await playback.PlayAsync(Bytes(), CancellationToken.None).WaitAsync(WaitTimeout);
+
+		Assert.True(invoked);
+		Assert.False(playback.IsPlaying);
+		Assert.True(device.DisposedOnce);
+	}
+
+	[Fact]
+	public async Task 收尾回调开始新段不会收到旧段归零()
+	{
+		FakeDevice first = new();
+		FakeDevice second = new() {BlockWrites = true};
+		int created = 0;
+		using NativeAudioPlayback playback = new(
+			() => Interlocked.Increment(ref created) == 1 ? first : second, (_, _) => Tone());
+		Task? current = null;
+		List<double> levels = [];
+		playback.VolumeSampled += levels.Add;
+		playback.PlayingChanged += playing =>
+		{
+			if (playing || current is not null) return;
+			levels.Clear();
+			current = playback.PlayAsync(Bytes(), CancellationToken.None);
+		};
+
+		await playback.PlayAsync(Bytes(), CancellationToken.None).WaitAsync(WaitTimeout);
+		await second.WriteEntered.Task.WaitAsync(WaitTimeout);
+		try
+		{
+			Assert.True(playback.IsPlaying);
+			Assert.DoesNotContain(0d, levels);
+			Assert.NotEmpty(levels);
+		}
+		finally
+		{
+			second.Release();
+			await current!.WaitAsync(WaitTimeout);
+		}
+	}
+
+	[Theory]
+	[InlineData(true)]
+	[InlineData(false)]
+	public async Task 电平首位订阅者开始新段后其余订阅者不会收到旧电平(bool onZero)
+	{
+		FakeDevice first = new();
+		FakeDevice second = new() {BlockWrites = true};
+		int created = 0;
+		using NativeAudioPlayback playback = new(
+			() => Interlocked.Increment(ref created) == 1 ? first : second,
+			(_, _) => Tone(amplitude: Volatile.Read(ref created) == 0 ? 0.1f : 0.9f));
+		Task? current = null;
+		double replacedLevel = -1;
+		List<double> receivedAfterReplacement = [];
+		playback.VolumeSampled += level =>
+		{
+			if (current is not null || (onZero ? level != 0 : level == 0)) return;
+			replacedLevel = level;
+			current = playback.PlayAsync(Bytes(), CancellationToken.None);
+		};
+		playback.VolumeSampled += level =>
+		{
+			if (current is not null) receivedAfterReplacement.Add(level);
+		};
+
+		await playback.PlayAsync(Bytes(), CancellationToken.None).WaitAsync(WaitTimeout);
+		await second.WriteEntered.Task.WaitAsync(WaitTimeout);
+		try
+		{
+			Assert.True(playback.IsPlaying);
+			Assert.Single(receivedAfterReplacement);
+			Assert.DoesNotContain(replacedLevel, receivedAfterReplacement);
+		}
+		finally
+		{
+			second.Release();
+			await current!.WaitAsync(WaitTimeout);
+		}
+	}
+
+	[Theory]
+	[InlineData(true)]
+	[InlineData(false)]
+	public async Task 打开或设置音量失败也释放设备并还原状态(bool failOpen)
+	{
+		FakeDevice device = new() {FailOpen = failOpen, FailVolume = !failOpen};
+		using NativeAudioPlayback playback = Playback(device, Tone());
+		List<double> levels = [];
+		playback.VolumeSampled += levels.Add;
+
+		await Assert.ThrowsAsync<AudioDeviceException>(() => playback.PlayAsync(Bytes(), CancellationToken.None));
+
+		Assert.True(device.DisposedOnce);
+		Assert.False(playback.IsPlaying);
+		Assert.Equal(0, levels[^1]);
+		playback.Stop();
+	}
+
+	[Fact]
+	public async Task 创建设备失败不留下当前段()
+	{
+		using NativeAudioPlayback playback = new(() => throw new AudioDeviceException("创建设备失败"), (_, _) => Tone());
+		await Assert.ThrowsAsync<AudioDeviceException>(() => playback.PlayAsync(Bytes(), CancellationToken.None));
+		Assert.False(playback.IsPlaying);
+		playback.Stop();
 	}
 
 	/// <summary>空音频直接返回，不该去开设备。</summary>
@@ -301,19 +573,24 @@ public sealed class NativeAudioPlaybackTests
 		Assert.Equal(stereo, surround, 3);
 	}
 
-	[Fact]
-	public async Task 格式一致时不动样本()
+	// ── 音量 ───────────────────────────────────────────────────────────────
+
+	[Theory]
+	[InlineData(double.NaN)]
+	[InlineData(double.PositiveInfinity)]
+	[InlineData(double.NegativeInfinity)]
+	public async Task 非有限音量不会污染下次播放(double volume)
 	{
 		FakeDevice device = new();
-		PcmAudio audio = Tone(frames: 50);
-		using NativeAudioPlayback playback = Playback(device, audio);
+		using NativeAudioPlayback playback = Playback(device, Tone(frames: 50));
+		playback.SetDeviceVolume(0.3);
 
+		Assert.Throws<ArgumentOutOfRangeException>(() => playback.SetDeviceVolume(volume));
 		await playback.PlayAsync(Bytes(), CancellationToken.None);
 
-		Assert.Equal(audio.Samples, device.Written);
+		Assert.Equal(0.3, device.Volume);
+		Assert.NotEmpty(device.Written);
 	}
-
-	// ── 音量 ───────────────────────────────────────────────────────────────
 
 	[Fact]
 	public async Task 音量透传给设备并夹在零到一()

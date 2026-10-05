@@ -81,8 +81,7 @@ public sealed class VoiceService : IDisposable
 	{
 		CancellationTokenSource? speechCts;
 		lock (_speechGate) speechCts = _speechCts;
-		try { speechCts?.Cancel(); }
-		catch (ObjectDisposedException) { }
+		CancelIgnoringDisposedCallbacks(speechCts);
 		_playback?.Stop();
 	}
 
@@ -117,8 +116,7 @@ public sealed class VoiceService : IDisposable
 			previous = _speechCts;
 			_speechCts = speechCts;
 		}
-		try { previous?.Cancel(); }
-		catch (ObjectDisposedException) { }
+		CancelIgnoringDisposedCallbacks(previous);
 		SetSpeaking(true);
 
 		try
@@ -180,7 +178,7 @@ public sealed class VoiceService : IDisposable
 			catch (Exception exception)
 			{
 				audioChannel.Writer.TryComplete(exception);
-				pipelineCts.Cancel();
+				CancelIgnoringDisposedCallbacks(pipelineCts);
 				throw;
 			}
 		}
@@ -201,7 +199,7 @@ public sealed class VoiceService : IDisposable
 			}
 			catch
 			{
-				pipelineCts.Cancel();
+				CancelIgnoringDisposedCallbacks(pipelineCts);
 				throw;
 			}
 		}
@@ -216,9 +214,21 @@ public sealed class VoiceService : IDisposable
 		}
 		catch
 		{
-			pipelineCts.Cancel();
+			CancelIgnoringDisposedCallbacks(pipelineCts);
 			player.Stop();
 			throw;
+		}
+	}
+
+	/// <summary>取消时忽略已释放资源的回调，避免覆盖流水线的原始失败；其他回调错误仍抛出。</summary>
+	private static void CancelIgnoringDisposedCallbacks(CancellationTokenSource? source)
+	{
+		try { source?.Cancel(); }
+		catch (ObjectDisposedException) { }
+		catch (AggregateException exception) when (
+			exception.Flatten().InnerExceptions.All(error => error is ObjectDisposedException))
+		{
+			// Cancel 会把同步回调异常聚合，关联令牌还可能产生多层聚合。
 		}
 	}
 

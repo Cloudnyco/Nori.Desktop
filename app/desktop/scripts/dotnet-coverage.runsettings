@@ -5,8 +5,7 @@
 			<DataCollector friendlyName="XPlat Code Coverage">
 				<Configuration>
 					<Format>cobertura</Format>
-					<Include>[Nori.Core]*,[Nori.Desktop]*,[Nori.PluginRuntime]*</Include>
-					<Exclude>[Live2DCSharpSDK.*]*</Exclude>
+					<Include>[Nori.Core]*,[Nori.Desktop]*,[Nori.Live2D]*,[Nori.PluginRuntime]*</Include>
 					<Exclude>[*.Tests]*</Exclude>
 					<Exclude>[Nori.PluginRuntime.TestPlugin]*</Exclude>
 					<ExcludeByAttribute>GeneratedCodeAttribute,CompilerGeneratedAttribute</ExcludeByAttribute>

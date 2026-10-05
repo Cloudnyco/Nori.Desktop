@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+
 namespace Nori.Desktop.Live2D.Behaviors;
 
 /// <summary>
@@ -23,7 +25,6 @@ public sealed class AutoBlinkBehavior : IBehaviorPlugin
 	private const double MinDelay = 3.0;
 	private const double MaxDelay = 8.0;
 
-	private readonly Random _random = new();
 	private Phase _phase = Phase.Idle;
 	private double _progress;
 	private float _startLeft = 1.0f;
@@ -37,7 +38,8 @@ public sealed class AutoBlinkBehavior : IBehaviorPlugin
 		_openDurationSeconds = RandomRange(MinBlinkOpenDuration, MaxBlinkOpenDuration);
 	}
 
-	private double RandomRange(double min, double max) => min + _random.NextDouble() * (max - min);
+	private static double RandomRange(double min, double max) => min + NextUnit() * (max - min);
+	private static double NextUnit() => RandomNumberGenerator.GetInt32(int.MaxValue) / (double)int.MaxValue;
 	private static float Clamp01(float v) => Math.Clamp(v, 0.0f, 1.0f);
 	private static double EaseOutQuad(double t) => 1.0 - (1.0 - t) * (1.0 - t);
 	private static double EaseInQuad(double t) => t * t;
@@ -89,11 +91,17 @@ public sealed class AutoBlinkBehavior : IBehaviorPlugin
 
 	public void Execute(BehaviorContext ctx)
 	{
-		if (!ctx.IsIdleMotion || ctx.Handled || !ctx.AutoBlinkEnabled) return;
+		if (!ctx.IsIdleMotion || ctx.Handled || !ctx.AutoBlinkEnabled || !ctx.ModelParameters.IsBound) return;
+
+		int leftEyeOpenIndex = ctx.ModelParameters.LeftEyeOpenIndex;
+		int rightEyeOpenIndex = ctx.ModelParameters.RightEyeOpenIndex;
+		if (leftEyeOpenIndex < 0 || rightEyeOpenIndex < 0) return;
+
+		var model = ctx.Model.Model;
 
 		double safeDt = ctx.TimeDelta > 0 ? ctx.TimeDelta : 0.016;
-		float currentLeft = Clamp01(ctx.Model.Model.GetParameterValue("ParamEyeLOpen"));
-		float currentRight = Clamp01(ctx.Model.Model.GetParameterValue("ParamEyeROpen"));
+		float currentLeft = Clamp01(model.GetParameterValue(leftEyeOpenIndex));
+		float currentRight = Clamp01(model.GetParameterValue(rightEyeOpenIndex));
 
 		if (_phase == Phase.Idle && currentLeft <= 0.15f && currentRight <= 0.15f)
 		{
@@ -109,15 +117,15 @@ public sealed class AutoBlinkBehavior : IBehaviorPlugin
 		{
 			if (wasActive)
 			{
-				ctx.Model.Model.SetParameterValue("ParamEyeLOpen", ApplyBlinkFactor(_startLeft, 1.0f));
-				ctx.Model.Model.SetParameterValue("ParamEyeROpen", ApplyBlinkFactor(_startRight, 1.0f));
+				model.SetParameterValue(leftEyeOpenIndex, ApplyBlinkFactor(_startLeft, 1.0f));
+				model.SetParameterValue(rightEyeOpenIndex, ApplyBlinkFactor(_startRight, 1.0f));
 				ctx.MarkHandled();
 			}
 			return;
 		}
 
-		ctx.Model.Model.SetParameterValue("ParamEyeLOpen", ApplyBlinkFactor(_startLeft, blinkL));
-		ctx.Model.Model.SetParameterValue("ParamEyeROpen", ApplyBlinkFactor(_startRight, blinkR));
+		model.SetParameterValue(leftEyeOpenIndex, ApplyBlinkFactor(_startLeft, blinkL));
+		model.SetParameterValue(rightEyeOpenIndex, ApplyBlinkFactor(_startRight, blinkR));
 		ctx.MarkHandled();
 	}
 }

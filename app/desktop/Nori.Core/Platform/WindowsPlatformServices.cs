@@ -26,6 +26,7 @@ public sealed class WindowsPlatformServices : IPlatformServices
 	private const uint SwpNoMove = 0x0002;
 	private const uint SwpNoActivate = 0x0010;
 	private const uint SwpFrameChanged = 0x0020;
+	private const uint SpiGetClientAreaAnimation = 0x1042;
 
 	[DllImport("user32.dll", SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
@@ -37,6 +38,7 @@ public sealed class WindowsPlatformServices : IPlatformServices
 	private static extern bool SetLayeredWindowAttributes(nint hWnd, uint crKey, byte bAlpha, uint dwFlags);
 
 	[StructLayout(LayoutKind.Sequential)]
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3898", Justification = "原生 ABI 结构体仅用于互操作，不参与相等比较。")]
 	private struct Point
 	{
 		public int X;
@@ -60,6 +62,11 @@ public sealed class WindowsPlatformServices : IPlatformServices
 	[DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
 	private static extern nint SetWindowLongPtr(nint hWnd, int index, nint value);
 
+	[DllImport("user32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static extern bool SystemParametersInfo(
+		uint action, uint parameter, out int value, uint updateIniFile);
+
 	/// <inheritdoc />
 	public SessionType Session => SessionType.Windows;
 
@@ -72,6 +79,10 @@ public sealed class WindowsPlatformServices : IPlatformServices
 		SupportsTopmost = true,
 		SupportsTray = true,
 	};
+
+	/// <inheritdoc />
+	public bool PrefersReducedMotion =>
+		!SystemParametersInfo(SpiGetClientAreaAnimation, 0, out int animationsEnabled, 0) || animationsEnabled == 0;
 
 	/// <inheritdoc />
 	public (double X, double Y) GetCursorPosition()

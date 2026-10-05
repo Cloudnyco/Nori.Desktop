@@ -25,7 +25,7 @@ internal sealed class WasapiCaptureDevice(bool loopback = false) : IAudioCapture
 	/// <summary>没有新包时睡多久再看。</summary>
 	private const int PollMilliseconds = 10;
 
-	/// <summary>AUDCLNT_BUFFERFLAGS_SILENT。</summary>
+	/// <summary>静音缓冲标志 (AUDCLNT_BUFFERFLAGS_SILENT)。</summary>
 	private const uint FlagSilent = 0x2;
 
 	/// <summary>当前用的是哪个输入设备。查「没声音」时第一条要看的。</summary>
@@ -73,7 +73,7 @@ internal sealed class WasapiCaptureDevice(bool loopback = false) : IAudioCapture
 			DeviceName = WasapiNativeApi.FriendlyName(device);
 
 			Guid clientId = WasapiNativeApi.IidAudioClient;
-			device.Activate(ref clientId, 1 /* CLSCTX_INPROC_SERVER */, IntPtr.Zero, out object clientObject);
+			device.Activate(ref clientId, 1 /* CLSCTX_INPROC_SERVER 进程内服务 */, IntPtr.Zero, out object clientObject);
 			WasapiNativeApi.IAudioClient client = (WasapiNativeApi.IAudioClient) clientObject;
 
 			client.GetMixFormat(out IntPtr mixFormat);

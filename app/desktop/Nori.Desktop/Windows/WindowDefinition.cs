@@ -4,20 +4,18 @@ using Avalonia.Media;
 namespace Nori.Desktop.Windows;
 
 /// <summary>
-/// 窗口定义
-///
-/// 逐条对应原 tauri.conf.json 的 app.windows 配置.
-/// WebView 窗口需要同步前端路由；原生设置、记忆、模型和对话窗口按需创建，不注册 WebView 路由。
+/// 窗口定义。
+/// 启动时预建的原生窗口配置。设置、记忆、模型和对话窗口按需创建。
 /// </summary>
 public sealed record WindowDefinition
 {
-	/// <summary>窗口标签, 与前端 WindowLabel 联合类型一致</summary>
+	/// <summary>窗口标签</summary>
 	public required string Label { get; init; }
 
 	/// <summary>窗口标题</summary>
 	public required string Title { get; init; }
 
-	/// <summary>宽度 (DIP, 与 Tauri 的逻辑像素同义)</summary>
+	/// <summary>宽度 (DIP，逻辑像素)</summary>
 	public required double Width { get; init; }
 
 	/// <summary>高度 (DIP)</summary>
@@ -49,8 +47,10 @@ public sealed record WindowDefinition
 		{
 			Label = WindowLabels.FirstRun,
 			Title = "Nori Desktop Pet",
-			Width = 720,
-			Height = 480,
+			Width = NativeWindowSizing.FirstRunSize.Width,
+			Height = NativeWindowSizing.FirstRunSize.Height,
+			MinWidth = NativeWindowSizing.MinimumSize.Width,
+			MinHeight = NativeWindowSizing.MinimumSize.Height,
 			CanResize = false,
 		},
 		new()
@@ -65,10 +65,10 @@ public sealed record WindowDefinition
 		{
 			Label = WindowLabels.Main,
 			Title = "Nori Desktop Pet",
-			Width = 960,
-			Height = 640,
-			MinWidth = 720,
-			MinHeight = 480,
+			Width = NativeWindowSizing.DefaultSize.Width,
+			Height = NativeWindowSizing.DefaultSize.Height,
+			MinWidth = NativeWindowSizing.MinimumSize.Width,
+			MinHeight = NativeWindowSizing.MinimumSize.Height,
 			CanResize = true,
 		},
 		new()
@@ -100,6 +100,9 @@ public static class WindowLabels
 
 	/// <summary>按需创建的原生对话窗口。</summary>
 	public const string Chat = "chat";
+
+	/// <summary>独立于完整聊天的可信原生快捷聊天表面。</summary>
+	public const string QuickChat = "quick-chat";
 
 	/// <summary>首次运行向导</summary>
 	public const string FirstRun = "first-run";

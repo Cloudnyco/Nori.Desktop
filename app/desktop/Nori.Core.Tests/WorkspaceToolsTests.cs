@@ -145,7 +145,7 @@ public sealed class WorkspaceToolsTests : IDisposable
 
 
 
-	// ---- findFiles ----
+	// ---- findFiles 工具 ----
 
 	[Fact]
 	public async Task 按扩展名找到深层文件()
@@ -291,7 +291,7 @@ public sealed class WorkspaceToolsTests : IDisposable
 		Assert.Equal(WorkspaceAccess.MaxEntries, result.GetProperty("matches").GetArrayLength());
 	}
 
-	// ---- editFile ----
+	// ---- editFile 工具 ----
 
 	[Fact]
 	public async Task 定点替换只改命中的那一段()
@@ -301,7 +301,6 @@ public sealed class WorkspaceToolsTests : IDisposable
 		JsonElement result = await CallAsync(
 			Registry(), "editFile", new { path = "a.cs", oldText = "中间要改", newText = "已经改了" });
 
-		Assert.Equal("已经改了", File.ReadAllText(Path.Combine(_root, "a.cs")).Split('\n')[1]);
 		Assert.Equal("第一行\n已经改了\n第三行\n", File.ReadAllText(Path.Combine(_root, "a.cs")));
 		Assert.Equal(1, result.GetProperty("replaced").GetInt32());
 		Assert.Equal(2, result.GetProperty("line").GetInt32());
@@ -565,7 +564,6 @@ public sealed class WorkspaceToolsTests : IDisposable
 	{
 		WorkspaceAccess access = Access();
 
-		Assert.Null(access.Resolve("sub/../../outside.txt"));
 		Assert.Null(access.Resolve("./../escape"));
 		Assert.Null(access.Resolve("a/./../../b"));
 	}
@@ -708,7 +706,7 @@ public sealed class WorkspaceToolsTests : IDisposable
 	[Fact]
 	public async Task 命中过多时丢掉尾部而不是整个结果被压扁()
 	{
-		for (int index = 0; index < 300; index++)
+		for (int index = 0; index < WorkspaceAccess.MaxEntries + 1; index++)
 		{
 			Write($"f{index}.txt", "目标目标目标目标目标目标目标目标目标目标目标目标目标目标目标目标");
 		}

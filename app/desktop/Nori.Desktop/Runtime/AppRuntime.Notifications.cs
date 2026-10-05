@@ -1,3 +1,4 @@
+using Avalonia.Threading;
 using Nori.Core.Configuration;
 using Nori.Core.Logging;
 using Nori.Core.Notifications;
@@ -43,18 +44,35 @@ public sealed partial class AppRuntime
 	/// </summary>
 	private void ShowApprovalNotice(ToolApprovalRequest request)
 	{
-		if (!ToastApprovalsEnabled) return;
-		INativeNotifier notifier = EnsureNotifier();
-		if (!notifier.Available) return;
-
-		notifier.Show(new ApprovalNotice
+		try
 		{
-			RequestId = request.RequestId,
-			ToolName = request.ToolName,
-			Description = request.Description,
-			PermissionLevel = request.PermissionLevel,
-			ArgumentSummary = SummarizeArguments(request),
-		});
+			if (!ToastApprovalsEnabled) return;
+			INativeNotifier notifier = EnsureNotifier();
+			if (!notifier.Available) return;
+
+			notifier.Show(new ApprovalNotice
+			{
+				RequestId = request.RequestId,
+				ToolName = request.ToolName,
+				Description = request.Description,
+				PermissionLevel = request.PermissionLevel,
+				ArgumentSummary = SummarizeArguments(request),
+			});
+		}
+		catch (Exception failure) { LogNotificationFailure("显示系统通知失败", failure); }
+	}
+
+	/// <summary>撤销通知失败不能中断授权收尾，待决任务必须仍能完成。</summary>
+	private void HideApprovalNotice(string requestId)
+	{
+		try { _notifier.Hide(requestId); }
+		catch (Exception failure) { LogNotificationFailure("撤销系统通知失败", failure); }
+	}
+
+	private void LogNotificationFailure(string operation, Exception failure)
+	{
+		try { Services.Logger.Write(LogSource.Backend, "warn", $"{operation}：{failure.GetType().Name}"); }
+		catch { /* 通知是辅助呈现，日志故障也不能阻断授权。 */ }
 	}
 
 	/// <summary>
@@ -115,11 +133,10 @@ public sealed partial class AppRuntime
 			Services.Logger.Write(LogSource.Backend, "info", "已注册系统通知入口");
 		}
 
-		Notifications.Windows.ToastActivator.Register(OnToastActivated);
+		Notifications.Windows.ToastActivator.Register(arguments => _ = OnToastActivatedAsync(arguments));
 
 		Notifications.Windows.WindowsToastNotifier notifier = new(
-			() => Services.Config.GetStringOr(ConfigStore.KeyLanguage, "zh-CN")
-				.StartsWith("en", StringComparison.OrdinalIgnoreCase),
+			() => UiLanguage.IsEnglish(Services.Config),
 			(level, message) => Services.Logger.Write(LogSource.Backend, level, message));
 		return notifier.TryStart() ? notifier : NullNativeNotifier.Instance;
 	}
@@ -131,21 +148,44 @@ public sealed partial class AppRuntime
 	/// 绝不回落到允许（<see cref="ToastActivation.Parse"/> 里也有同一道）。
 	/// 找不到对应的待决授权同样忽略：系统可能把 exe 拉起来送一条早已超时的点击。
 	/// </summary>
-	private void OnToastActivated(string arguments)
+	internal async Task OnToastActivatedAsync(string arguments)
 	{
-		(ToastAction action, string? requestId) = ToastActivation.Parse(arguments);
-		if (requestId is null) return;
-
-		switch (action)
+		try
 		{
-			case ToastAction.Allow:
-			case ToastAction.Deny:
-				RespondApprovalFromNotification(requestId, action == ToastAction.Allow);
-				break;
-			case ToastAction.Open:
-				// 点正文不是决定，只是把卡片带到前台。
-				Services.Windows?.Show(Windows.WindowLabels.Main);
-				break;
+			(ToastAction action, string? requestId) = ToastActivation.Parse(arguments);
+			if (requestId is null || Volatile.Read(ref _disposed) != 0) return;
+
+			// 允许/拒绝也会经 FinishApproval 回推窗口事件，不能只把 Open 切到 UI 线程。
+			await Dispatcher.UIThread.InvokeAsync(() =>
+			{
+				if (Volatile.Read(ref _disposed) != 0) return;
+				switch (action)
+				{
+					case ToastAction.Allow:
+					case ToastAction.Deny:
+						RespondApprovalFromNotification(requestId, action == ToastAction.Allow);
+						break;
+					case ToastAction.Open:
+						lock (_approvalGate)
+						{
+							if (!_approvals.TryGetValue(requestId, out PendingApproval? approval)
+								|| approval.DeadlineUtc <= DateTimeOffset.UtcNow
+								|| approval.CancellationToken.IsCancellationRequested) return;
+						}
+						// 只有主动点正文才把卡片带到前台；允许/拒绝不抢焦点。
+						Services.Windows?.Show(Windows.WindowLabels.Main);
+						break;
+					default:
+						// 未识别的动作不能决定授权，也不打开窗口。
+						return;
+				}
+			});
+		}
+		catch (Exception failure)
+		{
+			// 同时兜住调度失败与 UI 动作异常，不能泄漏到 COM 或成为未观察的任务异常。
+			try { Services.Logger.Write(LogSource.Backend, "warn", $"处理系统通知失败：{failure.GetType().Name}"); }
+			catch { /* 退出时日志失败也不能让通知回调抛出。 */ }
 		}
 	}
 

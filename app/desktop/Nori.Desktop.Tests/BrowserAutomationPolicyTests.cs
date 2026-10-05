@@ -1,8 +1,10 @@
+using System.Diagnostics.CodeAnalysis;
 using Nori.Core.Automation;
 using Nori.Desktop.Automation.Browser;
 
 namespace Nori.Desktop.Tests;
 
+[SuppressMessage("Security", "S2068", Justification = "带伪凭据的 URL 用于验证浏览器自动化策略拒绝行为。")]
 public sealed class BrowserAutomationPolicyTests
 {
 	[Theory]

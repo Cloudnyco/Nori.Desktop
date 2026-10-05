@@ -26,11 +26,12 @@ namespace Nori.Desktop.Diagnostics;
 /// - <c>TaskScheduler.UnobservedTaskException</c>: SetObserved + 记日志, 不弹窗 ——
 ///   这类异常在 GC 时才浮出, 多为过期的后台任务失败, 弹致命窗过于惊吓 (与 ClassIsland 的有意偏离).
 ///
-/// 崩溃窗用原生 Avalonia 构建: WebView2 可能正是故障源, 不能依赖它来显示错误.
+/// 崩溃窗用原生 Avalonia 构建, 不依赖浏览器组件来显示错误.
 /// </summary>
 public static class CrashReporter
 {
 	private static FileLogger? _logger;
+	private static string _lastCrashMessage = "进程异常退出";
 	private static ITelemetry _telemetry = NoopTelemetry.Instance;
 	private static IClassicDesktopStyleApplicationLifetime? _lifetime;
 	private static Window? _crashWindow;
@@ -55,20 +56,22 @@ public static class CrashReporter
 	}
 
 	/// <summary>
-	/// 挂接应用共用日志器. 挂接前的兜底日志会临时 new 一个 FileLogger 尽力落盘.
+	/// 挂接进程共用日志器；未挂接时仅使用有界应急文件。
 	/// </summary>
 	public static void AttachLogger(FileLogger logger) => _logger = logger;
+	public static void DetachLogger() => _logger = null;
 
 	/// <summary>挂接遥测器; 未挂接时使用空实现。</summary>
 	public static void AttachTelemetry(ITelemetry telemetry) => _telemetry = telemetry ?? NoopTelemetry.Instance;
 
 	/// <summary>记录 Avalonia 启动前的异常，供原生启动错误提示复用脱敏日志。</summary>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "启动诊断记录失败不能覆盖原始启动异常。")]
 	public static void LogEarlyStartupFailure(string title, Exception exception, string? logDirectory = null)
 	{
 		string message = $"{SensitiveDataRedactor.Redact(title)}: {SensitiveDataRedactor.ExceptionSummary(exception)}";
 		if (!string.IsNullOrWhiteSpace(logDirectory))
 		{
-			try { new FileLogger(logDirectory).Write(LogSource.Backend, "error", message); return; }
+			try { FileLogger.WriteEmergencyAsync(logDirectory, message).Wait(TimeSpan.FromSeconds(1)); return; }
 			catch { }
 		}
 		// 存储 marker 提交前不得创建 data 子目录；此时只保留控制台诊断。
@@ -80,6 +83,7 @@ public static class CrashReporter
 	/// 取代裸的 <c>_ = SomeAsync()</c>, 让异常在发生当下就有上下文地落盘,
 	/// 而不是拖到 GC 时变成一条没有时间线的 UnobservedTaskException.
 	/// </summary>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S3168", Justification = "UI 启动诊断入口是受控 fire-and-forget，内部已捕获异常。")]
 	public static async void Forget(Task task, string what)
 	{
 		try
@@ -135,7 +139,7 @@ public static class CrashReporter
 		}
 		catch (Exception failure)
 		{
-			WriteLogSafe($"崩溃窗口展示失败: {failure}");
+			WriteLogSafe($"崩溃窗口展示失败: {failure.GetType().Name}");
 		}
 		finally
 		{
@@ -182,7 +186,7 @@ public static class CrashReporter
 		}
 		catch (Exception failure)
 		{
-			WriteLogSafe($"崩溃窗口展示失败: {failure}");
+			WriteLogSafe($"崩溃窗口展示失败: {failure.GetType().Name}");
 		}
 		finally
 		{
@@ -232,6 +236,7 @@ public static class CrashReporter
 	private static string AssemblyFileName(string fileName) =>
 		Path.GetFileName(fileName.Replace('\\', '/'));
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "崩溃处理回调必须隔离日志失败，保证退出流程。")]
 	private static void OnDomainUnhandledException(object? sender, UnhandledExceptionEventArgs eventArgs)
 	{
 		if (eventArgs.ExceptionObject is not Exception exception)
@@ -255,12 +260,6 @@ public static class CrashReporter
 	{
 		try
 		{
-			if (IsTransientWebViewFocusException(e.Exception))
-			{
-				WriteLogSafe($"忽略 WebView2 聚焦竞态: {SensitiveDataRedactor.ExceptionSummary(e.Exception)}");
-				e.Handled = true;
-				return;
-			}
 			Report(e.Exception, critical: false);
 			e.Handled = true; // 兜底成功, 进程继续运行
 		}
@@ -358,7 +357,7 @@ public static class CrashReporter
 			catch (Exception failure)
 			{
 				// 剪贴板可能被其他进程占用, 不影响其余按钮
-				WriteLogSafe($"复制错误信息失败: {failure.Message}");
+				WriteLogSafe($"复制错误信息失败: {failure.GetType().Name}");
 			}
 		});
 
@@ -385,7 +384,8 @@ public static class CrashReporter
 				}
 				startInfo.ArgumentList.Add("--launcher-wait-start-ticks");
 				startInfo.ArgumentList.Add(startTicks.ToString());
-				using Process child = Process.Start(startInfo) ?? throw new InvalidOperationException("启动器未返回进程");
+				// 启动器与包根均由 ResolveTrusted* 完成物理路径和边界验证。
+				using Process child = Process.Start(startInfo) ?? throw new InvalidOperationException("启动器未返回进程"); // nosemgrep
 				// 启动器通常会持续等待新宿主；若它在短时间内带错误退出，不能关闭当前错误窗口。
 				if (child.WaitForExit(750) && child.ExitCode != 0)
 					throw new InvalidOperationException($"启动器退出码 {child.ExitCode}");
@@ -445,6 +445,7 @@ public static class CrashReporter
 			WindowStartupLocation = WindowStartupLocation.CenterScreen,
 			Content = root,
 		};
+		Nori.Desktop.Windows.NativeWindowChrome.Attach(window, () => false);
 		window.Closed += (_, _) =>
 		{
 			_crashWindow = null;
@@ -481,8 +482,9 @@ public static class CrashReporter
 	}
 
 	/// <summary>
-	/// 兜底专用写日志: 日志器不可用时尽力自建一个, 再失败也只能放弃
+	/// 崩溃退出阶段尽力刷新已经授权的遥测。
 	/// </summary>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "崩溃退出阶段的遥测刷新只能尽力执行，失败不能阻断退出。")]
 	private static void FlushTelemetrySafe()
 	{
 		try
@@ -496,12 +498,26 @@ public static class CrashReporter
 
 	private static void ExitProcess(int code)
 	{
+		FlushLogsSafe();
 		if (_lifetime is not null)
 		{
 			ShutdownSafely(code);
 			return;
 		}
 		Environment.Exit(code);
+	}
+
+	private static void FlushLogsSafe()
+	{
+		try
+		{
+			if (_logger is null) return;
+			bool flushed = _logger.FlushAsync(TimeSpan.FromMilliseconds(750)).GetAwaiter().GetResult();
+			if (flushed && _logger.GetStatus().DroppedCount == 0) return;
+			if (Program.StoragePaths is { } paths)
+				FileLogger.WriteEmergencyAsync(paths.LogsDirectory, Volatile.Read(ref _lastCrashMessage)).Wait(TimeSpan.FromMilliseconds(250));
+		}
+		catch (Exception) { /* 崩溃刷新失败不能阻断退出。 */ }
 	}
 
 	private static string ResolveTrustedPackageRoot()
@@ -577,17 +593,9 @@ public static class CrashReporter
 		catch (InvalidOperationException) { }
 	}
 
-	private static bool IsTransientWebViewFocusException(Exception exception)
-	{
-		for (Exception? current = exception; current is not null; current = current.InnerException)
-		{
-			if (current is COMException && current.HResult == unchecked((int)0x80070718)) return true;
-		}
-		return false;
-	}
-
 	private static void WriteLogSafe(string message)
 	{
+		Volatile.Write(ref _lastCrashMessage, SensitiveDataRedactor.Redact(message));
 		try
 		{
 			if (_logger is null)
@@ -599,9 +607,10 @@ public static class CrashReporter
 				string logDirectory = Path.Combine(dataDirectory, "diagnostics", "logs");
 				if (!IsContained(logDirectory, root)) return;
 				AppStoragePaths.EnsureNoReparsePoints(logDirectory, root);
-				_logger = new FileLogger(logDirectory);
+				FileLogger.WriteEmergencyAsync(logDirectory, SensitiveDataRedactor.Redact(message)).Wait(TimeSpan.FromSeconds(1));
+				return;
 			}
-			_logger.Write(LogSource.Backend, "error", SensitiveDataRedactor.Redact(message));
+			_logger.Write(LogSource.Backend, "error", SensitiveDataRedactor.Redact(message), "Crash", "crash.report");
 		}
 		catch
 		{

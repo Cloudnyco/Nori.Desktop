@@ -19,7 +19,7 @@ public sealed class AboutSettingsPage : SettingsPageBase
 			_ => "erhio · Nori · qicajie · Cloudnyco", "Nori Desktop Pet contributors", (_, _) => Task.FromResult(default(System.Text.Json.JsonElement)), readOnly: true);
 
 		SettingsSectionViewModel environment = AddSection(new("运行环境", "Runtime environment"));
-		AddField(environment, "renderer", new("渲染引擎", "Renderer"), new("当前平台使用的原生 WebView。", "The native WebView used on this platform."), SettingsEditorKind.Text,
+		AddField(environment, "renderer", new("渲染引擎", "Renderer"), new("当前界面由 Avalonia 原生控件绘制。", "The interface is drawn with native Avalonia controls."), SettingsEditorKind.Text,
 			snapshot => Renderer(snapshot), RendererFallback(), (_, _) => Task.FromResult(default(System.Text.Json.JsonElement)), readOnly: true);
 		AddField(environment, "safeMode", new("安全模式", "Safe mode"), new("安全模式会关闭外部网络和后台自动任务。", "Safe mode disables external network and background tasks."), SettingsEditorKind.Text,
 			snapshot => SettingsSnapshotReader.Boolean(snapshot, false, "app", "safeMode") ? "已启用 / Enabled" : "未启用 / Disabled",
@@ -31,14 +31,12 @@ public sealed class AboutSettingsPage : SettingsPageBase
 		string os = SettingsSnapshotReader.String(snapshot, string.Empty, "platform", "os");
 		return os switch
 		{
-			"windows" => "Avalonia UI + Microsoft WebView2",
-			"macos" => "Avalonia UI + WKWebView",
-			"linux" => "Avalonia UI + WebKitGTK",
+			"windows" or "macos" or "linux" => "Avalonia UI",
 			_ => RendererFallback(),
 		};
 	}
 
-	private static string RendererFallback() => OperatingSystem.IsWindows() ? "WebView2" : OperatingSystem.IsMacOS() ? "WKWebView" : "WebKitGTK";
+	private static string RendererFallback() => "Avalonia UI";
 
 	private static string FirstString(System.Text.Json.JsonElement root, string fallback, params string[][] paths)
 	{

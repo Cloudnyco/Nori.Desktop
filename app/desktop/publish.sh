@@ -22,10 +22,10 @@ if [[ -z "${NORI_COMMIT_SHA:-}" ]]; then NORI_COMMIT_SHA="$(git rev-parse HEAD 2
 export NORI_VERSION="$APP_VERSION" NORI_PRODUCT_VERSION="$APP_VERSION" NORI_COMMIT_SHA
 
 if [[ "${NORI_INCLUDE_RUNTIME:-0}" =~ ^(1|true|TRUE|yes)$ ]]; then
-	echo "不支持 self-contained 发布；目标机必须预装 ASP.NET Core Runtime 10。" >&2
+	echo "不支持 self-contained 发布；目标机必须预装 .NET 10 Runtime。" >&2
 	exit 2
 fi
-if [[ "${NORI_SKIP_FRONTEND:-0}" != "1" ]]; then pnpm build; elif [[ ! -f dist/index.html ]]; then echo "缺少 dist/index.html。" >&2; exit 2; fi
+if [[ "${NORI_SKIP_FRONTEND:-0}" != "1" ]]; then pnpm build; fi
 KEEP_SYMBOLS="${NORI_KEEP_SYMBOLS:-0}"
 
 runtime_rid() {

@@ -42,19 +42,21 @@ public sealed record EmotionState
 /// 支持配置持久化与自然衰减: 每 DecayIntervalSeconds 秒衰减 0.1, 归零后回到 neutral。
 /// 情绪变化时通过 ExpressionRequested 请求 Live2D 默认表情映射。
 /// </summary>
-public sealed class EmotionManager(Nori.Core.Configuration.ConfigStore configStore) : IDisposable
+[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2931", Justification = "计时器已在 Dispose 中释放，属于分析器误报。")]
+public sealed class EmotionManager(Nori.Core.Configuration.ConfigStore configStore, TimeProvider? timeProvider = null) : IDisposable
 {
 	/// <summary>自然衰减周期 (秒), 与前端实现一致</summary>
 	public const int DecayIntervalSeconds = 20;
 
+	private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 	private readonly object _gate = new();
-	private System.Threading.Timer? _decayTimer;
+	private ITimer? _decayTimer;
 
 	private string _current = EmotionTypes.Neutral;
 	private double _intensity = 0.5;
 	private long _lastUpdated;
 	private bool _initialized;
-	private System.Threading.Timer? _persistTimer;
+	private ITimer? _persistTimer;
 
 	/// <summary>情绪变化通知</summary>
 	public event Action<EmotionState>? Changed;
@@ -136,7 +138,7 @@ public sealed class EmotionManager(Nori.Core.Configuration.ConfigStore configSto
 		{
 			// 每次重置独立 timer, 只保留最新一个 (与前端每字段独立 timer 同理)
 			_persistTimer?.Dispose();
-			_persistTimer = new System.Threading.Timer(_ =>
+			_persistTimer = _timeProvider.CreateTimer(_ =>
 			{
 				try
 				{
@@ -149,7 +151,7 @@ public sealed class EmotionManager(Nori.Core.Configuration.ConfigStore configSto
 				{
 					// 持久化失败只影响下次启动的情绪恢复
 				}
-			}, null, 400, Timeout.Infinite);
+			}, null, TimeSpan.FromMilliseconds(400), Timeout.InfiniteTimeSpan);
 		}
 	}
 
@@ -157,33 +159,13 @@ public sealed class EmotionManager(Nori.Core.Configuration.ConfigStore configSto
 	{
 		lock (_gate)
 		{
-			_decayTimer ??= new System.Threading.Timer(_ =>
-			{
-				bool changed = false;
-				lock (_gate)
-				{
-					if (_current == EmotionTypes.Neutral) return;
-					_intensity -= 0.1;
-					if (_intensity <= 0.1)
-					{
-						_current = EmotionTypes.Neutral;
-						_intensity = 0.5;
-					}
-					changed = true;
-				}
-				if (changed)
-				{
-					Changed?.Invoke(GetState());
-					SchedulePersist();
-				}
-			}, null, DecayIntervalSeconds * 1000, DecayIntervalSeconds * 1000);
+			TimeSpan interval = TimeSpan.FromSeconds(DecayIntervalSeconds);
+			_decayTimer ??= _timeProvider.CreateTimer(_ => TickDecay(), null, interval, interval);
 		}
 	}
 
-	/// <summary>测试辅助: 手动推进一次衰减 (20s 周期的确定性替代)</summary>
-	public void TickDecayForTests()
+	internal void TickDecay()
 	{
-		bool changed;
 		lock (_gate)
 		{
 			if (_current == EmotionTypes.Neutral) return;
@@ -193,9 +175,9 @@ public sealed class EmotionManager(Nori.Core.Configuration.ConfigStore configSto
 				_current = EmotionTypes.Neutral;
 				_intensity = 0.5;
 			}
-			changed = true;
 		}
-		if (changed) Changed?.Invoke(GetState());
+		Changed?.Invoke(GetState());
+		SchedulePersist();
 	}
 
 	private static double ParseDouble(string raw, double fallback) =>

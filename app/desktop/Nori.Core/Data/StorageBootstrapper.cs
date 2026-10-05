@@ -53,8 +53,8 @@ public static class StorageBootstrapper
 	{
 		string[] directories = [
 			"core/database", "core/security", "knowledge/documents", "resources/installed/live2d", "resources/cache", "resources/temp/import",
-			"plugins/installed", "plugins/data", "plugins/cache/webview", "plugins/cache/packages/inbox", "plugins/temp/staging",
-			"webview/cache/host", "automation/temp/browser", "diagnostics/logs",
+			"plugins/installed", "plugins/data", "plugins/cache/packages/inbox", "plugins/temp/staging",
+			"automation/temp/browser", "diagnostics/logs",
 		];
 		foreach (string relative in directories) Directory.CreateDirectory(Path.Combine(root, relative));
 	}
@@ -107,6 +107,7 @@ public static class StorageBootstrapper
 	private static bool IsNumericVersionSupported(string value) =>
 		value.Split('.') is [_, _, _] && value.Split('.').All(segment => ushort.TryParse(segment, out _));
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "临时文件清理失败不能覆盖原始写入异常。")]
 	private static void WriteAtomicFile(string path, string content)
 	{
 		string temporary = path + $".tmp-{Guid.NewGuid():N}";
@@ -140,6 +141,7 @@ public static class StorageBootstrapper
 		throw new IOException("无法提交 data staging", last);
 	}
 
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "临时资源清理失败不能覆盖原始异常。")]
 	private static void TryDeleteDirectory(string path)
 	{
 		try { if (Directory.Exists(path)) Directory.Delete(path, true); } catch { }

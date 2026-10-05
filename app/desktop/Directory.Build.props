@@ -7,8 +7,7 @@
 
 		只放各工程都认的通用项: 目标框架、可空、隐式 using、语言版本, 以及
 		「当前构建是否面向 Windows」这个开关。
-		TreatWarningsAsErrors / NoWarn 留给各 csproj 自己声明 —— Live2DCSharpSDK.*
-		是外部移植代码, 不能跟着我们的严格口径走。
+		TreatWarningsAsErrors / NoWarn 留给各 csproj 自己声明。
 		Android head 将来加进来时, 在这里按 TargetFramework 条件分流即可。
 	-->
 	<PropertyGroup>

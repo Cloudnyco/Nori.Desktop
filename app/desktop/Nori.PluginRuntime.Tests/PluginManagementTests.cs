@@ -226,6 +226,29 @@ public sealed class PluginManagementTests
 	}
 
 	[Fact]
+	public void 指针写入失败不会留下阻塞同版本安装的孤儿目录()
+	{
+		string root = CreateTemp();
+		try
+		{
+			PluginPackageInstaller installer = new(Path.Combine(root, "plugins"));
+			string pluginDirectory = Path.Combine(root, "plugins", "orphan.plugin");
+			Directory.CreateDirectory(pluginDirectory);
+			string pointerDirectory = Path.Combine(pluginDirectory, PluginPackageInstaller.CurrentFileName);
+			Directory.CreateDirectory(pointerDirectory);
+			string package = CreateTestPackage(root, "orphan.plugin", "1.0.0");
+
+			Assert.Throws<PluginException>(() => installer.Install(package));
+			Assert.False(Directory.Exists(Path.Combine(pluginDirectory, "1.0.0")));
+
+			Directory.Delete(pointerDirectory);
+			PluginManifest installed = installer.Install(package);
+			Assert.Equal("orphan.plugin", installed.Id);
+		}
+		finally { DeleteDirectory(root); }
+	}
+
+	[Fact]
 	public async Task SafeMode只发现且不创建插件数据或激活DLL()
 	{
 		string root = CreateTemp();
@@ -243,6 +266,8 @@ public sealed class PluginManagementTests
 			Assert.True(info.UserEnabled);
 			Assert.Equal(PluginLifecycleState.Disabled, info.State);
 			Assert.Equal(PluginErrorCodes.SafeModeDisabled, info.ErrorCode);
+			await manager.StartAllAsync();
+			Assert.Equal(PluginLifecycleState.Disabled, Assert.Single(manager.Plugins).State);
 			await manager.ActivateAsync("safe.plugin");
 			Assert.False(Directory.Exists(Path.Combine(root, "plugin-data", "safe.plugin")));
 			await Assert.ThrowsAsync<PluginException>(() => manager.EnableAsync("safe.plugin"));
@@ -289,31 +314,15 @@ public sealed class PluginManagementTests
 		using (FileStream file = File.Create(package))
 		using (ZipArchive archive = new(file, ZipArchiveMode.Create))
 		{
-			WriteEntry(archive, "manifest.json", manifest);
-			ZipArchiveEntry assemblyEntry = archive.CreateEntry("lib/Nori.PluginRuntime.TestPlugin.dll");
-			using (Stream target = assemblyEntry.Open())
-			using (FileStream source = File.OpenRead(assembly)) source.CopyTo(target);
-			WriteEntry(archive, "web/index.html", "<!doctype html><title>plugin</title>");
-			WriteEntry(archive, "README.md", "test");
+			PluginTestPackages.WriteEntry(archive, "manifest.json", manifest);
+			PluginTestPackages.WriteAssemblyEntry(archive, "lib/Nori.PluginRuntime.TestPlugin.dll", assembly);
+			PluginTestPackages.WriteEntry(archive, "web/index.html", "<!doctype html><title>plugin</title>");
+			PluginTestPackages.WriteEntry(archive, "README.md", "test");
 		}
 		return package;
 	}
 
-	private static void WriteEntry(ZipArchive archive, string name, string content)
-	{
-		using StreamWriter writer = new(archive.CreateEntry(name).Open());
-		writer.Write(content);
-	}
+	private static string CreateTemp() => PluginTestPackages.CreateTemp("nori-plugin-management-tests");
 
-	private static string CreateTemp()
-	{
-		string path = Path.Combine(Path.GetTempPath(), "nori-plugin-management-tests", Guid.NewGuid().ToString("N"));
-		Directory.CreateDirectory(path);
-		return path;
-	}
-
-	private static void DeleteDirectory(string path)
-	{
-		try { if (Directory.Exists(path)) Directory.Delete(path, true); } catch { }
-	}
+	private static void DeleteDirectory(string path) => PluginTestPackages.DeleteDirectory(path);
 }

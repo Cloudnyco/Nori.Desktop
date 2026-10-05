@@ -15,11 +15,15 @@ namespace Nori.Core.Configuration;
 /// nsec1 与 Windows 旧 enc:dpapi: 只读兼容并在成功读取后惰性迁移。任何密钥库
 /// 或加密失败都会中止写入, 绝不把明文作为回退值写入数据库。
 /// </summary>
-public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore = null)
+public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore = null) : IDisposable
 {
+	private const int MaxBatchKeys = 500;
 	private readonly ISecretKeyStore _keyStore = keyStore ?? new SecretKeyStore();
 	private readonly NoriDatabase _database = database;
 	private readonly ConcurrentDictionary<string, SecretIssue> _secretIssues = new(StringComparer.Ordinal);
+	private byte[]? _cachedMasterKey;
+	private readonly object _keyLock = new();
+	internal Action? ReadQueryExecuted { get; set; }
 
 	/// <summary>配置键: 配置结构版本。</summary>
 	public const string KeyConfigSchemaVersion = "config_schema_version";
@@ -68,15 +72,6 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 	public const string KeyToastApprovals = "toast_approvals";
 
 	/// <summary>
-	/// 音频后端：auto / native / webview。
-	///
-	/// auto 时 Windows 走原生设备、其余平台走 WebView（CoreAudio 与 ALSA 尚未实现）。
-	/// 留 webview 这一档是给原生后端在某台机器上出问题时退回去用的 —— 这一层动得深，
-	/// 有条退路比事后查故障便宜。
-	/// </summary>
-	public const string KeyAudioBackend = "audio_backend";
-
-	/// <summary>
 	/// 情绪表达通道的开关前缀，完整键名即通道自己的 Key。
 	///
 	/// 每条通道一个开关而不是一个总开关：改整个系统强调色和让托盘换个颜色，打扰程度差着
@@ -103,6 +98,12 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 
 	/// <summary>旧版布尔遥测开关, 只用于迁移和兼容读取。</summary>
 	public const string KeyTelemetryEnabled = "telemetry_enabled";
+
+	/// <summary>配置键: 快捷聊天开关。</summary>
+	public const string KeyQuickChatEnabled = "quick_chat_enabled";
+
+	/// <summary>配置键: 常规窗口的系统背景模糊开关。</summary>
+	public const string KeyBackgroundBlurEnabled = "ui_background_blur_enabled";
 
 	/// <summary>MCP stdio 环境变量的独立敏感配置键前缀。</summary>
 	public const string McpEnvironmentKeyPrefix = "mcp_server_env_";
@@ -151,12 +152,46 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 	/// <summary>读取配置, 敏感值无法解密时按未配置处理。</summary>
 	public ConfigValue? Get(string key)
 	{
-		string stored = RawValue(key);
-		if (stored.Length == 0 && !Exists(key)) return null;
+		ArgumentException.ThrowIfNullOrEmpty(key);
+		StoredConfigValue stored = ReadStoredValue(key);
+		return stored.Exists ? MaterializeValue(key, stored.Value!) : null;
+	}
 
-		if (!IsSensitiveKey(key)) return ConfigValue.FromStorage(stored);
-		SecretReadResult result = ReadSecretValue(key, stored, migrate: true);
-		return result.IsConfigured ? ConfigValue.FromStorage(result.Value!) : null;
+	/// <summary>
+	/// 按指定键批量读取配置，缺失的键不出现在结果中。
+	/// 每个值都经过 <see cref="ConfigValue.FromStorage"/> 做类型推断；敏感键先解密，无法解密的键同样不出现。
+	/// </summary>
+	public IReadOnlyDictionary<string, ConfigValue> GetMany(IEnumerable<string> keys)
+	{
+		ArgumentNullException.ThrowIfNull(keys);
+		string[] requested = keys.Distinct(StringComparer.Ordinal).ToArray();
+		if (requested.Length == 0) return new Dictionary<string, ConfigValue>(StringComparer.Ordinal);
+		foreach (string key in requested) ArgumentException.ThrowIfNullOrEmpty(key);
+
+		List<(string Key, string Value)> rows = _database.Locked(connection =>
+		{
+			List<(string Key, string Value)> result = [];
+			foreach (string[] batch in requested.Chunk(MaxBatchKeys))
+			{
+				string parameters = string.Join(", ", batch.Select((_, index) => $"$key{index}"));
+				using SqliteCommand command = connection.CreateCommand();
+				command.CommandText = $"SELECT key, value FROM config WHERE key IN ({parameters})"; // nosemgrep
+				for (int index = 0; index < batch.Length; index++)
+					command.Parameters.AddWithValue($"$key{index}", batch[index]);
+				using SqliteDataReader reader = command.ExecuteReader();
+				ReadQueryExecuted?.Invoke();
+				while (reader.Read()) result.Add((reader.GetString(0), reader.GetString(1)));
+			}
+			return result;
+		});
+
+		Dictionary<string, ConfigValue> values = new(rows.Count, StringComparer.Ordinal);
+		foreach ((string key, string stored) in rows)
+		{
+			ConfigValue? value = MaterializeValue(key, stored);
+			if (value is not null) values[key] = value;
+		}
+		return values;
 	}
 
 	/// <summary>
@@ -182,6 +217,63 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 		});
 
 		if (IsSensitiveKey(key)) _secretIssues.TryRemove(key, out _);
+	}
+
+	/// <summary>
+	/// 批量写入配置。所有更新在单个事务中提交,减少锁竞争。
+	/// 敏感字段先完成加密;密钥库不可用时整个批次失败。
+	/// </summary>
+	public void SetBatch(Dictionary<string, ConfigValue> updates)
+	{
+		if (updates == null || updates.Count == 0) return;
+
+		// 预先加密所有敏感字段,如果密钥库不可用则提前失败
+		Dictionary<string, string> preparedValues = new(updates.Count, StringComparer.Ordinal);
+		foreach (var (key, value) in updates)
+		{
+			ArgumentException.ThrowIfNullOrEmpty(key);
+			string toStore = IsSensitiveKey(key) ? ProtectValue(key, value.ToStorage()) : value.ToStorage();
+			preparedValues[key] = toStore;
+		}
+
+		_database.Locked(connection =>
+		{
+			using SqliteTransaction transaction = connection.BeginTransaction();
+			try
+			{
+				using SqliteCommand command = connection.CreateCommand();
+				command.Transaction = transaction;
+				command.CommandText = """
+					INSERT INTO config (key, value)
+					VALUES ($key, $value)
+					ON CONFLICT(key)
+					DO UPDATE SET value = excluded.value
+					""";
+
+				SqliteParameter keyParam = command.Parameters.Add("$key", SqliteType.Text);
+				SqliteParameter valueParam = command.Parameters.Add("$value", SqliteType.Text);
+
+				foreach (var (key, value) in preparedValues)
+				{
+					keyParam.Value = key;
+					valueParam.Value = value;
+					command.ExecuteNonQuery();
+				}
+
+				transaction.Commit();
+			}
+			catch
+			{
+				transaction.Rollback();
+				throw;
+			}
+		});
+
+		// 清理所有成功写入的敏感配置问题记录
+		foreach (string key in updates.Keys)
+		{
+			if (IsSensitiveKey(key)) _secretIssues.TryRemove(key, out _);
+		}
 	}
 
 	/// <summary>删除配置, 返回是否真的删除了记录。</summary>
@@ -217,6 +309,7 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 			using SqliteCommand command = connection.CreateCommand();
 			command.CommandText = "SELECT key, value FROM config ORDER BY key";
 			using SqliteDataReader reader = command.ExecuteReader();
+			ReadQueryExecuted?.Invoke();
 			List<(string Key, string Stored)> values = [];
 			while (reader.Read()) values.Add((reader.GetString(0), reader.GetString(1)));
 			return values;
@@ -225,16 +318,8 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 		List<KeyValuePair<string, ConfigValue>> result = [];
 		foreach ((string key, string stored) in rows)
 		{
-			if (IsSensitiveKey(key))
-			{
-				SecretReadResult secret = ReadSecretValue(key, stored, migrate: true);
-				if (!secret.IsConfigured) continue;
-				result.Add(new KeyValuePair<string, ConfigValue>(key, ConfigValue.FromStorage(secret.Value!)));
-			}
-			else
-			{
-				result.Add(new KeyValuePair<string, ConfigValue>(key, ConfigValue.FromStorage(stored)));
-			}
+			ConfigValue? value = MaterializeValue(key, stored);
+			if (value is not null) result.Add(new KeyValuePair<string, ConfigValue>(key, value));
 		}
 		return result;
 	}
@@ -243,10 +328,10 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 	public SecretReadResult ReadSecret(string key)
 	{
 		if (!IsSensitiveKey(key)) throw new ArgumentException("不是敏感配置键", nameof(key));
-		string stored = RawValue(key);
-		return stored.Length == 0 && !Exists(key)
+		StoredConfigValue stored = ReadStoredValue(key);
+		return !stored.Exists
 			? new SecretReadResult(null, SecretIssueCategory.None)
-			: ReadSecretValue(key, stored, migrate: true);
+			: ReadSecretValue(key, stored.Value!, migrate: true);
 	}
 
 	/// <summary>判断敏感配置当前是否真正可用。</summary>
@@ -300,18 +385,47 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 		return command.ExecuteScalar() as string ?? "";
 	});
 
+	private StoredConfigValue ReadStoredValue(string key) => _database.Locked(connection =>
+	{
+		using SqliteCommand command = connection.CreateCommand();
+		command.CommandText = "SELECT value FROM config WHERE key = $key";
+		command.Parameters.AddWithValue("$key", key);
+		using SqliteDataReader reader = command.ExecuteReader();
+		ReadQueryExecuted?.Invoke();
+		return reader.Read()
+			? new StoredConfigValue(true, reader.GetString(0))
+			: new StoredConfigValue(false, null);
+	});
+
+	private ConfigValue? MaterializeValue(string key, string stored)
+	{
+		if (!IsSensitiveKey(key)) return ConfigValue.FromStorage(stored);
+		SecretReadResult result = ReadSecretValue(key, stored, migrate: true);
+		return result.IsConfigured ? ConfigValue.FromStorage(result.Value!) : null;
+	}
+
+	private readonly record struct StoredConfigValue(bool Exists, string? Value);
+
 	/// <summary>读取字符串配置, 缺失/类型不符时返回 fallback。</summary>
 	public string GetStringOr(string key, string fallback) => ConfigValue.AsStringOr(Get(key), fallback);
 
 	/// <summary>读取整型配置并夹紧到 [min, max]; 无效或缺省时返回 fallback。</summary>
 	public int GetClampedInt(string key, int fallback, int min, int max) =>
-		int.TryParse(GetStringOr(key, ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
+		GetClampedInt(Get(key), fallback, min, max);
+
+	internal static int GetClampedInt(ConfigValue? stored, int fallback, int min, int max) =>
+		stored is ConfigValue.Boolean boolean ? Math.Clamp(boolean.Value ? 1 : 0, min, max) :
+		int.TryParse(ConfigValue.AsStringOr(stored, ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
 			? Math.Clamp(value, min, max)
 			: fallback;
 
 	/// <summary>读取浮点配置并夹紧到 [min, max]; 无效或缺省时返回 fallback。</summary>
 	public double GetClampedDouble(string key, double fallback, double min, double max) =>
-		double.TryParse(GetStringOr(key, ""), NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
+		GetClampedDouble(Get(key), fallback, min, max);
+
+	internal static double GetClampedDouble(ConfigValue? stored, double fallback, double min, double max) =>
+		stored is ConfigValue.Boolean boolean ? Math.Clamp(boolean.Value ? 1d : 0d, min, max) :
+		double.TryParse(ConfigValue.AsStringOr(stored, ""), NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
 			? Math.Clamp(value, min, max)
 			: fallback;
 
@@ -322,7 +436,11 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 	public bool GetBoolOr(string key, bool fallback)
 	{
 		if (key == KeyTelemetryEnabled) return GetTelemetryConsent() == TelemetryConsent.Granted;
-		ConfigValue? value = Get(key);
+		return GetBoolOr(Get(key), fallback);
+	}
+
+	internal static bool GetBoolOr(ConfigValue? value, bool fallback)
+	{
 		if (value is ConfigValue.Boolean boolean) return boolean.Value;
 		string raw = ConfigValue.AsStringOr(value, "");
 		return raw switch
@@ -333,6 +451,9 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 			_ => fallback,
 		};
 	}
+
+	/// <summary>读取快捷聊天开关，缺失或非法值按默认开启处理。</summary>
+	public bool GetQuickChatEnabled() => GetBoolOr(KeyQuickChatEnabled, true);
 
 	/// <summary>读取明确的遥测同意状态; 非法或缺失值都 fail-closed 为 unset。</summary>
 	public TelemetryConsent GetTelemetryConsent()
@@ -370,6 +491,8 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 				(KeySelectedModel, new ConfigValue.Text(DefaultModel)),
 				(KeyFirstRunCompleted, new ConfigValue.Boolean(false)),
 				(KeyTelemetryConsent, new ConfigValue.Text(ConfigValidation.TelemetryConsentStorage(TelemetryConsent.Unset))),
+				(KeyQuickChatEnabled, new ConfigValue.Boolean(true)),
+				(KeyBackgroundBlurEnabled, new ConfigValue.Boolean(true)),
 				("memory_enabled", new ConfigValue.Boolean(true)),
 				("memory_reflection_enabled", new ConfigValue.Boolean(true)),
 				("memory_reflection_rounds", new ConfigValue.Integer(8)),
@@ -547,9 +670,7 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 		if (!IsSensitiveKey(key) || string.IsNullOrEmpty(plainText)) return plainText;
 		try
 		{
-			byte[] masterKey = _keyStore.LoadOrCreate();
-			if (masterKey.Length != SecretKeyStore.KeySize)
-				throw new SecretKeyStoreException("平台主密钥长度无效, 拒绝写入敏感配置");
+			byte[] masterKey = GetOrLoadMasterKey();
 			return SecretProtector.ProtectV2(masterKey, key, plainText);
 		}
 		catch (SecretKeyStoreException)
@@ -570,7 +691,7 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 		if (SecretProtector.IsNsec2(stored) || SecretProtector.IsNsec1(stored))
 		{
 			byte[] masterKey;
-			try { masterKey = _keyStore.LoadOrCreate(); }
+			try { masterKey = GetOrLoadMasterKey(); }
 			catch (Exception exception) when (exception is SecretKeyStoreException or CryptographicException or IOException or UnauthorizedAccessException or InvalidOperationException)
 			{
 				RecordSecretIssue(key, SecretIssueCategory.KeyStoreUnavailable);
@@ -678,6 +799,7 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 	/// 模型、遥测同意、首次运行标记与初始化时间必须一起落盘，避免进程在
 	/// 首次运行标记已经写入后崩溃，下一次启动却缺少必要配置。
 	/// </summary>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "S2486", Justification = "首次运行收尾失败不能覆盖原始配置错误。")]
 	public void CompleteFirstRun(string modelId, bool telemetryEnabled)
 	{
 		if (string.IsNullOrWhiteSpace(modelId)) throw new ArgumentException("模型 ID 不能为空", nameof(modelId));
@@ -709,7 +831,7 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 		if (!Exists(KeyInitializedAt)) Set(KeyInitializedAt, new ConfigValue.Text(Now()));
 	}
 
-	/// <summary>首次初始化配置快照, 对应前端 invoke("get_init_config")。</summary>
+	/// <summary>读取首次初始化状态，供原生首启向导和初始化窗口核对。</summary>
 	public InitConfig GetInitConfig()
 	{
 		string? initializedAt = Get(KeyInitializedAt) is ConfigValue.Text text && text.Value.Length > 0 ? text.Value : null;
@@ -732,5 +854,33 @@ public sealed class ConfigStore(NoriDatabase database, ISecretKeyStore? keyStore
 	{
 		string name = CultureInfo.CurrentUICulture.Name;
 		return string.IsNullOrEmpty(name) ? "zh-CN" : name;
+	}
+
+	/// <summary>获取或加载缓存的主密钥。</summary>
+	private byte[] GetOrLoadMasterKey()
+	{
+		if (_cachedMasterKey != null) return _cachedMasterKey;
+
+		lock (_keyLock)
+		{
+			if (_cachedMasterKey != null) return _cachedMasterKey;
+
+			byte[] masterKey = _keyStore.LoadOrCreate();
+			if (masterKey.Length != SecretKeyStore.KeySize)
+				throw new SecretKeyStoreException("平台主密钥长度无效");
+
+			_cachedMasterKey = masterKey;
+			return _cachedMasterKey;
+		}
+	}
+
+	/// <summary>清理缓存的主密钥。</summary>
+	public void Dispose()
+	{
+		if (_cachedMasterKey != null)
+		{
+			Array.Clear(_cachedMasterKey, 0, _cachedMasterKey.Length);
+			_cachedMasterKey = null;
+		}
 	}
 }

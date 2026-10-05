@@ -145,6 +145,9 @@ internal sealed class NoriHalo : Panel
 		}
 	}
 
+	/// <summary>旋转定时器是否在运行。</summary>
+	internal bool IsRunning => _ticker?.IsEnabled == true;
+
 	/// <summary>开始旋转。</summary>
 	internal void Start()
 	{

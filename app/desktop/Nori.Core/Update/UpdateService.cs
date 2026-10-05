@@ -77,7 +77,7 @@ public sealed class UpdateService : IDisposable
 		if (httpClient is null)
 		{
 			_ownedClients = NoriHttpClients.Create(false, TimeSpan.FromMinutes(30),
-				config?.GetBoolOr("allow_public_system_proxy", true) ?? true);
+				config?.GetBoolOr("allow_public_system_proxy", false) ?? false);
 			_httpClient = _ownedClients.Public;
 		}
 		else _httpClient = httpClient;
@@ -193,7 +193,8 @@ public sealed class UpdateService : IDisposable
 		start.ArgumentList.Add(process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
 		start.ArgumentList.Add("--launcher-wait-start-ticks");
 		start.ArgumentList.Add(process.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
-		using Process? child = Process.Start(start);
+		// ResolveLauncher 只返回已验证的包根启动器路径。
+		using Process? child = Process.Start(start); // nosemgrep
 		if (child is null) throw new InvalidOperationException("无法启动 Nori 启动器");
 	}
 
@@ -394,7 +395,14 @@ public sealed class UpdateService : IDisposable
 			}
 		}
 		catch (OperationCanceledException) when (source.IsCancellationRequested) { }
-		finally { lock (_stateLock) { if (_schedulerCts == source) _schedulerCts = null; source.Dispose(); } }
+		finally
+		{
+			lock (_stateLock)
+			{
+				if (_schedulerCts == source) _schedulerCts = null;
+				source.Dispose();
+			}
+		}
 	}
 
 	private void SetFailure(bool cancelled, string message) => SetStatus(CurrentStatus with { State = cancelled ? UpdaterState.Cancelled : UpdaterState.Error, Message = message });
