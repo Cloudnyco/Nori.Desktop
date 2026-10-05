@@ -48,6 +48,44 @@ public sealed class NoriCloudClientTests
 	private const string LegalJson =
 		"""[{"key":"tos","title":"服务条款","version":"1.1","sha256":"aaa"},{"key":"cloud-privacy","title":"隐私政策","version":"1.1","sha256":"bbb"}]""";
 
+	[Fact]
+	public async Task 禁用网络时所有云端请求均被拦截且退出不发HTTP()
+	{
+		FakeHandler handler = new((HttpStatusCode.OK, "{}"));
+		using HttpClient http = new(handler);
+		NoriCloudClient client = new(http, "https://example.test", networkEnabled: () => false);
+		Func<Task>[] requests =
+		[
+			() => client.SendCodeAsync("a@b.com"),
+			() => client.VerifyCodeAsync("a@b.com", "123456"),
+			() => client.SignInWithPasswordAsync("a@b.com", "password"),
+			() => client.FetchSaveAsync("token"),
+			() => client.FetchSaveAsync("token", metaOnly: true),
+			() => client.UploadSaveAsync("token", "{}", 0),
+			() => client.DeleteSaveAsync("token"),
+		];
+		foreach (Func<Task> request in requests)
+		{
+			InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(request);
+			Assert.Contains("安全模式", error.Message, StringComparison.Ordinal);
+		}
+		await client.SignOutAsync("token");
+		Assert.Empty(handler.Requests);
+	}
+
+	[Fact]
+	public async Task 网络开关在每次请求时检查()
+	{
+		FakeHandler handler = new((HttpStatusCode.OK, "{}"));
+		using HttpClient http = new(handler);
+		bool enabled = true;
+		NoriCloudClient client = new(http, "https://example.test", networkEnabled: () => enabled);
+		Assert.True((await client.SendCodeAsync("a@b.com")).CodeSent);
+		enabled = false;
+		await Assert.ThrowsAsync<InvalidOperationException>(() => client.SendCodeAsync("a@b.com"));
+		Assert.Single(handler.Requests);
+	}
+
 	// ── 发码 ───────────────────────────────────────────────────────────────
 
 	[Fact]

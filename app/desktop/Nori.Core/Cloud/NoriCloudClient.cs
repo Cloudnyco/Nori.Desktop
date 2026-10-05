@@ -170,11 +170,13 @@ public sealed class NoriCloudClient
 
 	private readonly HttpClient _http;
 	private readonly string _baseUrl;
+	private readonly Func<bool>? _networkEnabled;
 
-	public NoriCloudClient(HttpClient http, string baseUrl = DefaultBaseUrl)
+	public NoriCloudClient(HttpClient http, string baseUrl = DefaultBaseUrl, Func<bool>? networkEnabled = null)
 	{
 		_http = http;
 		_baseUrl = NormalizeBaseUrl(baseUrl);
+		_networkEnabled = networkEnabled;
 	}
 
 	/// <summary>
@@ -255,11 +257,13 @@ public sealed class NoriCloudClient
 	/// </summary>
 	public async Task SignOutAsync(string token, CancellationToken cancel = default)
 	{
+		// 安全模式仅退出本机会话，不向服务端发送注销请求。
+		if (_networkEnabled?.Invoke() == false) return;
 		try
 		{
 			using HttpRequestMessage request = new(HttpMethod.Post, _baseUrl + "/api/nori-auth/sign-out");
 			request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token);
-			using HttpResponseMessage response = await _http.SendAsync(request, cancel);
+			using HttpResponseMessage response = await SendAsync(request, cancel);
 		}
 		catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
 		{
@@ -293,7 +297,7 @@ public sealed class NoriCloudClient
 		HttpResponseMessage response;
 		try
 		{
-			response = await _http.SendAsync(request, cancel);
+			response = await SendAsync(request, cancel);
 		}
 		catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
 		{
@@ -356,7 +360,7 @@ public sealed class NoriCloudClient
 		HttpResponseMessage response;
 		try
 		{
-			response = await _http.SendAsync(request, cancel);
+			response = await SendAsync(request, cancel);
 		}
 		catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
 		{
@@ -411,7 +415,7 @@ public sealed class NoriCloudClient
 		HttpResponseMessage response;
 		try
 		{
-			response = await _http.SendAsync(request, cancel);
+			response = await SendAsync(request, cancel);
 		}
 		catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
 		{
@@ -465,7 +469,19 @@ public sealed class NoriCloudClient
 	{
 		// accept 是可选字段，拼在这里而不是每个调用点各拼一遍。
 		if (accept is {Count: > 0}) body["accept"] = accept;
-		return await _http.PostAsJsonAsync(_baseUrl + path, body, cancel);
+		using HttpRequestMessage request = new(HttpMethod.Post, _baseUrl + path)
+		{
+			Content = JsonContent.Create(body),
+		};
+		return await SendAsync(request, cancel);
+	}
+
+	/// <summary>所有云端请求共用安全模式边界，直接调用协调器或托盘也不能绕过。</summary>
+	private Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancel)
+	{
+		if (_networkEnabled?.Invoke() == false)
+			throw new InvalidOperationException("安全模式下已禁用云端网络请求，请退出安全模式后重试");
+		return _http.SendAsync(request, cancel);
 	}
 
 	private async Task<CloudAuthResult> ReadAuthAsync(

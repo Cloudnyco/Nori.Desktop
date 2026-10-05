@@ -139,11 +139,11 @@ public sealed class SignInCoordinator(
 	public static SignInCoordinator Create(
 		HttpClient http, ConfigStore config,
 		Func<ConsentRequest, Task<bool>> askConsent,
-		FileLogger? logger = null)
+		FileLogger? logger = null, Func<bool>? networkEnabled = null)
 	{
 		string baseUrl = config.GetStringOr(NoriCloudClient.BaseUrlKey, NoriCloudClient.DefaultBaseUrl);
 		return new SignInCoordinator(
-			new NoriCloudClient(http, baseUrl), new AccountSession(config), askConsent, logger);
+			new NoriCloudClient(http, baseUrl, networkEnabled), new AccountSession(config), askConsent, logger);
 	}
 }
 

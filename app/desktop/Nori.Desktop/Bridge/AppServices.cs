@@ -112,7 +112,7 @@ public sealed class AppServices : IAsyncDisposable
 	private Account.SignInCoordinator CreateSignIn()
 	{
 		Account.SignInCoordinator coordinator = Account.SignInCoordinator.Create(
-			PublicHttp, Config, AskConsentAsync, Logger);
+			PublicHttp, Config, AskConsentAsync, Logger, networkEnabled: () => !SafeMode);
 		coordinator.SignedIn += _ =>
 		{
 			Runtime?.InvalidateSnapshot();
@@ -149,7 +149,7 @@ public sealed class AppServices : IAsyncDisposable
 			return _cloudSync ??= new Nori.Core.Cloud.CloudSyncService(
 				new Nori.Core.Cloud.NoriCloudClient(PublicHttp,
 					Config.GetStringOr(Nori.Core.Cloud.NoriCloudClient.BaseUrlKey,
-						Nori.Core.Cloud.NoriCloudClient.DefaultBaseUrl)),
+						Nori.Core.Cloud.NoriCloudClient.DefaultBaseUrl), networkEnabled: () => !SafeMode),
 				SignIn.Session,
 				new Nori.Core.Cloud.CloudSaveService(
 					Config, runtime.Memory.Transfer, new Nori.Core.Proactive.ReminderStore(Database)),
