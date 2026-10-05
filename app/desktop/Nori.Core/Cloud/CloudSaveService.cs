@@ -154,10 +154,41 @@ public sealed class CloudSaveService(
 		return document?.Format == CloudSaveDocument.FormatName ? document : null;
 	}
 
+	/// <summary>文本类配置的长度上限（UTF-8 字节）。偏好值都很短，超长只可能是被改过的存档。</summary>
+	private const int MaxConfigValueBytes = 1024;
+
+	/// <summary><c>nori_skills</c> 存的是一份 JSON 清单，单独放宽。</summary>
+	private const int MaxSkillsConfigBytes = 64 * 1024;
+
+	private const long DayMs = 24L * 60 * 60 * 1000;
+
+	/// <summary>期望是布尔的配置基名。恢复到一台全新机器时本机没有现值可比，所以要有一份自己的表。</summary>
+	private static readonly HashSet<string> BooleanKeys = new(StringComparer.Ordinal)
+	{
+		"tts_auto_play", "ui_sidebar_collapsed",
+		"l2d_shadow", "l2d_click_through", "l2d_ai_interaction_enabled",
+		"proactive_daily_greeting", "proactive_idle_enabled",
+		"memory_enabled", "memory_decay_enabled", "memory_archive_enabled", "memory_reflection_enabled",
+	};
+
+	/// <summary>期望是有限数值的配置基名。取值范围由各读取点自己夹取，这里只挡类型不对的值。</summary>
+	private static readonly HashSet<string> NumericKeys = new(StringComparer.Ordinal)
+	{
+		"audio_volume", "l2d_scale", "l2d_opacity", "l2d_render_scale",
+		"proactive_idle_minutes",
+		"memory_recall_top_k", "memory_min_similarity", "memory_archive_threshold",
+		"memory_reflection_rounds", "memory_reflection_min_chars",
+		"tts_speed",
+	};
+
 	/// <summary>
 	/// 把一份存档恢复到本机。
 	///
 	/// 配置覆盖，记忆与提醒合并。合并的理由见类型注释。
+	///
+	/// **先校验、后写入。** 配置、记忆预览、提醒都先在内存里过一遍并定下要做什么，
+	/// 全部走完才开始写；存档本身残缺（集合为 null）时一个字也不写。各库之间没有
+	/// 跨服务事务，所以写入阶段按「最可能失败的先写」排：记忆 → 提醒 → 配置。
 	/// </summary>
 	public CloudRestoreResult Restore(CloudSaveDocument? document)
 	{
@@ -165,10 +196,16 @@ public sealed class CloudSaveService(
 		{
 			return new CloudRestoreResult { Succeeded = false, Error = "存档格式不正确，未做任何改动" };
 		}
+		// 存档来自网络，反序列化可以给出 null 集合；放到写入中途才踩到就会留下半份。
+		if (document.Config is null || document.Reminders is null)
+		{
+			return new CloudRestoreResult { Succeeded = false, Error = "存档内容不完整，未做任何改动" };
+		}
 
 		List<string> skipped = [];
 
-		int applied = 0;
+		// ── 校验阶段：只读 ──────────────────────────────────────────────────
+		List<(string Key, ConfigValue Value)> configPlan = [];
 		foreach ((string key, string raw) in document.Config)
 		{
 			// 存档是从网络上来的，里面的键不能信。范围与敏感判断在这里再走一遍。
@@ -177,15 +214,19 @@ public sealed class CloudSaveService(
 				skipped.Add($"{key}：不在同步范围内，已忽略");
 				continue;
 			}
-			config.Set(key, ConfigValue.FromStorage(raw));
-			applied++;
+			if (!TryValidateConfig(key, raw, out ConfigValue value, out string reason))
+			{
+				skipped.Add($"{key}：{reason}，已忽略");
+				continue;
+			}
+			configPlan.Add((key, value));
 		}
 
-		int added = 0;
-		int skippedMemories = 0;
+		string? memoryToken = null;
 		if (document.Memories is { } incoming && incoming.Memories.Count > 0)
 		{
 			// 走 MemoryTransferService 自己的预览提交两段式，沿用它的校验与去重。
+			// 这里只预览；提交留到写入阶段。
 			MemoryTransferPreview preview = memories.Preview(JsonSerializer.Serialize(incoming, Json));
 			if (!preview.IsValid || preview.PreviewToken is null)
 			{
@@ -193,51 +234,145 @@ public sealed class CloudSaveService(
 			}
 			else
 			{
-				MemoryTransferCommitResult commit = memories.Commit(preview.PreviewToken);
-				if (commit.Succeeded)
-				{
-					added = commit.AddedCount;
-					skippedMemories = commit.SkippedCount;
-				}
-				else
-				{
-					skipped.Add("记忆：写入失败，已整体忽略");
-				}
+				memoryToken = preview.PreviewToken;
 			}
 		}
 
-		int remindersAdded = 0;
-		int remindersUpdated = 0;
-		foreach (CloudReminder item in document.Reminders)
+		long nowMs = _time.GetUtcNow().ToUnixTimeMilliseconds();
+		List<(CloudReminder Item, long TriggerAt)> reminderPlan = [];
+		foreach (CloudReminder? item in document.Reminders)
 		{
-			if (string.IsNullOrWhiteSpace(item.Id) || string.IsNullOrWhiteSpace(item.Content))
+			if (item is null || string.IsNullOrWhiteSpace(item.Id) || string.IsNullOrWhiteSpace(item.Content))
 			{
 				skipped.Add("提醒：缺少 id 或内容，已忽略一条");
 				continue;
 			}
-			if (reminders.Get(item.Id) is not null)
+			// 本机已有的一律以本机为准，不碰：更新会重置触发时间、清掉推迟与领取状态，
+			// 拿一份旧存档去覆盖，会让本机上排在后面的每日提醒立刻响、推迟也白做。
+			// 终态（已完成/已取消）的同 id 也算已有，不能被「复活」。
+			if (reminders.Get(item.Id) is not null) continue;
+
+			long triggerAt = item.TriggerAt;
+			if (triggerAt <= nowMs)
 			{
-				// 同一个 id 说明是同一条提醒。以存档为准更新内容与时间，但不动它在
-				// 本机的投递状态 —— 那是这台机器自己的进度。
-				if (reminders.Update(item.Id, item.Content, item.TriggerAt,
-					item.RepeatDaily, item.Timezone, item.RecurrenceJson)) remindersUpdated++;
-				continue;
+				if (!item.RepeatDaily)
+				{
+					// 过期的一次性提醒搬到新机器上会在下一次轮询立刻弹出，没有意义。
+					skipped.Add("提醒：已过期的一次性提醒，未恢复");
+					continue;
+				}
+				// 每日提醒：库里没有通用的追赶函数（MarkFired 只 +1 天），这里按整天推进到
+				// 下一个未来时刻，保留原来的钟点。不去解析 recurrence_json。
+				triggerAt += ((nowMs - triggerAt) / DayMs + 1) * DayMs;
 			}
-			reminders.AddExact(item.Id, item.Content, item.TriggerAt,
-				item.RepeatDaily, item.Timezone ?? "UTC", item.RecurrenceJson, item.CreatedAt);
-			remindersAdded++;
+			reminderPlan.Add((item, triggerAt));
 		}
+
+		// ── 写入阶段 ────────────────────────────────────────────────────────
+		int added = 0;
+		int skippedMemories = 0;
+		if (memoryToken is not null)
+		{
+			MemoryTransferCommitResult commit = memories.Commit(memoryToken);
+			if (commit.Succeeded)
+			{
+				added = commit.AddedCount;
+				skippedMemories = commit.SkippedCount;
+			}
+			else
+			{
+				skipped.Add("记忆：写入失败，已整体忽略");
+			}
+		}
+
+		int remindersAdded = 0;
+		foreach ((CloudReminder item, long triggerAt) in reminderPlan)
+		{
+			if (reminders.AddExact(item.Id!, item.Content!, triggerAt,
+				item.RepeatDaily, item.Timezone ?? "UTC", item.RecurrenceJson, item.CreatedAt)) remindersAdded++;
+		}
+
+		foreach ((string key, ConfigValue value) in configPlan) config.Set(key, value);
 
 		return new CloudRestoreResult
 		{
 			Succeeded = true,
-			ConfigApplied = applied,
+			ConfigApplied = configPlan.Count,
 			MemoriesAdded = added,
 			MemoriesSkipped = skippedMemories,
 			RemindersAdded = remindersAdded,
-			RemindersUpdated = remindersUpdated,
+			// 本机已有的提醒以本机为准、不再更新，所以恒为 0。属性保留是为了不破坏调用方。
+			RemindersUpdated = 0,
 			Skipped = skipped,
 		};
+	}
+
+	/// <summary>
+	/// 存档里一条配置能不能写。
+	///
+	/// 设置界面写配置时没有集中的校验器：各读取点自己夹取范围（GetClampedInt 等），
+	/// 所以这里不重造范围，只做两道保守的闸：
+	/// 一是长度（<c>nori_skills</c> 64 KiB，其余 1 KiB）；
+	/// 二是类型 —— 布尔键必须解析成布尔，数值键必须是有限的 invariant 小数（复用
+	/// <see cref="ConfigValidation.TryParseInvariantDouble"/>）。全新机器上没有现值，
+	/// 所以先查上面两张按键名的表；不在表里的键再看本机现值是布尔/整数就要求同类型。
+	/// </summary>
+	private bool TryValidateConfig(string key, string? raw, out ConfigValue value, out string reason)
+	{
+		value = new ConfigValue.Text("");
+		reason = "";
+		if (raw is null)
+		{
+			reason = "值为空";
+			return false;
+		}
+		string baseKey = BaseKey(key);
+		int limit = baseKey == "nori_skills" ? MaxSkillsConfigBytes : MaxConfigValueBytes;
+		if (Encoding.UTF8.GetByteCount(raw) > limit)
+		{
+			reason = "值过长";
+			return false;
+		}
+
+		value = ConfigValue.FromStorage(raw);
+		if (BooleanKeys.Contains(baseKey))
+		{
+			if (value is ConfigValue.Boolean) return true;
+			reason = "应为布尔值";
+			return false;
+		}
+		if (NumericKeys.Contains(baseKey))
+		{
+			if (ConfigValidation.TryParseInvariantDouble(raw, out _)) return true;
+			reason = "应为数值";
+			return false;
+		}
+
+		switch (config.Get(key))
+		{
+			case ConfigValue.Boolean when value is not ConfigValue.Boolean:
+				reason = "应为布尔值";
+				return false;
+			case ConfigValue.Integer when value is not ConfigValue.Integer:
+				reason = "应为整数";
+				return false;
+			default:
+				return true;
+		}
+	}
+
+	/// <summary>去掉按模型分键的后缀（<c>l2d_scale_nori</c> → <c>l2d_scale</c>）。</summary>
+	private static string BaseKey(string key)
+	{
+		if (CloudSaveScope.ConfigKeys.Contains(key)) return key;
+		foreach (string prefix in CloudSaveScope.ConfigKeys)
+		{
+			if (prefix.StartsWith("l2d_", StringComparison.Ordinal)
+				&& key.Length > prefix.Length + 1
+				&& key.StartsWith(prefix, StringComparison.Ordinal)
+				&& key[prefix.Length] == '_') return prefix;
+		}
+		return key;
 	}
 
 	private static string Describe(Exception error) =>
