@@ -434,8 +434,9 @@ public sealed class CloudSaveServiceTests : IDisposable
 	}
 
 	[Fact]
-	public void 记忆预览不合法时只跳过记忆其余照常恢复()
+	public void 记忆预览不合法时不写入偏好或提醒()
 	{
+		_config.Set("language", new ConfigValue.Text("zh-CN"));
 		CloudSaveDocument saved = new()
 		{
 			Format = CloudSaveDocument.FormatName,
@@ -457,12 +458,12 @@ public sealed class CloudSaveServiceTests : IDisposable
 
 		CloudRestoreResult result = _service.Restore(saved);
 
-		Assert.True(result.Succeeded);
+		Assert.False(result.Succeeded);
 		Assert.Equal(0, result.MemoriesAdded);
 		Assert.Empty(_memoryStore.GetAll(100));
-		Assert.Contains(result.Skipped, note => note.StartsWith("记忆："));
-		Assert.Equal("en-US", _config.GetStringOr("language", ""));
-		Assert.NotNull(_reminders.Get("keep"));
+		Assert.Contains("记忆没有通过校验", result.Error);
+		Assert.Equal("zh-CN", _config.GetStringOr("language", ""));
+		Assert.Null(_reminders.Get("keep"));
 	}
 
 	[Fact]

@@ -230,7 +230,7 @@ public sealed class CloudSaveService(
 			MemoryTransferPreview preview = memories.Preview(JsonSerializer.Serialize(incoming, Json));
 			if (!preview.IsValid || preview.PreviewToken is null)
 			{
-				skipped.Add("记忆：存档里的记忆没有通过校验，已整体忽略");
+				return new CloudRestoreResult { Succeeded = false, Error = "存档里的记忆没有通过校验，未做任何改动", Skipped = skipped };
 			}
 			else
 			{
@@ -281,7 +281,7 @@ public sealed class CloudSaveService(
 			}
 			else
 			{
-				skipped.Add("记忆：写入失败，已整体忽略");
+				return new CloudRestoreResult { Succeeded = false, Error = "记忆写入失败，未恢复偏好或提醒", Skipped = skipped };
 			}
 		}
 
