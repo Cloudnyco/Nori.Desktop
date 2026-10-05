@@ -414,6 +414,45 @@ public sealed class CloudSyncServiceTests : IDisposable
 		Assert.False(_session.IsSignedIn);
 	}
 
+	private void SignInAs(string email) => _session.Save(new CloudAccount
+	{
+		Email = email,
+		Token = "tok-" + email,
+		ExpiresAt = "2027-01-01T00:00:00.000Z",
+	}, SignInMethod.Code);
+
+	/// <summary>A 退出、B 登录：B 的备份必须带 0 号版本，不能沿用 A 的 7。</summary>
+	[Fact]
+	public async Task 退出后换账户备份不沿用旧版本号()
+	{
+		SignInAs("a@b.com");
+		CloudSyncService.WriteRevision(_config, "a@b.com", 7);
+		_session.Clear();
+		SignInAs("c@d.com");
+		FakeHandler handler = new((HttpStatusCode.OK, """{"ok":true,"revision":1}"""));
+		CloudSyncService sync = Build(handler);
+
+		Assert.Equal(0, CloudSyncService.KnownRevisionOf(_config));
+		await sync.BackupAsync();
+
+		using JsonDocument sent = JsonDocument.Parse(handler.Bodies[0]);
+		Assert.Equal(0, sent.RootElement.GetProperty("ifRevision").GetInt32());
+	}
+
+	/// <summary>会话过期（服务端 401）清掉登录态之后换账户登录，同样读不到旧版本号。</summary>
+	[Fact]
+	public async Task 会话过期后换账户读不到旧版本号()
+	{
+		SignInAs("a@b.com");
+		CloudSyncService.WriteRevision(_config, "a@b.com", 7);
+		await Build(new FakeHandler((HttpStatusCode.Unauthorized, """{"error":"not_signed_in"}"""))).BackupAsync();
+		Assert.False(_session.IsSignedIn);
+
+		SignInAs("c@d.com");
+
+		Assert.Equal(0, CloudSyncService.KnownRevisionOf(_config));
+	}
+
 	// ── 与服务端的约定 ──────────────────────────────────────────────────────
 
 	/// <summary>

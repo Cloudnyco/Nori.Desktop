@@ -86,22 +86,12 @@ public sealed class AccountSession(ConfigStore config)
 	/// <summary>
 	/// 登录成功后落盘。
 	///
-	/// 换了账户要把本机记的云端版本号清零。<see cref="CloudSyncService"/> 那个版本号是
-	/// **对某一个账户的存档**而言的：拿 A 账户的第 7 版去 B 账户上传，服务端按 B 的当前
-	/// 版本（新账户是 0）比对，回 409。客户端把 409 解释成「云端有更新的存档」，
-	/// 而 B 根本没有存档 —— 这句话不成立，而用户只能被迫选覆盖。
-	///
-	/// 退出再用同一个账户登录不清零：那个版本号仍然成立，清掉只会让下一次上传多走一次
-	/// 覆盖确认。
+	/// 这里**不**处理云端版本号：它自带所属账户，换账户登录后
+	/// <see cref="CloudSyncService.KnownRevisionOf"/> 自然读出 0。不能在这里比对上一个邮箱
+	/// 来清零 —— 退出登录和会话过期都会清掉邮箱，A 退出再 B 登录时上一个邮箱是空的。
 	/// </summary>
 	public void Save(CloudAccount account, SignInMethod method)
 	{
-		if (Read(EmailKey) is {Length: > 0} previous
-			&& !previous.Equals(account.Email, StringComparison.OrdinalIgnoreCase))
-		{
-			config.Set(CloudSyncService.RevisionKey, new ConfigValue.Text("r0"));
-		}
-
 		Write(TokenKey, account.Token);
 		Write(EmailKey, account.Email);
 		Write(NameKey, account.Name);

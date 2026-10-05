@@ -218,9 +218,8 @@ public sealed class CloudSyncService(
 	/// <summary>
 	/// 服务端说令牌不作数了，清掉本机这份登录记录。
 	///
-	/// 只清会话，**不清版本号**：那个号记的是「本机与云端存档比对到哪一版」，与是谁登录
-	/// 无关；同一个账户重新登录之后它仍然成立（换账户登录时由 <see cref="AccountSession.Save"/>
-	/// 清零）。
+	/// 只清会话，**不清版本号**：版本号自带所属账户，同一个账户重新登录之后仍然成立，
+	/// 换账户登录则读出来是 0（见 <see cref="KnownRevisionOf"/>）。
 	///
 	/// 清完之后调用方要发一次快照失效，界面才会跟着变。桌面端这条路径上的调用方是
 	/// BridgeCommands 的云同步命令，它本来就会发。
@@ -232,7 +231,7 @@ public sealed class CloudSyncService(
 	}
 
 	/// <summary>
-	/// 本机知道的云端版本号。
+	/// 本机知道的云端版本号（只对当前登录账户有效）。
 	///
 	/// 存成带前缀的字符串而不是整数，理由和 <see cref="AccountSession"/> 里那个前缀一样：
 	/// <see cref="ConfigValue.FromStorage"/> 读取时重新推断类型，而 <c>"1"</c> 会被推断成
@@ -241,22 +240,43 @@ public sealed class CloudSyncService(
 	/// 而 1 正是第一次上传之后的版本号。不加前缀的话，症状是：第一次上传成功，之后每一次
 	/// 上传都带着 0 号版本去撞，被服务端判成冲突 —— 用户看到的是「云端已有更新的存档」，
 	/// 而那份更新的存档正是他自己刚存的。
+	///
+	/// 存储格式 <c>r&lt;版本号&gt;:&lt;账户邮箱（小写）&gt;</c>。版本号与所属账户绑在同一个值里，
+	/// 读取时邮箱与当前登录账户不一致就当 0。正确性因此不依赖退出登录时有没有清理 ——
+	/// 退出、会话过期都会清掉邮箱，靠「登录时比对上一个邮箱」的做法在 A 退出再 B 登录时
+	/// 会失效，A 的版本号漏给 B：要么误报冲突，要么号码恰好相同时静默覆盖 B 的云端存档。
 	/// </summary>
 	private int KnownRevision
 	{
 		get => KnownRevisionOf(config);
-		set => config.Set(RevisionKey, new ConfigValue.Text("r" + value.ToString(
-			System.Globalization.CultureInfo.InvariantCulture)));
+		set => WriteRevision(config, session.Current?.Email ?? "", value);
 	}
+
+	internal static void WriteRevision(ConfigStore config, string email, int value) =>
+		config.Set(RevisionKey, new ConfigValue.Text(
+			"r" + value.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" + NormalizeOwner(email)));
+
+	private static string NormalizeOwner(string email) => email.Trim().ToLowerInvariant();
 
 	/// <summary>
 	/// 只读取版本号，不需要整个同步服务。
 	///
 	/// 给状态快照用：那条路径上没有 HTTP 客户端，也不该为了显示一个数字建一个。
+	/// 未登录、或记录属于别的账户时返回 0。
+	///
+	/// 旧格式 <c>r7</c>（没有所属账户）一律当 0：无法确认它属于谁，而错用的后果是静默覆盖
+	/// 别人的云端存档。当 0 的代价只是下一次上传多一次覆盖确认，宁可多问一次。
 	/// </summary>
 	public static int KnownRevisionOf(ConfigStore config)
 	{
+		string? email = new AccountSession(config).Current?.Email;
+		if (email is null) return 0;
+
 		string raw = config.GetStringOr(RevisionKey, "");
-		return raw.StartsWith('r') && int.TryParse(raw[1..], out int value) && value >= 0 ? value : 0;
+		int split = raw.IndexOf(':');
+		if (!raw.StartsWith('r') || split < 0) return 0;
+		if (!string.Equals(raw[(split + 1)..], NormalizeOwner(email), StringComparison.Ordinal)) return 0;
+		return int.TryParse(raw[1..split], System.Globalization.NumberStyles.None,
+			System.Globalization.CultureInfo.InvariantCulture, out int value) ? value : 0;
 	}
 }

@@ -108,34 +108,45 @@ public sealed class AccountSessionTests : IDisposable
 	}
 
 	/// <summary>
-	/// 换账户登录要把本机记的云端版本号清零。
+	/// 换账户登录后读不到上一个账户的版本号。
 	///
-	/// 版本号是对**某一个账户的存档**说的。留着上一个账户的号，下一次备份会带着它去跟
-	/// 新账户的存档比：新账户还没有存档（版本 0），服务端回 409，客户端把它显示成
-	/// 「云端有更新的存档」—— 那份存档并不存在，而用户只能被迫选覆盖。
+	/// 版本号是对**某一个账户的存档**说的。真实流程是 A 退出（Clear 会清掉邮箱）再 B 登录，
+	/// 所以不能靠登录时比对上一个邮箱；版本号自带所属账户，读取时比对。
 	/// </summary>
 	[Fact]
-	public void 换账户登录时清掉本机版本号()
+	public void 退出后换账户登录读不到旧版本号()
 	{
 		_session.Save(Sample(), SignInMethod.Code);
-		_config.Set(CloudSyncService.RevisionKey, new ConfigValue.Text("r7"));
+		CloudSyncService.WriteRevision(_config, "nori@example.com", 7);
+		Assert.Equal(7, CloudSyncService.KnownRevisionOf(_config));
 
+		_session.Clear();
 		_session.Save(Sample() with {Email = "other@example.com"}, SignInMethod.Code);
 
 		Assert.Equal(0, CloudSyncService.KnownRevisionOf(_config));
 	}
 
-	/// <summary>同一个账户重新登录不清版本号：那个号仍然成立，清掉只会多一次覆盖确认。</summary>
+	/// <summary>同一个账户重新登录（邮箱大小写不同）保留版本号：那个号仍然成立。</summary>
 	[Fact]
 	public void 同一账户重新登录保留版本号()
 	{
 		_session.Save(Sample(), SignInMethod.Code);
-		_config.Set(CloudSyncService.RevisionKey, new ConfigValue.Text("r7"));
+		CloudSyncService.WriteRevision(_config, "nori@example.com", 7);
 
 		_session.Clear();
-		_session.Save(Sample(token: "another-token-0123456789abcdef"), SignInMethod.Code);
+		_session.Save(Sample(token: "another-token-0123456789abcdef") with {Email = "Nori@Example.COM"}, SignInMethod.Code);
 
 		Assert.Equal(7, CloudSyncService.KnownRevisionOf(_config));
+	}
+
+	/// <summary>旧格式（<c>r7</c>，没有所属账户）无法确认归属，一律当 0。</summary>
+	[Fact]
+	public void 旧格式版本号当作0()
+	{
+		_session.Save(Sample(), SignInMethod.Code);
+		_config.Set(CloudSyncService.RevisionKey, new ConfigValue.Text("r7"));
+
+		Assert.Equal(0, CloudSyncService.KnownRevisionOf(_config));
 	}
 
 	/// <summary>退出登录不该把「上次用哪种方式登的」也忘掉 —— 那是本机偏好，不是登录态。</summary>
