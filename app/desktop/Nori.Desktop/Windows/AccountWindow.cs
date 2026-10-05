@@ -60,6 +60,7 @@ public sealed class AccountWindow : Window
 		Title = "Nori 账户";
 		Width = 460;
 		Height = 600;
+		NativeWindowSizing.ConstrainOnFirstOpen(this, new Size(460, 600));
 		CanResize = false;
 		WindowStartupLocation = WindowStartupLocation.CenterScreen;
 		RequestedThemeVariant = ThemeVariant.Dark;

@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml.Styling;
@@ -9,6 +10,7 @@ using Avalonia.Threading;
 using Nori.Core.Cloud;
 using Nori.Core.Platform;
 using Nori.Desktop.Chat;
+using Nori.Desktop.Windows;
 
 namespace Nori.Desktop.Account;
 
@@ -59,7 +61,8 @@ internal sealed class CloudSyncWindow : Window
 
 		Title = "云端同步";
 		Width = 460;
-		SizeToContent = SizeToContent.Height;
+		Height = 480;
+		NativeWindowSizing.ConstrainOnFirstOpen(this, new Size(460, 480));
 		CanResize = false;
 		WindowStartupLocation = WindowStartupLocation.CenterScreen;
 		RequestedThemeVariant = ThemeVariant.Dark;
@@ -95,7 +98,7 @@ internal sealed class CloudSyncWindow : Window
 
 	private Control BuildBody()
 	{
-		StackPanel body = new() {Spacing = 0};
+		Grid body = new() {RowDefinitions = new RowDefinitions("Auto,*,Auto")};
 		body.Children.Add(BuildChrome());
 
 		StackPanel inner = new() {Spacing = 14, Margin = new Thickness(24, 20, 24, 20)};
@@ -110,10 +113,11 @@ internal sealed class CloudSyncWindow : Window
 
 		inner.Children.Add(BuildLink());
 
-		inner.Children.Add(new StackPanel
+		inner.Children.Add(new WrapPanel
 		{
 			Orientation = Orientation.Horizontal,
-			Spacing = 10,
+			ItemSpacing = 10,
+			LineSpacing = 10,
 			Children = {_backup, _restore, _overwrite},
 		});
 
@@ -150,9 +154,16 @@ internal sealed class CloudSyncWindow : Window
 		// 本窗口全部操作均针对存放在 NCN 上的数据，归属标识置于此处。
 		Control badge = PoweredByNcn.Build();
 		badge.Margin = new Thickness(0, 0, 0, 16);
-		inner.Children.Add(badge);
-
-		body.Children.Add(inner);
+		ScrollViewer scroll = new()
+		{
+			Content = inner,
+			HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+			VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+		};
+		body.Children.Add(scroll);
+		body.Children.Add(badge);
+		Grid.SetRow(scroll, 1);
+		Grid.SetRow(badge, 2);
 		return body;
 	}
 
