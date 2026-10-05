@@ -146,10 +146,10 @@ public sealed class AgentEngine
 	/// <summary>
 	/// 这个工具可不可以和同一轮里的别的工具一起跑。
 	///
-	/// 判据是权限级别：<c>safe</c> 不弹确认、按约定也不产生副作用。查不到的名字按不可并发
+	/// 判据是明确的只读标记，且权限为 <c>safe</c>。免确认不代表无副作用。查不到的名字按不可并发
 	/// 处理 —— 它会在执行时报「工具不存在」，那条路径顺序走更容易对上日志。
 	/// </summary>
-	private bool IsParallelSafe(string name) => _tools.Get(name) is {PermissionLevel: "safe"};
+	private bool IsParallelSafe(string name) => _tools.Get(name) is {PermissionLevel: "safe", IsReadOnly: true};
 	private readonly SkillService _skills;
 	private readonly EmotionManager _emotion;
 	private readonly MemoryService _memory;
@@ -361,9 +361,8 @@ public sealed class AgentEngine
 			/// <summary>
 			/// 跑完这一轮的全部工具调用，返回与调用顺序一一对应的结果。
 			///
-			/// **只有 safe 级别的工具并发跑。** 其余级别要弹确认框：两个确认同时弹出来，
-			/// 用户无从分辨哪个对应哪一条；而且它们通常带副作用，执行顺序不能乱。所以按
-			/// 原顺序扫描，连续的 safe 调用合成一批并发，遇到非 safe 的就单独顺序执行。
+			/// 仅明确只读且免确认的工具并发；写状态、插件与需确认工具作为顺序屏障。
+			/// 连续的只读调用合成一批，同批重复调用共享任务，避免误报重复副作用。
 			///
 			/// 并发上限 <see cref="MaxParallelTools"/>：模型一轮里要十个搜索时，十条请求
 			/// 同时打出去只会一起触发对端限流。
@@ -386,11 +385,18 @@ public sealed class AgentEngine
 						continue;
 					}
 
+					Dictionary<string, Task<ToolResult>> pending = new(StringComparer.Ordinal);
 					Task<ToolResult>[] batch = new Task<ToolResult>[end - index];
 					for (int offset = 0; offset < batch.Length; offset++)
 					{
 						ProtocolToolCall call = calls[index + offset];
-						batch[offset] = ExecuteToolAsync(call.Name, call.Arguments, token, call.Id);
+						string key = ToolExecutionTracker.Key(call.Id, call.Name, call.Arguments);
+						if (!pending.TryGetValue(key, out Task<ToolResult>? task))
+						{
+							task = ExecuteToolAsync(call.Name, call.Arguments, token, call.Id);
+							pending.Add(key, task);
+						}
+						batch[offset] = task;
 					}
 					ToolResult[] done = await Task.WhenAll(batch);
 					done.CopyTo(results, index);

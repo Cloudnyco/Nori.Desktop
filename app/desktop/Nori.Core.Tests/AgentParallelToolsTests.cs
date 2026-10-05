@@ -15,7 +15,7 @@ namespace Nori.Core.Tests;
 /// 同一轮里的多个工具调用怎么执行。
 ///
 /// 原先是 foreach 里挨个 await：模型一轮要三次互不相关的查询时，用户等的是三次往返之和。
-/// 现在按权限级别分组 —— safe 的并发跑，其余顺序跑。
+/// 现在仅明确只读且 safe 的并发跑，其余顺序跑。
 ///
 /// 这一族要钉住三件事，缺哪一件都会留下不报错的缺陷：
 /// 1. safe 的确实是并发的（不然改了等于没改）；
@@ -123,12 +123,13 @@ public sealed class AgentParallelToolsTests : IDisposable
 		}
 	}
 
-	private static RegisteredTool Tool(string name, string level, Func<Task<object?>> body) => new()
+	private static RegisteredTool Tool(string name, string level, Func<Task<object?>> body, bool readOnly = true) => new()
 	{
 		Name = name,
 		Description = name,
 		Parameters = new JsonObject(),
 		PermissionLevel = level,
+		IsReadOnly = readOnly,
 		Execute = async (_, _) => await body(),
 	};
 
@@ -183,6 +184,28 @@ public sealed class AgentParallelToolsTests : IDisposable
 	}
 
 	// ── 断言 ───────────────────────────────────────────────────────────────
+
+	/// <summary>只读标记独立于免确认权限，且别名保留标记。</summary>
+	[Fact]
+	public void 只读标记仅由宿主明确登记()
+	{
+		ToolRegistry registry = new();
+		foreach (string name in new[] {"searchWeb", "remember", "setReminder", "playMotion", "setEmotion"})
+		{
+			ToolRegistration.Register(registry, name, name, "safe", new JsonObject(),
+				(_, _) => Task.FromResult<object?>(null));
+		}
+		registry.RegisterAlias("searchWeb", "anySearch", "搜索别名");
+		Assert.True(registry.Get("searchWeb")!.IsReadOnly);
+		Assert.True(registry.Get("anySearch")!.IsReadOnly);
+		foreach (string name in new[] {"remember", "setReminder", "playMotion", "setEmotion"})
+			Assert.False(registry.Get(name)!.IsReadOnly);
+		Assert.False(new RegisteredTool
+		{
+			Name = "plugin__example__action", Description = "插件动作", Parameters = new JsonObject(),
+			PermissionLevel = "safe", Execute = (_, _) => Task.FromResult<object?>(null),
+		}.IsReadOnly);
+	}
 
 	/// <summary>
 	/// 三个 safe 工具同一轮出现时并发执行。
@@ -277,6 +300,40 @@ public sealed class AgentParallelToolsTests : IDisposable
 		int slowAt = transcript.IndexOf("slow", StringComparison.Ordinal);
 		int fastAt = transcript.IndexOf("fast", StringComparison.Ordinal);
 		Assert.True(slowAt >= 0 && fastAt > slowAt, $"顺序不对：slow@{slowAt} fast@{fastAt}");
+	}
+
+	/// <summary>免确认的写操作与默认插件保持顺序，且作为只读批次屏障。</summary>
+	[Theory]
+	[InlineData("remember")]
+	[InlineData("plugin__example__action")]
+	public async Task 免确认但未标记只读的工具顺序执行(string name)
+	{
+		(_, Windows spans) = await RunAsync(
+			[Tool("before", "safe", () => Span("before")),
+			 Tool(name, "safe", () => Span(name), readOnly: false),
+			 Tool("after", "safe", () => Span("after"))],
+			ToolCall("before") + "\n" + ToolCall(name) + "\n" + ToolCall("after"));
+		Assert.Equal(1, spans.Peak);
+	}
+
+	/// <summary>同批无调用编号的相同只读请求共享结果，不误报副作用。</summary>
+	[Fact]
+	public async Task 同批重复只读调用复用进行中的任务()
+	{
+		int executions = 0;
+		string call = "{\"type\":\"tool_call\",\"name\":\"query\",\"arguments\":{}}";
+		(ScriptedAdapter adapter, _) = await RunAsync(
+			[Tool("query", "safe", async () =>
+			{
+				Interlocked.Increment(ref executions);
+				await Task.Delay(30);
+				return "shared-result";
+			})], call + "\n" + call);
+		Assert.Equal(1, executions);
+		string transcript = string.Join("\n", adapter.Sent[^1].Select(message => message.Content));
+		Assert.DoesNotContain("duplicate", transcript);
+		Assert.Equal(2, transcript.Split("\"error\":null").Length - 1);
+		Assert.Equal(2, transcript.Split("shared-result").Length - 1);
 	}
 
 	private async Task<object?> Arrive(CountdownEvent gate)
