@@ -301,8 +301,6 @@ public sealed class CloudSaveService(
 			MemoriesAdded = added,
 			MemoriesSkipped = skippedMemories,
 			RemindersAdded = remindersAdded,
-			// 本机已有的提醒以本机为准、不再更新，所以恒为 0。属性保留是为了不破坏调用方。
-			RemindersUpdated = 0,
 			Skipped = skipped,
 		};
 	}
@@ -313,8 +311,7 @@ public sealed class CloudSaveService(
 	/// 设置界面写配置时没有集中的校验器：各读取点自己夹取范围（GetClampedInt 等），
 	/// 所以这里不重造范围，只做两道保守的闸：
 	/// 一是长度（<c>nori_skills</c> 64 KiB，其余 1 KiB）；
-	/// 二是类型 —— 布尔键必须解析成布尔，数值键必须是有限的 invariant 小数（复用
-	/// <see cref="ConfigValidation.TryParseInvariantDouble"/>）。全新机器上没有现值，
+	/// 二是类型 —— 布尔键必须解析成布尔，数值键必须是有限的 invariant 小数。全新机器上没有现值，
 	/// 所以先查上面两张按键名的表；不在表里的键再看本机现值是布尔/整数就要求同类型。
 	/// </summary>
 	private bool TryValidateConfig(string key, string? raw, out ConfigValue value, out string reason)
@@ -343,7 +340,8 @@ public sealed class CloudSaveService(
 		}
 		if (NumericKeys.Contains(baseKey))
 		{
-			if (ConfigValidation.TryParseInvariantDouble(raw, out _)) return true;
+			if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double number)
+				&& double.IsFinite(number)) return true;
 			reason = "应为数值";
 			return false;
 		}

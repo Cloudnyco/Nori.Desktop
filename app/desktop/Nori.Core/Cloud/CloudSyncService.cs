@@ -187,7 +187,7 @@ public sealed class CloudSyncService(
 		{
 			Ok = true,
 			Message = $"已恢复：偏好 {restored.ConfigApplied} 项、新增记忆 {restored.MemoriesAdded} 条、"
-				+ $"提醒新增 {restored.RemindersAdded} 条并更新 {restored.RemindersUpdated} 条",
+				+ $"新增提醒 {restored.RemindersAdded} 条（本机已有的提醒保持不变）",
 			Skipped = restored.Skipped,
 		};
 	}

@@ -320,7 +320,6 @@ public sealed class CloudSaveServiceTests : IDisposable
 
 		Assert.True(result.Succeeded);
 		Assert.Equal(0, result.RemindersAdded);
-		Assert.Equal(0, result.RemindersUpdated);
 		ReminderItem after = other.Reminders.Get(local.Id)!;
 		Assert.Equal("本机现在的内容", after.Content);
 		Assert.Equal(localTrigger, after.TriggerAt);

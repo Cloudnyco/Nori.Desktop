@@ -105,7 +105,6 @@ public sealed record CloudRestoreResult
 	public int MemoriesAdded { get; init; }
 	public int MemoriesSkipped { get; init; }
 	public int RemindersAdded { get; init; }
-	public int RemindersUpdated { get; init; }
 
 	/// <summary>被忽略的内容及原因。</summary>
 	public IReadOnlyList<string> Skipped { get; init; } = [];
