@@ -174,7 +174,30 @@ public sealed class NoriCloudClient
 	public NoriCloudClient(HttpClient http, string baseUrl = DefaultBaseUrl)
 	{
 		_http = http;
-		_baseUrl = baseUrl.TrimEnd('/');
+		_baseUrl = NormalizeBaseUrl(baseUrl);
+	}
+
+	/// <summary>
+	/// 规整服务地址，并把不安全的挡回默认值。
+	///
+	/// 每个请求都带着 <c>Authorization: Bearer &lt;令牌&gt;</c>，所以地址若是明文 http 或别的协议，
+	/// 令牌就会明文上网或被送到意外的地方。只放行 https；http 仅限回环地址
+	/// （<c>localhost</c> / <c>127.0.0.1</c> / <c>[::1]</c>），留给本机联调。不合格的一律退回
+	/// <see cref="DefaultBaseUrl"/>，而不是抛异常 —— 配置键是手改的，不该让整个登录入口起不来。
+	/// </summary>
+	public static string NormalizeBaseUrl(string? baseUrl)
+	{
+		if (string.IsNullOrWhiteSpace(baseUrl)
+			|| !Uri.TryCreate(baseUrl.Trim(), UriKind.Absolute, out Uri? uri)
+			|| uri.UserInfo.Length > 0
+			|| uri.Query.Length > 0
+			|| uri.Fragment.Length > 0)
+		{
+			return DefaultBaseUrl;
+		}
+		bool secure = uri.Scheme == Uri.UriSchemeHttps;
+		bool loopbackHttp = uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback;
+		return secure || loopbackHttp ? uri.GetLeftPart(UriPartial.Path).TrimEnd('/') : DefaultBaseUrl;
 	}
 
 	/// <summary>

@@ -274,4 +274,42 @@ public sealed class NoriCloudClientTests
 		NoriCloudClient client = new(new HttpClient(new FakeHandler((HttpStatusCode.OK, "{}"))), "https://example.test/");
 		Assert.Equal("https://example.test/legal/tos", client.LegalUrl("tos"));
 	}
+
+	// ── 基址只认 https ─────────────────────────────────────────────────────
+
+	[Theory]
+	[InlineData("https://example.test", "https://example.test")]
+	[InlineData("https://example.test/", "https://example.test")]
+	[InlineData("https://example.test/base/", "https://example.test/base")]
+	[InlineData("http://localhost:8787", "http://localhost:8787")]
+	[InlineData("http://127.0.0.1:8787/", "http://127.0.0.1:8787")]
+	[InlineData("http://[::1]:8787", "http://[::1]:8787")]
+	public void 基址接受https与本机回环的http(string input, string expected)
+	{
+		Assert.Equal(expected, NoriCloudClient.NormalizeBaseUrl(input));
+	}
+
+	/// <summary>令牌随每个请求发出，明文 http、别的协议与垃圾输入一律退回默认地址。</summary>
+	[Theory]
+	[InlineData("http://example.test")]
+	[InlineData("http://192.168.1.5:8787")]
+	[InlineData("ftp://example.test")]
+	[InlineData("file:///C:/x")]
+	[InlineData("javascript:alert(1)")]
+	[InlineData("https://user:pass@example.test")]
+	[InlineData("example.test")]
+	[InlineData("")]
+	[InlineData("   ")]
+	[InlineData(null)]
+	public void 基址不合格时退回默认地址(string? input)
+	{
+		Assert.Equal(NoriCloudClient.DefaultBaseUrl, NoriCloudClient.NormalizeBaseUrl(input));
+	}
+
+	[Fact]
+	public void 构造时就套用基址限制()
+	{
+		NoriCloudClient client = new(new HttpClient(new FakeHandler((HttpStatusCode.OK, "{}"))), "http://example.test");
+		Assert.Equal($"{NoriCloudClient.DefaultBaseUrl}/legal/tos", client.LegalUrl("tos"));
+	}
 }
