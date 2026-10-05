@@ -122,12 +122,6 @@ public sealed class AppServices : IAsyncDisposable
 		return coordinator;
 	}
 
-	/// <summary>
-	/// 弹一次条款确认。
-	///
-	/// 找不到宿主窗口时返回「不同意」。这个默认值决定了在异常路径上我们是替用户签了字，
-	/// 还是让他重来一次 —— 只有后者是可接受的。
-	/// </summary>
 	private Nori.Core.Cloud.CloudSyncService? _cloudSync;
 
 	/// <summary>
@@ -157,6 +151,7 @@ public sealed class AppServices : IAsyncDisposable
 		}
 	}
 
+	/// <summary>弹条款确认；找不到宿主窗口时默认不同意。</summary>
 	private static Task<bool> AskConsentAsync(Account.ConsentRequest request)
 	{
 		Avalonia.Controls.Window? owner =
